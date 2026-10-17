@@ -1,6 +1,7 @@
 // Images are prepared in the browser (the server only sees ciphertext):
-// orientation applied, scaled to 2560 px, metadata (EXIF/GPS) dropped by
-// re-encoding, plus a tiny blurred preview that rides inside the message.
+// orientation applied, scaled to 2560 px in halving steps, metadata
+// (EXIF/GPS) dropped by re-encoding, plus a tiny blurred preview that
+// rides inside the message.
 // Videos only get the preview and their size and length, see prepareVideo.
 
 const MAX_SIDE = 2560;
@@ -17,19 +18,59 @@ let webp: boolean | undefined;
 const canEncodeWebp = () =>
   (webp ??= document.createElement('canvas').toDataURL('image/webp').startsWith('data:image/webp'));
 
-function canvasFor(img: HTMLImageElement, w: number, h: number, fill: boolean) {
-  const c = document.createElement('canvas');
-  c.width = w;
-  c.height = h;
-  const ctx = c.getContext('2d')!;
-  if (fill) {
-    ctx.fillStyle = '#fff';
-    ctx.fillRect(0, 0, w, h);
+// Bytes per pixel a photo may take at the higher quality. Busy photos go
+// out at 0.85 as before; ones that come out under the budget (documents,
+// sky, close-ups) get 0.92, which keeps fine detail and text crisp.
+// ponytail: fixed per codec, tune from real upload sizes.
+const BUDGET: Record<string, number> = { 'image/webp': 0.15, 'image/jpeg': 0.25 };
+
+// scaleSteps lists the sizes to draw through when shrinking. Browsers
+// filter one big step poorly (Safari reads few source pixels: jagged edges,
+// rippling patterns), so halve until the last step is under 2x.
+export function scaleSteps(w0: number, h0: number, w: number, h: number): [number, number][] {
+  const out: [number, number][] = [];
+  while (w0 > 2 * w && h0 > 2 * h) {
+    w0 = Math.round(w0 / 2);
+    h0 = Math.round(h0 / 2);
+    out.push([w0, h0]);
   }
-  ctx.imageSmoothingQuality = 'high';
-  ctx.drawImage(img, 0, 0, w, h);
-  return c;
+  out.push([w, h]);
+  return out;
 }
+
+type Source = HTMLImageElement | HTMLCanvasElement;
+const sizeOf = (s: Source) => (s instanceof HTMLImageElement ? [s.naturalWidth, s.naturalHeight] : [s.width, s.height]);
+
+// canvasFor draws src (or its crop box) at w x h through scaleSteps.
+function canvasFor(src: Source, w: number, h: number, fill: boolean, crop?: number[]) {
+  let box = crop ?? [0, 0, ...sizeOf(src)];
+  let from = src;
+  for (const [cw, ch] of scaleSteps(box[2], box[3], w, h)) {
+    const c = document.createElement('canvas');
+    c.width = cw;
+    c.height = ch;
+    const ctx = c.getContext('2d')!;
+    if (fill) {
+      ctx.fillStyle = '#fff';
+      ctx.fillRect(0, 0, cw, ch);
+    }
+    ctx.imageSmoothingQuality = 'high';
+    ctx.drawImage(from, box[0], box[1], box[2], box[3], 0, 0, cw, ch);
+    if (from !== src) (from as HTMLCanvasElement).width = 0; // iOS caps the memory all canvases share
+    from = c;
+    box = [0, 0, cw, ch];
+  }
+  return from as HTMLCanvasElement;
+}
+
+const encode = (c: HTMLCanvasElement, mime: string, quality: number) =>
+  new Promise<Blob>((res, rej) => c.toBlob((b) => (b ? res(b) : rej(new Error('encode'))), mime, quality));
+
+const thumb = (src: Source) => {
+  const [w, h] = sizeOf(src);
+  const s = 24 / Math.max(w, h);
+  return canvasFor(src, Math.max(1, Math.round(w * s)), Math.max(1, Math.round(h * s)), true).toDataURL('image/jpeg', 0.6);
+};
 
 export async function prepareImage(file: File): Promise<Prepared> {
   const url = URL.createObjectURL(file);
@@ -42,12 +83,7 @@ export async function prepareImage(file: File): Promise<Prepared> {
     const w0 = img.naturalWidth;
     const h0 = img.naturalHeight;
     if (!w0 || !h0) throw new Error('image');
-    const ts = 24 / Math.max(w0, h0);
-    const th = canvasFor(img, Math.max(1, Math.round(w0 * ts)), Math.max(1, Math.round(h0 * ts)), true).toDataURL(
-      'image/jpeg',
-      0.6,
-    );
-    if (file.type === 'image/gif') return { blob: file, mime: 'image/gif', w: w0, h: h0, th };
+    if (file.type === 'image/gif') return { blob: file, mime: 'image/gif', w: w0, h: h0, th: thumb(img) };
 
     const s = Math.min(1, MAX_SIDE / Math.max(w0, h0));
     const w = Math.round(w0 * s);
@@ -55,10 +91,13 @@ export async function prepareImage(file: File): Promise<Prepared> {
     const alpha = file.type === 'image/png' || file.type === 'image/webp';
     const mime = canEncodeWebp() ? 'image/webp' : alpha ? 'image/png' : 'image/jpeg';
     const canvas = canvasFor(img, w, h, mime === 'image/jpeg');
-    const blob = await new Promise<Blob>((res, rej) =>
-      canvas.toBlob((b) => (b ? res(b) : rej(new Error('encode'))), mime, 0.85),
-    );
-    return { blob, mime: blob.type || mime, w, h, th };
+    let blob = await encode(canvas, mime, 0.85);
+    const budget = (BUDGET[mime] ?? 0) * w * h;
+    if (blob.size < budget) {
+      const sharper = await encode(canvas, mime, 0.92);
+      if (sharper.size <= budget) blob = sharper;
+    }
+    return { blob, mime: blob.type || mime, w, h, th: thumb(canvas) };
   } finally {
     URL.revokeObjectURL(url);
   }
@@ -138,13 +177,9 @@ async function decoded(blob: Blob): Promise<HTMLImageElement> {
 export async function prepareAvatar(file: Blob): Promise<Uint8Array<ArrayBuffer>> {
   const img = await decoded(file);
   const side = Math.min(img.naturalWidth, img.naturalHeight);
-  const c = document.createElement('canvas');
-  c.width = c.height = 256;
-  const ctx = c.getContext('2d')!;
-  ctx.imageSmoothingQuality = 'high';
-  ctx.drawImage(img, (img.naturalWidth - side) / 2, (img.naturalHeight - side) / 2, side, side, 0, 0, 256, 256);
+  const crop = [(img.naturalWidth - side) / 2, (img.naturalHeight - side) / 2, side, side];
   const mime = canEncodeWebp() ? 'image/webp' : 'image/jpeg';
-  const blob = await new Promise<Blob>((res, rej) => c.toBlob((b) => (b ? res(b) : rej(new Error('encode'))), mime, 0.85));
+  const blob = await encode(canvasFor(img, 256, 256, mime === 'image/jpeg', crop), mime, 0.85);
   return new Uint8Array(await blob.arrayBuffer());
 }
 
