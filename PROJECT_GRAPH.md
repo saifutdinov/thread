@@ -11,6 +11,7 @@ internal/server        the whole backend, one package
   invites.go           bootstrap invite, peek/redeem, chat creation, invite links
   chats.go             chat list, messages, edits, deletes, reactions, read marks, rotation, keys, sync
   devices.go           device list, pending/recovery, approve, revoke
+  recovery.go          recovery links: the inviter vouches, a new password and device
   media.go             encrypted blob upload/download, orphan cleanup
   hub.go               WebSocket fan-out, presence, typing, call signaling relay
   push.go              Web Push (VAPID) with ciphertext payloads, delivery counters
@@ -51,6 +52,7 @@ Dependencies: Go `modernc.org/sqlite` (pure Go, CGO-free static binary), `coder/
 ## Flows
 
 - **Register:** `#/i/<secret>` → `peek` (inviter, chat, encrypted key bundle) → name → `redeem` creates user + active device + membership, returns generated password once → keys from the bundle into IndexedDB.
+- **Recovery link:** the inviter's browser seals the keys of shared chats under a fragment secret (`#/r/<secret>`) → `POST /api/recoveries` (only for someone they invited) → the person opens it signed out → `redeem` (with the bundle keys wrapped for the new device) sets a new password, adds an active device flagged `recovery`, stores its keys for chats shared with the inviter only, flags them for rotation → keys into IndexedDB → partners in other chats approve it as in device recovery; until then `keyHoldersSQL` leaves it out of their rotations.
 - **Login:** password → `argon2id(pepper)` lookup. Known device signs a server nonce. Unknown device becomes `pending` (or `active` if the user has no chats) → own device or chat partner approves by wrapping chat keys for it.
 - **Send:** ensure epoch (rotate if flagged) → upload encrypted images → seal payload + sign → `POST` with client id → server stores, bumps `seq`, fans out over WebSocket, pushes to devices without a socket.
 - **Catch-up:** socket open → `/api/sync?since=<seq>` (messages changed since) → reload chat list and pending approvals.
@@ -65,7 +67,7 @@ Dependencies: Go `modernc.org/sqlite` (pure Go, CGO-free static binary), `coder/
 |---|---|---|---|
 | Idempotent send by client id | `handleSend`, `sendMessage` | Retries on flaky mobile networks must not duplicate messages | Server-side dedup by content: ambiguous for repeated texts |
 | Global change counter (`seq`) + tombstones | `messages.seq`, `/api/sync` | One cursor catches up edits, deletes and reactions after a dropped socket | Per-chat "since id": misses edits and deletes |
-| Lazy key rotation by the next writer | `chats.rotate`, `ensureEpoch` | Set on join, leave and device revoke; whoever writes next has the keys and is online | Server-driven rotation: impossible, the server has no keys |
+| Lazy key rotation by the next writer | `chats.rotate`, `ensureEpoch`, `keyHoldersSQL` | Set on join, leave, device revoke and a week-old key; whoever writes next has the keys and is online. Only key holders may rotate | Server-driven rotation: impossible, the server has no keys |
 | In-process hub | `hub.go` | One small instance; no broker to run | Redis pub/sub: extra service for no present need |
 | Coalesced refetch | `loadChats` | Bursts of `chat` events collapse into few requests | Debounce timer: adds latency to single events |
 | Numbered schema migrations | `store.go` `migrations` | The base schema (version 0) is frozen; changes are appended and applied once via PRAGMA user_version | Editing CREATE TABLE: never reaches an existing database |

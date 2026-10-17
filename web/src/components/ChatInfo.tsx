@@ -5,6 +5,7 @@ import { back } from '../lib/route';
 import {
   type Attachment,
   clearHistory,
+  createRecoveryLink,
   findChat,
   inviteToChat,
   leaveChat,
@@ -30,6 +31,7 @@ export function ChatInfo(props: { id: number }) {
   const [moreMedia, setMoreMedia] = useState(false);
   const [invites, setInvites] = useState<Invite[]>([]);
   const [link, setLink] = useState('');
+  const [rescue, setRescue] = useState<{ name: string; link: string } | null>(null);
   const [busy, setBusy] = useState(false);
   const [codeFor, setCodeFor] = useState<{ id: number; name: string } | null>(null);
 
@@ -57,6 +59,17 @@ export function ChatInfo(props: { id: number }) {
     try {
       setLink(await inviteToChat(c!.id, 1));
       loadInvites();
+    } catch (e) {
+      showToast(errText(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function recover(m: { id: number; name: string }) {
+    setBusy(true);
+    try {
+      setRescue({ name: m.name, link: await createRecoveryLink(m.id) });
     } catch (e) {
       showToast(errText(e));
     } finally {
@@ -95,6 +108,25 @@ export function ChatInfo(props: { id: number }) {
             <Icon name="link" /> {t('info.invite')}
           </button>
         )
+      )}
+
+      {rescue ? (
+        <section class="card">
+          <LinkView
+            link={rescue.link}
+            uses={1}
+            onOpen={() => setRescue(null)}
+            copy={{ title: t('recovery.title'), text: t('recovery.text', { name: rescue.name }), note: t('recovery.note') }}
+          />
+        </section>
+      ) : (
+        c.members
+          .filter((m) => m.invitee)
+          .map((m) => (
+            <button key={m.id} class="row action" disabled={busy} onClick={() => recover(m)}>
+              <Icon name="lock" /> {t('info.recover', { name: m.name })}
+            </button>
+          ))
       )}
 
       {c.kind === 'direct' && c.members.find((m) => m.id !== myId()) && (

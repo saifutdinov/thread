@@ -19,6 +19,8 @@ type member struct {
 	// AvatarEpoch tells the owner when their sealed copy is older than the
 	// chat key (a re-invited direct chat): their client re-seals it.
 	AvatarEpoch int `json:"avatar_epoch,omitempty"`
+	// Invitee: the caller invited this person, so can make them a recovery link.
+	Invitee bool `json:"invitee,omitempty"`
 }
 
 type chat struct {
@@ -156,8 +158,9 @@ func (s *Server) handleChats(w http.ResponseWriter, r *http.Request, a *Auth) {
 	}
 	in, args := placeholders(ids)
 
-	rows, err = s.db.QueryContext(ctx, `SELECT mb.chat_id, u.id, u.name, mb.last_read, u.hide_online, u.last_seen, mb.avatar_v, mb.avatar_epoch
-		FROM members mb JOIN users u ON u.id = mb.user_id WHERE mb.chat_id IN (`+in+`) ORDER BY mb.joined_at`, args...)
+	rows, err = s.db.QueryContext(ctx, `SELECT mb.chat_id, u.id, u.name, mb.last_read, u.hide_online, u.last_seen, mb.avatar_v, mb.avatar_epoch,
+		COALESCE(u.invited_by, 0) = ?
+		FROM members mb JOIN users u ON u.id = mb.user_id WHERE mb.chat_id IN (`+in+`) ORDER BY mb.joined_at`, append([]any{a.UserID}, args...)...)
 	if err != nil {
 		s.internal(w, err)
 		return
@@ -166,7 +169,7 @@ func (s *Server) handleChats(w http.ResponseWriter, r *http.Request, a *Auth) {
 		var chatID int64
 		var m member
 		var hide bool
-		if err := rows.Scan(&chatID, &m.ID, &m.Name, &m.LastRead, &hide, &m.LastSeen, &m.AvatarV, &m.AvatarEpoch); err != nil {
+		if err := rows.Scan(&chatID, &m.ID, &m.Name, &m.LastRead, &hide, &m.LastSeen, &m.AvatarV, &m.AvatarEpoch, &m.Invitee); err != nil {
 			rows.Close()
 			s.internal(w, err)
 			return

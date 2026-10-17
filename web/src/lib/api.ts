@@ -47,6 +47,7 @@ export interface Member {
   last_seen: number;
   avatar_v?: number;
   avatar_epoch?: number;
+  invitee?: boolean; // I invited them, so I can make them a recovery link
 }
 
 // Picture is a sealed avatar or group photo (see profiles.go).
@@ -186,6 +187,10 @@ export const api = {
     call<{ id: string; max_uses: number; uses: number; expires_at: number }[]>('GET', `/chats/${chat}/invites`),
   createInvite: (chat: number, inv: NewInvite) => call('POST', `/chats/${chat}/invites`, inv),
   deleteInvite: (id: string) => call('DELETE', `/invites/${id}`),
+  createRecovery: (p: { user: number; id: string; bundle: string }) => call('POST', '/recoveries', p),
+  peekRecovery: (key: string) => call<{ name: string; by: string; bundle: string }>('POST', '/recoveries/peek', { key }),
+  redeemRecovery: (p: { key: string; device: NewDevice }) =>
+    call<{ password: string; device_id: number }>('POST', '/recoveries/redeem', p),
 
   chats: () => call<RawChat[]>('GET', '/chats'),
   createChat: (p: { kind: 'direct' | 'group'; title?: string; keys: WrappedKey[]; invite: NewInvite }) =>

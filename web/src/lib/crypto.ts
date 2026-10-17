@@ -133,14 +133,14 @@ export async function verify(pubRaw: Bytes, sig: Bytes, data: Bytes): Promise<bo
   }
 }
 
-// Invite links carry a 32-byte secret in the URL fragment. The server only
-// ever sees `auth` (and stores SHA-256 of it as the invite id); `wrap`
-// encrypts the chat-key bundle and never leaves the browser.
-export async function inviteKeys(secret: Bytes) {
+// Invite and recovery links carry a 32-byte secret in the URL fragment. The
+// server only ever sees `auth` (and stores SHA-256 of it as the link id);
+// `wrap` encrypts the chat-key bundle and never leaves the browser.
+export async function inviteKeys(secret: Bytes, kind: 'invite' | 'recovery' = 'invite') {
   const base = await subtle.importKey('raw', secret, 'HKDF', false, ['deriveBits', 'deriveKey']);
   const params = (info: string) => ({ name: 'HKDF', hash: 'SHA-256', salt: new Uint8Array(0), info: utf8(info) });
-  const auth = new Uint8Array(await subtle.deriveBits(params('connect/invite/auth'), base, 256));
-  const wrap = await subtle.deriveKey(params('connect/invite/wrap'), base, { name: 'AES-GCM', length: 256 }, false, [
+  const auth = new Uint8Array(await subtle.deriveBits(params(`connect/${kind}/auth`), base, 256));
+  const wrap = await subtle.deriveKey(params(`connect/${kind}/wrap`), base, { name: 'AES-GCM', length: 256 }, false, [
     'encrypt',
     'decrypt',
   ]);

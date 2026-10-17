@@ -146,6 +146,14 @@ var migrations = []string{
 	`ALTER TABLE chats ADD COLUMN photo BLOB`,
 	`ALTER TABLE chats ADD COLUMN photo_epoch INTEGER NOT NULL DEFAULT 0`,
 	`ALTER TABLE chats ADD COLUMN photo_v INTEGER NOT NULL DEFAULT 0`,
+	`CREATE TABLE recoveries (
+	id         BLOB    PRIMARY KEY,
+	user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+	created_by INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+	bundle     BLOB    NOT NULL,
+	created_at INTEGER NOT NULL,
+	expires_at INTEGER NOT NULL
+)`,
 }
 
 func migrate(db *sql.DB) error {

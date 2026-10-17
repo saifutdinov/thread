@@ -4,14 +4,23 @@ import { back, replace } from '../lib/route';
 import { createChat, showToast } from '../lib/store';
 import { copyText, Icon, Panel, Segmented } from './ui';
 
-export function LinkView(props: { link: string; uses: number; onOpen?: () => void; openLabel?: string }) {
+// LinkView shows a fresh invite link, or any other one-time link when the
+// caller passes its own wording.
+export function LinkView(props: {
+  link: string;
+  uses: number;
+  onOpen?: () => void;
+  openLabel?: string;
+  copy?: { title: string; text: string; note: string };
+}) {
   const [copied, setCopied] = useState(false);
+  const title = props.copy?.title ?? t('link.title');
   return (
     <div class="stack link-view">
-      <h3>{t('link.title')}</h3>
-      <p class="muted">{props.uses === 1 ? t('link.text') : t('link.textGroup')}</p>
-      <input class="link-box" value={props.link} readOnly aria-label={t('link.title')} onFocus={(e) => e.currentTarget.select()} />
-      <small class="muted">{props.uses === 1 ? t('link.once') : t('link.uses', { n: props.uses })}</small>
+      <h3>{title}</h3>
+      <p class="muted">{props.copy?.text ?? (props.uses === 1 ? t('link.text') : t('link.textGroup'))}</p>
+      <input class="link-box" value={props.link} readOnly aria-label={title} onFocus={(e) => e.currentTarget.select()} />
+      <small class="muted">{props.copy?.note ?? (props.uses === 1 ? t('link.once') : t('link.uses', { n: props.uses }))}</small>
       <div class="row-buttons">
         <button class="btn" onClick={async () => setCopied(await copyText(props.link))}>
           <Icon name="copy" /> {copied ? t('common.copied') : t('common.copy')}

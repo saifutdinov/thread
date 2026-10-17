@@ -922,6 +922,66 @@ export async function joinInvite(p: Peeked, name?: string): Promise<number> {
   return r.chat_id;
 }
 
+// ---------- recovery links ----------
+
+// createRecoveryLink: someone I invited forgot their password. The link
+// sets a new one and carries the keys of every chat we share; partners in
+// other chats answer the new device's request for keys themselves.
+export async function createRecoveryLink(userId: number): Promise<string> {
+  const secret = rand(32);
+  const { wrap, id } = await inviteKeys(secret, 'recovery');
+  const c: Record<string, Record<string, string>> = {};
+  for (const chat of chats.value) {
+    if (!chat.members.some((m) => m.id === userId)) continue;
+    const k: Record<string, string> = (c[chat.id] = {});
+    for (const [e, raw] of await heldKeys(chat)) k[e] = toB64u(raw);
+  }
+  const bundle = await seal(wrap, 'recovery', utf8(JSON.stringify({ c })));
+  await api.createRecovery({ user: userId, id: toB64(id), bundle: toB64(bundle) });
+  return `${location.origin}/#/r/${toB64u(secret)}`;
+}
+
+export interface Recovery {
+  auth: string;
+  name: string;
+  by: string;
+  chats: Map<number, Map<number, Bytes>>;
+}
+
+export async function peekRecovery(secret: string): Promise<Recovery> {
+  const { auth, wrap } = await inviteKeys(fromB64(secret), 'recovery');
+  const r = await api.peekRecovery(toB64(auth));
+  const { c } = JSON.parse(fromUtf8(await open(wrap, 'recovery', fromB64(r.bundle))));
+  const chats = new Map<number, Map<number, Bytes>>();
+  for (const id in c) chats.set(Number(id), new Map(Object.entries<string>(c[id]).map(([e, k]) => [Number(e), fromB64(k)])));
+  return { auth: toB64(auth), name: r.name, by: r.by, chats };
+}
+
+export async function redeemRecovery(p: Recovery) {
+  // Only reached signed in from the lost screen: the keys are gone already,
+  // so the old session is worth nothing.
+  if (me.value) {
+    await api.logout().catch(() => {});
+    me.value = null;
+  }
+  await resetDevice();
+  const k = await newDeviceKeys();
+  const r = await api.redeemRecovery({ key: p.auth, device: devicePayload(k) });
+  await persistDevice(r.device_id, k);
+  const self = [{ id: r.device_id, enc_pub: toB64(k.encPub) }];
+  const wrapped: WrappedKey[] = [];
+  for (const [chat, keys] of p.chats) {
+    await storeBundle(chat, keys);
+    wrapped.push(...(await wrapFor(self, chat, keys)));
+  }
+  // Tells the server this device holds them, so partners in these chats are
+  // not asked again. On failure they are asked: harmless, so not fatal.
+  if (wrapped.length) await api.shareKeys(wrapped).catch(() => {});
+  newPassword.value = r.password;
+  replace('');
+  screen.value = 'password';
+}
+
 export async function leaveChat(chatId: number) {
   await api.leaveChat(chatId);
   replace('');

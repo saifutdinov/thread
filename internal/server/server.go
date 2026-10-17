@@ -110,6 +110,9 @@ func (s *Server) Handler() http.Handler {
 
 	mux.HandleFunc("POST /api/invites/peek", s.handlePeek)
 	mux.HandleFunc("POST /api/invites/redeem", s.handleRedeem)
+	mux.HandleFunc("POST /api/recoveries", s.active(s.handleCreateRecovery))
+	mux.HandleFunc("POST /api/recoveries/peek", s.handlePeekRecovery)
+	mux.HandleFunc("POST /api/recoveries/redeem", s.handleRedeemRecovery)
 	mux.HandleFunc("DELETE /api/invites/{id}", s.active(s.handleDeleteInvite))
 
 	mux.HandleFunc("GET /api/chats", s.active(s.handleChats))
@@ -218,6 +221,7 @@ func (s *Server) cleanup(ctx context.Context) {
 	for _, q := range []string{
 		`DELETE FROM invites WHERE expires_at < ?`,
 		`DELETE FROM sessions WHERE expires_at < ?`,
+		`DELETE FROM recoveries WHERE expires_at < ?`,
 	} {
 		if _, err := s.db.ExecContext(ctx, q, n); err != nil {
 			s.log.Error("cleanup", "err", err)

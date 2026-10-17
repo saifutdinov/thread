@@ -1,5 +1,5 @@
 import { render } from 'preact';
-import { InviteScreen, LoginScreen, LostScreen, PasswordScreen, PendingScreen } from './components/Auth';
+import { InviteScreen, LoginScreen, LostScreen, PasswordScreen, PendingScreen, RecoverScreen } from './components/Auth';
 import { Main } from './components/Main';
 import { LockScreen } from './components/Security';
 import { initLock, locked } from './lib/lock';
@@ -10,6 +10,7 @@ import { screen, start } from './lib/store';
 import './styles.css';
 
 function App() {
+  if (route.value.name === 'recover' && screen.value !== 'loading' && screen.value !== 'password') return <RecoverScreen />;
   switch (screen.value) {
     case 'loading':
       return <div class="splash" aria-busy="true" />;

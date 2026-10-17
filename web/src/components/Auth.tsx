@@ -16,6 +16,9 @@ import {
   newPassword,
   type Peeked,
   peekInvite,
+  peekRecovery,
+  type Recovery,
+  redeemRecovery,
   resetDevice,
   screen,
   start,
@@ -112,16 +115,17 @@ export function LoginForm(props: { onDone?: () => void }) {
   );
 }
 
-// PasteInvite lets an installed app (which has no URL bar) open an invite.
+// PasteInvite lets an installed app (which has no URL bar) open an invite
+// or a recovery link.
 function PasteInvite() {
   const [value, setValue] = useState('');
   const [error, setError] = useState(false);
   const open = (e: Event) => {
     e.preventDefault();
-    const m = value.match(/#\/i\/([A-Za-z0-9_-]{20,})/);
+    const m = value.match(/#\/([ir])\/([A-Za-z0-9_-]{20,})/);
     if (!m) return setError(true);
-    replace(`i/${m[1]}`);
-    screen.value = 'invite';
+    replace(`${m[1]}/${m[2]}`);
+    if (m[1] === 'i') screen.value = 'invite';
   };
   return (
     <details class="paste-invite">
@@ -160,6 +164,7 @@ export function LoginScreen() {
       <LoginForm />
       <PasteInvite />
       <p class="muted small">{t('login.hint')}</p>
+      <p class="muted small">{t('login.forgot')}</p>
     </Card>
   );
 }
@@ -293,7 +298,10 @@ export function InviteScreen() {
           </div>
         )
       ) : haveAccount ? (
-        <LoginForm />
+        <>
+          <LoginForm />
+          <p class="muted small">{t('login.forgot')}</p>
+        </>
       ) : (
         <form class="stack" onSubmit={join}>
           <label class="field">
@@ -325,6 +333,90 @@ export function InviteScreen() {
             </button>
           )}
         </form>
+      )}
+    </Card>
+  );
+}
+
+// RecoverScreen opens a recovery link: a new password for the account and
+// the keys of the chats shared with the person who made the link.
+export function RecoverScreen() {
+  const secret = route.value.secret ?? '';
+  // Signed in with working keys: nothing to recover here. On the lost
+  // screen the keys are gone, so the link may replace that session.
+  const signedIn = !!me.value && screen.value !== 'lost';
+  const [rec, setRec] = useState<Recovery | null>(null);
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [inSafari, setInSafari] = useState(false);
+
+  useEffect(() => {
+    if (!signedIn) peekRecovery(secret).then(setRec, (e) => setError(errText(e)));
+  }, [secret, signedIn]);
+
+  async function redeem() {
+    if (!rec || busy) return;
+    setBusy(true);
+    setError('');
+    try {
+      await redeemRecovery(rec);
+    } catch (err) {
+      setError(errText(err));
+      setBusy(false);
+    }
+  }
+
+  const leave = () => replace('');
+  const errorLine = error && (
+    <p class="error" role="alert">
+      {error}
+    </p>
+  );
+
+  if (signedIn)
+    return (
+      <Card>
+        <h1>{t('recover.title')}</h1>
+        <p>{t('recover.signedIn')}</p>
+        <button class="btn" onClick={leave}>
+          {t('common.back')}
+        </button>
+      </Card>
+    );
+  if (!rec)
+    return (
+      <Card>
+        <h1>{t('recover.title')}</h1>
+        {error ? (
+          <>
+            {errorLine}
+            <button class="btn" onClick={leave}>
+              {t('common.back')}
+            </button>
+          </>
+        ) : (
+          <p class="muted" role="status">
+            {t('recover.loading')}
+          </p>
+        )}
+      </Card>
+    );
+  return (
+    <Card>
+      <h1>{t('recover.heading', { name: rec.name })}</h1>
+      <p>{t('recover.text', { by: rec.by })}</p>
+      {isIOS && !standalone.value && !inSafari ? (
+        <IOSInstallFirst onContinue={() => setInSafari(true)} />
+      ) : (
+        <div class="stack">
+          {errorLine}
+          <button class="btn" disabled={busy} onClick={redeem}>
+            {t('recover.action')}
+          </button>
+          <button class="btn secondary" onClick={leave}>
+            {t('common.cancel')}
+          </button>
+        </div>
       )}
     </Card>
   );

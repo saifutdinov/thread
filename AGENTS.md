@@ -13,7 +13,7 @@ Read before changing anything:
 
 - The server must never receive plaintext: message text, reactions, group titles, avatars, group photos, call signaling, file contents and file keys are encrypted in the browser. New content fields go inside the encrypted payload, not into new plaintext columns.
 - Device private keys stay `extractable: false`. Never add code that exports them.
-- AAD strings (`m:`, `r:`, `t:`, `k:`, `f`, `invite`, `call:`, `a:`, `p:`), HKDF info strings and signature prefixes are frozen. They keep the project's earlier name (`connect/wrap/v1`, `connect/invite/*`, `connect-login:`) on purpose: they are protocol labels, not branding. `web/public/sw.js` duplicates the message AAD and the IndexedDB layout from `web/src/lib/idb.ts`: change both together.
+- AAD strings (`m:`, `r:`, `t:`, `k:`, `f`, `invite`, `recovery`, `call:`, `a:`, `p:`), HKDF info strings and signature prefixes are frozen. They keep the project's earlier name (`connect/wrap/v1`, `connect/invite/*`, `connect/recovery/*`, `connect-login:`) on purpose: they are protocol labels, not branding. `web/public/sw.js` duplicates the message AAD and the IndexedDB layout from `web/src/lib/idb.ts`: change both together.
 - Schema changes are appended to `migrations` in `internal/server/store.go`; the base schema is frozen.
 - Server responses use stable error codes (`{"error": "code"}`); the client translates them via `err.<code>` in `web/src/lib/i18n.ts`. Every UI string exists in both `ru` and `en`.
 - Accessibility is a requirement: labels on icon buttons, native `<dialog>` for modals, 44px touch targets, sizes in `rem`, no information by color alone.

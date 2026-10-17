@@ -20,7 +20,8 @@ Only the latest release gets security fixes. Self-hosted instances update with `
 - **Metadata.** The server sees names, who is in which chat, message times and sizes, who called whom and for how long, IP addresses, and, if a user turns on link previews, the links they send. Push services (Apple, Google, Mozilla) see when a notification goes to which device, not its content. In a direct call the two people see each other's IP addresses.
 - **Past messages after a key leak.** There is no forward secrecy within a key period. Chat keys rotate weekly and whenever someone joins or leaves or a device is removed.
 - **A compromised device.** Whoever controls an unlocked device can read what that device can read. The optional app lock (PIN, Face ID, fingerprint) is a privacy screen, not encryption.
-- **A deceived chat partner.** Recovery through a contact relies on that person really checking the code with you.
+- **A deceived chat partner.** Recovery through a contact relies on that person really checking the code with you: a deceived partner lets someone who has your password into the chats you share with them.
+- **The person who invited you.** They can make a recovery link for your account and open it themselves. That gives them a new password and the chats you share with them, which they could read anyway. Your other chats stay closed to that device until the people in them approve it after comparing a code, but from it they can sign out your other devices and change the password: they can take the account away from you, not your other conversations. You notice it from the new-device notification and from your old password no longer working. This is deliberate: in a family, forgotten passwords are far more common than a hostile inviter.
 
 ## The protocol
 
