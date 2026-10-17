@@ -1,0 +1,10 @@
+# HTTPS for the chat. Caddy gets and renews the Let's Encrypt certificate
+# for DOMAIN on its own (ports 80 and 443 must be reachable). WebSockets
+# pass through reverse_proxy as is; the app sets its own security headers.
+{$DOMAIN} {
+	encode zstd gzip
+	reverse_proxy app:8080 {
+		# The app rate-limits sign-in by client address.
+		header_up X-Real-IP {remote_host}
+	}
+}

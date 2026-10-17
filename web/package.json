@@ -1,0 +1,25 @@
+{
+  "name": "thread-web",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "check": "tsc --noEmit",
+    "test": "node --experimental-strip-types --no-warnings --test src/lib/*.test.ts"
+  },
+  "dependencies": {
+    "@preact/signals": "2.11.3",
+    "preact": "11.0.1",
+    "unicode-emoji-json": "0.9.0"
+  },
+  "devDependencies": {
+    "@preact/preset-vite": "2.10.6",
+    "typescript": "7.0.2",
+    "vite": "8.3.4"
+  },
+  "engines": {
+    "node": "22.15.0"
+  },
+  "packageManager": "npm@11.6.2"
+}

@@ -1,0 +1,31 @@
+Thread (Нитка)
+Copyright (C) 2026 Thread contributors
+
+This program is free software: you can redistribute it and/or modify it
+under the terms of the GNU Affero General Public License, version 3, as
+published by the Free Software Foundation. See LICENSE.
+
+Third-party material
+--------------------
+
+internal/server/words.txt
+  A subset of the EFF Long Wordlist by the Electronic Frontier Foundation,
+  https://www.eff.org/dice, licensed under CC BY 3.0 US,
+  https://creativecommons.org/licenses/by/3.0/us/. Some words were removed.
+
+Libraries built into the server (Go):
+  modernc.org/sqlite (BSD-3-Clause), github.com/coder/websocket (ISC),
+  filippo.io/age (BSD-3-Clause), github.com/SherClockHolmes/webpush-go (MIT),
+  golang.org/x/crypto and golang.org/x/time (BSD-3-Clause).
+
+Libraries built into the web app:
+  preact and @preact/signals (MIT), unicode-emoji-json (MIT).
+
+The libraries above pull in further modules under BSD-3-Clause, MIT and
+ISC terms; the complete lists are go.sum and web/package-lock.json.
+
+Run alongside, as separate containers, under their own licenses:
+  Caddy (Apache-2.0), coturn (BSD-3-Clause).
+
+Full license texts ship with each dependency (Go module cache,
+web/node_modules) and in their upstream repositories.

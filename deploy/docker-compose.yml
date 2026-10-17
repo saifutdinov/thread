@@ -1,0 +1,111 @@
+# Thread (Нитка): the whole server on one machine. scripts/install.sh writes
+# ../.env and starts this file; scripts/README.md explains every step.
+#
+#   app    the chat (Go + SQLite), built from this repository
+#   caddy  HTTPS with an automatic Let's Encrypt certificate for DOMAIN
+#   turn   coturn, relays calls when two devices cannot reach each other
+#
+# Data lives in the named volumes below; the secrets in ../.env.
+
+name: thread
+
+services:
+  app:
+    build: ..
+    image: thread:local
+    restart: unless-stopped
+    environment:
+      BASE_URL: https://${DOMAIN:?set DOMAIN in .env}
+      TRUST_PROXY: "1"
+      # Losing or changing it makes every password stop working.
+      PASSWORD_PEPPER: ${PASSWORD_PEPPER:?set PASSWORD_PEPPER in .env}
+      VAPID_SUBJECT: ${VAPID_SUBJECT:-}
+      TURN_SECRET: ${TURN_SECRET:?set TURN_SECRET in .env}
+      TURN_URLS: turn:${DOMAIN}:3478?transport=udp,turn:${DOMAIN}:3478?transport=tcp
+      # Optional, see README: Prometheus metrics and encrypted backups.
+      METRICS_ADDR: ${METRICS_ADDR:-}
+      BACKUP_RECIPIENT: ${BACKUP_RECIPIENT:-}
+      BACKUP_KEEP: ${BACKUP_KEEP:-7}
+      BACKUP_S3_ENDPOINT: ${BACKUP_S3_ENDPOINT:-}
+      BACKUP_S3_REGION: ${BACKUP_S3_REGION:-}
+      BACKUP_S3_BUCKET: ${BACKUP_S3_BUCKET:-}
+      BACKUP_S3_ACCESS_KEY: ${BACKUP_S3_ACCESS_KEY:-}
+      BACKUP_S3_SECRET_KEY: ${BACKUP_S3_SECRET_KEY:-}
+    volumes:
+      - data:/data
+    healthcheck:
+      test: ["CMD", "/app/thread", "healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  caddy:
+    image: caddy:2.11.7@sha256:685ae3d7c34d9b5f8caeddc5d14051db7bbd88ff1f5a2fa0c16bd8ca328fb7af
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp" # HTTP/3
+    environment:
+      DOMAIN: ${DOMAIN}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      app:
+        condition: service_healthy
+
+  # Host networking: the relay needs the real public address and a UDP port
+  # range. Credentials are short-lived HMACs issued by the app, never stored.
+  # Private and reserved ranges and the host's own public IP are refused as
+  # peers, so the relay cannot reach the host or its networks (local traffic
+  # skips the firewall). UDP relay only: WebRTC needs no TCP relay.
+  turn:
+    image: coturn/coturn:4.7.0@sha256:a00afb5b4890de4df22bbe70379c6b316685dffee297d53cac1271dcb91fab93
+    restart: unless-stopped
+    network_mode: host
+    command:
+      - --log-file=stdout
+      - --listening-port=3478
+      - --min-port=49160
+      - --max-port=49200
+      - --realm=${DOMAIN}
+      - --use-auth-secret
+      - --static-auth-secret=${TURN_SECRET}
+      # Relay over this one IPv4 only: no IPv6 path back to the host itself.
+      # On clouds with 1:1 NAT it is the interface's private address and
+      # PUBLIC_IP is what clients are told. Not the "public/private" form of
+      # --external-ip: that one whitelists the private address as a peer,
+      # which would let the relay reach the host again.
+      - --relay-ip=${RELAY_IP:-${PUBLIC_IP}}
+      - --external-ip=${PUBLIC_IP:?set PUBLIC_IP in .env}
+      - --no-tls
+      - --no-dtls
+      - --no-cli
+      - --fingerprint
+      - --no-multicast-peers
+      - --no-tcp-relay
+      - --user-quota=10
+      - --denied-peer-ip=${PUBLIC_IP}
+      - --denied-peer-ip=${RELAY_IP:-${PUBLIC_IP}}
+      - --denied-peer-ip=0.0.0.0-0.255.255.255
+      - --denied-peer-ip=10.0.0.0-10.255.255.255
+      - --denied-peer-ip=100.64.0.0-100.127.255.255
+      - --denied-peer-ip=127.0.0.0-127.255.255.255
+      - --denied-peer-ip=169.254.0.0-169.254.255.255
+      - --denied-peer-ip=172.16.0.0-172.31.255.255
+      - --denied-peer-ip=192.0.0.0-192.0.0.255
+      - --denied-peer-ip=192.168.0.0-192.168.255.255
+      - --denied-peer-ip=198.18.0.0-198.19.255.255
+      - --denied-peer-ip=240.0.0.0-255.255.255.255
+      - --denied-peer-ip=::-1fff:ffff:ffff:ffff:ffff:ffff:ffff:ffff
+      - --denied-peer-ip=2001::-2001:0:ffff:ffff:ffff:ffff:ffff:ffff
+      - --denied-peer-ip=2002::-2002:ffff:ffff:ffff:ffff:ffff:ffff:ffff
+      - --denied-peer-ip=fc00::-fdff:ffff:ffff:ffff:ffff:ffff:ffff:ffff
+      - --denied-peer-ip=fe80::-febf:ffff:ffff:ffff:ffff:ffff:ffff:ffff
+
+volumes:
+  data:
+  caddy_data:
+  caddy_config:
