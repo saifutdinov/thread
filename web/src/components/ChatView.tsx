@@ -90,7 +90,8 @@ export function ChatView(props: { id: number }) {
   // default), search, a menu, the emoji panel or a dialog.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key !== 'Escape' || e.defaultPrevented || document.querySelector('dialog[open], .menu-layer, .emoji-picker')) return;
+      if (e.key !== 'Escape' || e.defaultPrevented || e.isComposing) return;
+      if (document.querySelector('dialog[open], .menu-layer, .emoji-picker')) return;
       replace(route.value.name === 'info' ? `c/${props.id}` : '');
     };
     document.addEventListener('keydown', onKey);

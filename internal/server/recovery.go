@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"net/http"
+	"slices"
 	"time"
 )
 
@@ -12,8 +13,13 @@ import (
 // the way it makes an invite: the secret stays in the URL fragment, the
 // server keeps the SHA-256 of the auth key derived from it, plus the keys
 // of the chats the two share, sealed with a key only the link can derive.
-// Redeeming sets a new password and adds an active device that may ask
-// chat partners for the keys of the other chats (the recovery flag).
+// Redeeming sets a new password and adds an active device that holds the
+// keys of the shared chats and may ask the other partners for theirs (the
+// recovery flag: see keyHoldersSQL for what it keeps out).
+
+// sharedChatsSQL selects the chats two users are both members of.
+const sharedChatsSQL = `SELECT m1.chat_id FROM members m1 JOIN members m2 ON m2.chat_id = m1.chat_id
+	WHERE m1.user_id = ? AND m2.user_id = ?`
 
 const recoveryTTL = 24 * time.Hour
 
@@ -35,11 +41,12 @@ func (s *Server) handleCreateRecovery(w http.ResponseWriter, r *http.Request, a 
 	ctx := r.Context()
 	expires := now() + recoveryTTL.Milliseconds()
 	err := inTx(ctx, s.db, func(tx *sql.Tx) error {
-		// Only the one who invited this person can vouch for them; anyone
-		// else gets the same answer as for a user that does not exist.
+		// Only the one who invited this person, while they still share a
+		// chat, can vouch for them; anyone else gets the same answer as for
+		// a user that does not exist.
 		var by sql.NullInt64
-		if err := tx.QueryRowContext(ctx, `SELECT invited_by FROM users WHERE id = ?`, req.User).Scan(&by); err != nil ||
-			!by.Valid || by.Int64 != a.UserID {
+		if err := tx.QueryRowContext(ctx, `SELECT invited_by FROM users WHERE id = ? AND EXISTS (`+sharedChatsSQL+`)`,
+			req.User, req.User, a.UserID).Scan(&by); err != nil || !by.Valid || by.Int64 != a.UserID {
 			return errNotMember
 		}
 		// One live link per person: a new one replaces the old.
@@ -89,6 +96,9 @@ func (s *Server) handleRedeemRecovery(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Key    []byte     `json:"key"`
 		Device *devicePub `json:"device"`
+		// Keys from the link's bundle, wrapped by the browser for this new
+		// device (its id is not known yet).
+		Keys []wrappedKey `json:"keys"`
 	}
 	if !readJSON(w, r, &req) {
 		return
@@ -108,6 +118,12 @@ func (s *Server) handleRedeemRecovery(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx := r.Context()
+	id := sha(req.Key)
+	var one int
+	if err := s.db.QueryRowContext(ctx, `SELECT 1 FROM recoveries WHERE id = ? AND expires_at > ?`, id, now()).Scan(&one); err != nil {
+		fail(w, http.StatusNotFound, "invite_invalid") // before argon2: an unknown link costs nothing
+		return
+	}
 	// Hash outside the transaction: argon2 is slow and SQLite has one writer.
 	password := newPassword()
 	lookup, err := s.lookupKey(ctx, password)
@@ -115,8 +131,8 @@ func (s *Server) handleRedeemRecovery(w http.ResponseWriter, r *http.Request) {
 		s.internal(w, err)
 		return
 	}
-	id := sha(req.Key)
 	var userID, creator, deviceID int64
+	stored := []int64{}
 	err = inTx(ctx, s.db, func(tx *sql.Tx) error {
 		err := tx.QueryRowContext(ctx, `SELECT user_id, created_by FROM recoveries WHERE id = ? AND expires_at > ?`, id, now()).
 			Scan(&userID, &creator)
@@ -138,12 +154,32 @@ func (s *Server) handleRedeemRecovery(w http.ResponseWriter, r *http.Request) {
 		if _, err := tx.ExecContext(ctx, `UPDATE devices SET recovery = 1 WHERE id = ?`, deviceID); err != nil {
 			return err
 		}
-		// The bundle may predate a rotation: chats shared with the inviter
-		// re-key at their next message, this device included.
-		if _, err := tx.ExecContext(ctx, `UPDATE chats SET rotate = 1 WHERE id IN (
-			SELECT m1.chat_id FROM members m1 JOIN members m2 ON m2.chat_id = m1.chat_id
-			WHERE m1.user_id = ? AND m2.user_id = ?)`, userID, creator); err != nil {
+		// Keys count only for chats the inviter shares with this person:
+		// the inviter cannot plant keys for chats they are not in.
+		shared, err := queryIDs(ctx, tx, sharedChatsSQL, userID, creator)
+		if err != nil {
 			return err
+		}
+		for _, k := range req.Keys {
+			var epoch int
+			if !slices.Contains(shared, k.Chat) || len(k.Wrapped) != wrappedSize ||
+				tx.QueryRowContext(ctx, `SELECT epoch FROM chats WHERE id = ?`, k.Chat).Scan(&epoch) != nil || k.Epoch < 1 || k.Epoch > epoch {
+				continue
+			}
+			if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO chat_keys (chat_id, epoch, device_id, wrapped) VALUES (?, ?, ?, ?)`,
+				k.Chat, k.Epoch, deviceID, k.Wrapped); err != nil {
+				return err
+			}
+			if !slices.Contains(stored, k.Chat) {
+				stored = append(stored, k.Chat)
+			}
+		}
+		// The bundle may predate a rotation: shared chats re-key at their
+		// next message, this device included.
+		for _, chat := range shared {
+			if _, err := tx.ExecContext(ctx, `UPDATE chats SET rotate = 1 WHERE id = ?`, chat); err != nil {
+				return err
+			}
 		}
 		return s.startSession(ctx, w, tx, deviceID)
 	})
@@ -158,8 +194,8 @@ func (s *Server) handleRedeemRecovery(w http.ResponseWriter, r *http.Request) {
 	// about the sign-in; people who verified the safety code re-check it.
 	if ids, err := contactIDs(ctx, s.db, userID); err == nil {
 		s.hub.toUsers(ids, event{"t": "device"})
-		s.hub.toUsers(ids, event{"t": "peer", "u": userID})
+		s.hub.toUsers(without(ids, userID), event{"t": "peer", "u": userID})
 	}
 	s.push.notifyDevices(ctx, userID, deviceID, map[string]any{"t": "device", "label": req.Device.Label})
-	writeJSON(w, http.StatusOK, map[string]any{"password": password, "device_id": deviceID, "user_id": userID})
+	writeJSON(w, http.StatusOK, map[string]any{"password": password, "device_id": deviceID, "user_id": userID, "chats": stored})
 }

@@ -21,6 +21,10 @@ type member struct {
 	AvatarEpoch int `json:"avatar_epoch,omitempty"`
 	// Invitee: the caller invited this person, so can make them a recovery link.
 	Invitee bool `json:"invitee,omitempty"`
+	// Since: the first key epoch this person holds (0 = from the start).
+	// Their devices get no older keys: a direct chat re-used for someone
+	// new keeps the earlier conversation from them.
+	Since int `json:"since,omitempty"`
 }
 
 type chat struct {
@@ -159,7 +163,7 @@ func (s *Server) handleChats(w http.ResponseWriter, r *http.Request, a *Auth) {
 	in, args := placeholders(ids)
 
 	rows, err = s.db.QueryContext(ctx, `SELECT mb.chat_id, u.id, u.name, mb.last_read, u.hide_online, u.last_seen, mb.avatar_v, mb.avatar_epoch,
-		COALESCE(u.invited_by, 0) = ?
+		COALESCE(u.invited_by, 0) = ?, mb.since_epoch
 		FROM members mb JOIN users u ON u.id = mb.user_id WHERE mb.chat_id IN (`+in+`) ORDER BY mb.joined_at`, append([]any{a.UserID}, args...)...)
 	if err != nil {
 		s.internal(w, err)
@@ -169,7 +173,7 @@ func (s *Server) handleChats(w http.ResponseWriter, r *http.Request, a *Auth) {
 		var chatID int64
 		var m member
 		var hide bool
-		if err := rows.Scan(&chatID, &m.ID, &m.Name, &m.LastRead, &hide, &m.LastSeen, &m.AvatarV, &m.AvatarEpoch, &m.Invitee); err != nil {
+		if err := rows.Scan(&chatID, &m.ID, &m.Name, &m.LastRead, &hide, &m.LastSeen, &m.AvatarV, &m.AvatarEpoch, &m.Invitee, &m.Since); err != nil {
 			rows.Close()
 			s.internal(w, err)
 			return
@@ -781,8 +785,7 @@ func (s *Server) handleChatDevices(w http.ResponseWriter, r *http.Request, a *Au
 		fail(w, http.StatusNotFound, "not_found")
 		return
 	}
-	rows, err := s.db.QueryContext(r.Context(), `SELECT d.id, d.user_id, d.enc_pub, d.sig_pub FROM devices d
-		JOIN members m ON m.user_id = d.user_id WHERE m.chat_id = ? AND d.status = 'active'`, chatID)
+	rows, err := s.db.QueryContext(r.Context(), keyHoldersSQL, chatID)
 	if err != nil {
 		s.internal(w, err)
 		return
@@ -831,6 +834,10 @@ func (s *Server) handleShareKeys(w http.ResponseWriter, r *http.Request, a *Auth
 		return
 	}
 	err := inTx(r.Context(), s.db, func(tx *sql.Tx) error {
+		var selfRecovery bool
+		if err := tx.QueryRowContext(r.Context(), `SELECT recovery FROM devices WHERE id = ?`, a.DeviceID).Scan(&selfRecovery); err != nil {
+			return err
+		}
 		for _, k := range req.Keys {
 			var epoch int
 			if err := tx.QueryRowContext(r.Context(), `SELECT epoch FROM chats WHERE id = ?`, k.Chat).Scan(&epoch); err != nil {
@@ -838,12 +845,19 @@ func (s *Server) handleShareKeys(w http.ResponseWriter, r *http.Request, a *Auth
 			}
 			var owner int64
 			var status string
-			if err := tx.QueryRowContext(r.Context(), `SELECT user_id, status FROM devices WHERE id = ?`, k.Device).Scan(&owner, &status); err != nil {
+			var recovery bool
+			if err := tx.QueryRowContext(r.Context(), `SELECT user_id, status, recovery FROM devices WHERE id = ?`, k.Device).
+				Scan(&owner, &status, &recovery); err != nil {
 				return errBadRequest
 			}
 			if owner != a.UserID || status != "active" || k.Epoch < 1 || k.Epoch > epoch || len(k.Wrapped) != wrappedSize ||
 				!isMember(r.Context(), tx, k.Chat, a.UserID) {
 				return errBadRequest
+			}
+			// A recovery device only adds keys where its target is already in
+			// (older epochs): a first key in a chat would let it in by itself.
+			if selfRecovery && recovery && !hasChatKey(r.Context(), tx, k.Chat, k.Device) {
+				continue
 			}
 			if _, err := tx.ExecContext(r.Context(), `INSERT OR IGNORE INTO chat_keys (chat_id, epoch, device_id, wrapped) VALUES (?, ?, ?, ?)`,
 				k.Chat, k.Epoch, k.Device, k.Wrapped); err != nil {

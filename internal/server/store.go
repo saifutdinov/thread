@@ -154,6 +154,7 @@ var migrations = []string{
 	created_at INTEGER NOT NULL,
 	expires_at INTEGER NOT NULL
 )`,
+	`ALTER TABLE members ADD COLUMN since_epoch INTEGER NOT NULL DEFAULT 0`,
 }
 
 func migrate(db *sql.DB) error {
@@ -259,12 +260,20 @@ func chatUserIDs(ctx context.Context, db *sql.DB, chatID int64) ([]int64, error)
 }
 
 // contactIDs lists users sharing at least one chat with userID, plus userID.
+func hasChatKey(ctx context.Context, tx *sql.Tx, chatID, deviceID int64) bool {
+	var one int
+	err := tx.QueryRowContext(ctx, `SELECT 1 FROM chat_keys WHERE chat_id = ? AND device_id = ? LIMIT 1`, chatID, deviceID).Scan(&one)
+	return err == nil
+}
+
 func contactIDs(ctx context.Context, db *sql.DB, userID int64) ([]int64, error) {
 	return queryIDs(ctx, db, `SELECT DISTINCT m2.user_id FROM members m1
 		JOIN members m2 ON m2.chat_id = m1.chat_id WHERE m1.user_id = ?`, userID)
 }
 
-func queryIDs(ctx context.Context, db *sql.DB, q string, args ...any) ([]int64, error) {
+func queryIDs(ctx context.Context, db interface {
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+}, q string, args ...any) ([]int64, error) {
 	rows, err := db.QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, err

@@ -103,8 +103,9 @@ function QualityBadge(props: { q: Quality }) {
 }
 
 // CallScreen covers the app while a call rings or runs, or shrinks to a
-// strip when minimized. Sound always plays through an <audio> element that
-// stays mounted either way; remote <video> elements are muted (no echo).
+// strip when minimized. Sound plays through one <audio> element, first in
+// both layouts so it stays mounted across them; remote <video> elements are
+// muted (no echo).
 export function CallScreen() {
   const c = call.value;
   const dialog = useRef<HTMLDialogElement>(null);
@@ -152,11 +153,12 @@ export function CallScreen() {
             : fmtDuration(Date.now() - (c.since ?? Date.now()));
 
   const expand = () => (minimized.value = false);
+  const audio = <audio ref={audioRef} autoPlay />;
 
   if (mini)
     return (
       <>
-        <audio ref={audioRef} autoPlay />
+        {audio}
         <div class="call-bar" role="region" aria-label={t('call.ongoing', { name })}>
           <button type="button" class="call-bar-main" onClick={expand} aria-label={t('call.expand')}>
             <Icon name={c.video ? 'videocam' : 'phone'} size={18} />
@@ -175,59 +177,61 @@ export function CallScreen() {
     );
 
   return (
-    <dialog
-      ref={dialog}
-      class={'call-screen' + (theirVideo ? ' has-video' : '')}
-      aria-label={name}
-      onCancel={(e) => e.preventDefault() /* Escape must not end a call */}
-    >
-      <audio ref={audioRef} autoPlay />
-      {c.phase !== 'incoming' && (
-        <IconButton icon="down" label={t('call.minimize')} class="call-minimize" onClick={() => (minimized.value = true)} />
-      )}
-      {theirVideo && <video ref={attach(c.remote)} class="call-remote" autoPlay playsInline muted />}
-      {c.video && c.local && !c.camOff && <video ref={attach(c.local)} class="call-local" autoPlay playsInline muted />}
-      {c.phase === 'active' && c.q && <QualityBadge q={c.q} />}
-      <div class="call-who">
-        {!theirVideo && <Avatar id={c.peer} name={name} size={120} src={chat && chatPicture(chat)} />}
-        <h2>{name}</h2>
-        <p>{status}</p>
-        {c.phase === 'active' && c.peerMuted && (
-          <p class="call-note">
-            <Icon name="micOff" size={16} /> {t('call.peerMuted')}
+    <>
+      {audio}
+      <dialog
+        ref={dialog}
+        class={'call-screen' + (theirVideo ? ' has-video' : '')}
+        aria-label={name}
+        onCancel={(e) => e.preventDefault() /* Escape must not end a call */}
+      >
+        {c.phase !== 'incoming' && (
+          <IconButton icon="down" label={t('call.minimize')} class="call-minimize" onClick={() => (minimized.value = true)} />
+        )}
+        {theirVideo && <video ref={attach(c.remote)} class="call-remote" autoPlay playsInline muted />}
+        {c.video && c.local && !c.camOff && <video ref={attach(c.local)} class="call-local" autoPlay playsInline muted />}
+        {c.phase === 'active' && c.q && <QualityBadge q={c.q} />}
+        <div class="call-who">
+          {!theirVideo && <Avatar id={c.peer} name={name} size={120} src={chat && chatPicture(chat)} />}
+          <h2>{name}</h2>
+          <p>{status}</p>
+          {c.phase === 'active' && c.peerMuted && (
+            <p class="call-note">
+              <Icon name="micOff" size={16} /> {t('call.peerMuted')}
+            </p>
+          )}
+          {/* Announces phase changes only, not every tick of the timer. */}
+          <p class="sr-only" aria-live="polite">
+            {c.phase === 'active' ? (c.reconnecting ? t('call.reconnecting') : t('call.connected')) : status}
           </p>
-        )}
-        {/* Announces phase changes only, not every tick of the timer. */}
-        <p class="sr-only" aria-live="polite">
-          {c.phase === 'active' ? (c.reconnecting ? t('call.reconnecting') : t('call.connected')) : status}
-        </p>
-      </div>
-      <div class="call-controls">
-        {c.phase === 'incoming' ? (
-          <>
-            <Btn icon="callEnd" label={t('call.decline')} tone="red" onClick={decline} />
-            <Btn icon="phone" label={t('call.accept')} tone="green" onClick={() => accept(false)} />
-            {c.video && <Btn icon="videocam" label={t('call.acceptVideo')} tone="green" onClick={() => accept(true)} />}
-          </>
-        ) : (
-          <>
-            <Btn icon={c.muted ? 'micOff' : 'mic'} label={c.muted ? t('call.unmute') : t('call.mute')} tone={c.muted ? 'on' : undefined} onClick={toggleMute} />
-            {(c.canVideo ?? c.video) && (
-              <Btn
-                icon={c.camOff ? 'videocamOff' : 'videocam'}
-                label={c.camOff ? t('call.camOn') : t('call.camOff')}
-                tone={c.camOff ? 'on' : undefined}
-                onClick={toggleCamera}
-              />
-            )}
-            {c.video && !c.camOff && cameras().length > 1 && <Btn icon="flip" label={t('call.switch')} onClick={switchCamera} />}
-            {canPickAudio && <Btn icon="volume" label={t('call.sound')} onClick={() => setPicker(true)} />}
-            <Btn icon="callEnd" label={t('call.hangup')} tone="red" onClick={() => hangup()} />
-          </>
-        )}
-      </div>
-      {picker && <AudioPicker onClose={() => setPicker(false)} />}
-    </dialog>
+        </div>
+        <div class="call-controls">
+          {c.phase === 'incoming' ? (
+            <>
+              <Btn icon="callEnd" label={t('call.decline')} tone="red" onClick={decline} />
+              <Btn icon="phone" label={t('call.accept')} tone="green" onClick={() => accept(false)} />
+              {c.video && <Btn icon="videocam" label={t('call.acceptVideo')} tone="green" onClick={() => accept(true)} />}
+            </>
+          ) : (
+            <>
+              <Btn icon={c.muted ? 'micOff' : 'mic'} label={c.muted ? t('call.unmute') : t('call.mute')} tone={c.muted ? 'on' : undefined} onClick={toggleMute} />
+              {(c.canVideo ?? c.video) && (
+                <Btn
+                  icon={c.camOff ? 'videocamOff' : 'videocam'}
+                  label={c.camOff ? t('call.camOn') : t('call.camOff')}
+                  tone={c.camOff ? 'on' : undefined}
+                  onClick={toggleCamera}
+                />
+              )}
+              {c.video && !c.camOff && cameras().length > 1 && <Btn icon="flip" label={t('call.switch')} onClick={switchCamera} />}
+              {canPickAudio && <Btn icon="volume" label={t('call.sound')} onClick={() => setPicker(true)} />}
+              <Btn icon="callEnd" label={t('call.hangup')} tone="red" onClick={() => hangup()} />
+            </>
+          )}
+        </div>
+        {picker && <AudioPicker onClose={() => setPicker(false)} />}
+      </dialog>
+    </>
   );
 }
 

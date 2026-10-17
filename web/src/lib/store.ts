@@ -341,9 +341,10 @@ async function wrapFor(devs: { id: number; enc_pub: string }[], chat: number, ke
   return out;
 }
 
-async function heldKeys(chat: Chat): Promise<Map<number, Bytes>> {
+// heldKeys: the chat keys this device has, from epoch `from` on.
+async function heldKeys(chat: Chat, from = 1): Promise<Map<number, Bytes>> {
   const keys = new Map<number, Bytes>();
-  for (let e = 1; e <= chat.epoch; e++) {
+  for (let e = Math.max(1, from); e <= chat.epoch; e++) {
     const raw = await rawKey(chat.id, e);
     if (raw) keys.set(e, raw);
   }
@@ -934,7 +935,7 @@ export async function createRecoveryLink(userId: number): Promise<string> {
   for (const chat of chats.value) {
     if (!chat.members.some((m) => m.id === userId)) continue;
     const k: Record<string, string> = (c[chat.id] = {});
-    for (const [e, raw] of await heldKeys(chat)) k[e] = toB64u(raw);
+    for (const [e, raw] of await keysFor(chat, userId)) k[e] = toB64u(raw);
   }
   const bundle = await seal(wrap, 'recovery', utf8(JSON.stringify({ c })));
   await api.createRecovery({ user: userId, id: toB64(id), bundle: toB64(bundle) });
@@ -964,19 +965,20 @@ export async function redeemRecovery(p: Recovery) {
     await api.logout().catch(() => {});
     me.value = null;
   }
-  await resetDevice();
   const k = await newDeviceKeys();
-  const r = await api.redeemRecovery({ key: p.auth, device: devicePayload(k) });
+  // The server keeps copies for this device, so partners in these chats
+  // are not asked for them; it accepts only chats shared with the inviter.
+  const keys: Omit<WrappedKey, 'device'>[] = [];
+  for (const [chat, ks] of p.chats)
+    for (const [epoch, raw] of ks) keys.push({ chat, epoch, wrapped: toB64(await wrapKey(raw, k.encPub, epoch)) });
+  const r = await api.redeemRecovery({ key: p.auth, device: devicePayload(k), keys });
+  // Whatever this browser held stays until the link has worked.
+  await resetDevice();
   await persistDevice(r.device_id, k);
-  const self = [{ id: r.device_id, enc_pub: toB64(k.encPub) }];
-  const wrapped: WrappedKey[] = [];
-  for (const [chat, keys] of p.chats) {
-    await storeBundle(chat, keys);
-    wrapped.push(...(await wrapFor(self, chat, keys)));
+  for (const chat of r.chats) {
+    const ks = p.chats.get(chat);
+    if (ks) await storeBundle(chat, ks);
   }
-  // Tells the server this device holds them, so partners in these chats are
-  // not asked again. On failure they are asked: harmless, so not fatal.
-  if (wrapped.length) await api.shareKeys(wrapped).catch(() => {});
   newPassword.value = r.password;
   replace('');
   screen.value = 'password';
@@ -999,13 +1001,20 @@ export async function loadPending() {
   pending.value = await api.pending().catch(() => pending.value);
 }
 
+// keysFor: the keys of chat c that `user` may hold. A direct chat re-used
+// for someone new keeps the earlier conversation from them.
+async function keysFor(c: Chat, user: number) {
+  const since = c.kind === 'direct' ? (c.members.find((m) => m.id === user)?.since ?? 0) : 0;
+  return heldKeys(c, since);
+}
+
 // approveDevice hands a waiting device the keys: every chat for my own
 // device, only shared chats for a partner's.
 export async function approveDevice(p: PendingDevice) {
   const keys: WrappedKey[] = [];
   for (const c of chats.value) {
     if (!p.own && !c.members.some((m) => m.id === p.user)) continue;
-    keys.push(...(await wrapFor([{ id: p.id, enc_pub: p.enc_pub }], c.id, await heldKeys(c))));
+    keys.push(...(await wrapFor([{ id: p.id, enc_pub: p.enc_pub }], c.id, p.own ? await heldKeys(c) : await keysFor(c, p.user))));
   }
   await api.approve(p.id, keys);
   await loadPending();

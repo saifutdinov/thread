@@ -132,7 +132,10 @@ func (s *Server) handleApprove(w http.ResponseWriter, r *http.Request, a *Auth) 
 	var owner int64
 	err := inTx(r.Context(), s.db, func(tx *sql.Tx) error {
 		var status string
-		var recovery bool
+		var recovery, approverRecovery bool
+		if err := tx.QueryRowContext(r.Context(), `SELECT recovery FROM devices WHERE id = ?`, a.DeviceID).Scan(&approverRecovery); err != nil {
+			return err
+		}
 		if err := tx.QueryRowContext(r.Context(), `SELECT user_id, status, recovery FROM devices WHERE id = ?`, deviceID).
 			Scan(&owner, &status, &recovery); err != nil {
 			return err
@@ -171,12 +174,14 @@ func (s *Server) handleApprove(w http.ResponseWriter, r *http.Request, a *Auth) 
 				}
 			}
 		}
-		// Approved by its owner: fully trusted, the recovery request is moot.
-		q := `UPDATE devices SET status = 'active' WHERE id = ?`
+		// Approved by its owner: as trusted as the approving device. A
+		// recovery device passes its limits on, or it could vouch for a
+		// device that then joins every chat.
 		if own {
-			q = `UPDATE devices SET status = 'active', recovery = 0 WHERE id = ?`
+			_, err := tx.ExecContext(r.Context(), `UPDATE devices SET status = 'active', recovery = ? WHERE id = ?`, approverRecovery, deviceID)
+			return err
 		}
-		_, err := tx.ExecContext(r.Context(), q, deviceID)
+		_, err := tx.ExecContext(r.Context(), `UPDATE devices SET status = 'active' WHERE id = ?`, deviceID)
 		return err
 	})
 	if s.writeErr(w, err) {

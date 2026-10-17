@@ -192,8 +192,8 @@ func (s *Server) handleRedeem(w http.ResponseWriter, r *http.Request) {
 			if err := checkSeats(r.Context(), tx, chatID); err != nil {
 				return err
 			}
-			if _, err := tx.ExecContext(r.Context(), `INSERT INTO members (chat_id, user_id, joined_at) VALUES (?, ?, ?)`,
-				chatID, userID, now()); err != nil {
+			if _, err := tx.ExecContext(r.Context(), `INSERT INTO members (chat_id, user_id, joined_at, since_epoch)
+				VALUES (?, ?, ?, (SELECT epoch FROM chats WHERE id = ?))`, chatID, userID, now(), chatID); err != nil {
 				return err
 			}
 			// The bundle was sealed when the link was made; a rotation since
@@ -334,9 +334,18 @@ var errDevices = errors.New("device set mismatch")
 
 // storeEpochKeys requires one wrapped key per active device of every member:
 // nobody is silently left unable to read, nobody extra gets the key.
+// keyHoldersSQL selects the devices (id, user_id, enc_pub, sig_pub) a new
+// key of chat ? is wrapped for: every active device of every member, except
+// a recovery device (let in by a link or a partner) in a chat its user was
+// in before it appeared, until someone hands it that chat's key. Otherwise
+// the next rotation, weekly at the latest, would let it into every chat of
+// the account. It cannot hand itself keys (handleShareKeys).
+const keyHoldersSQL = `SELECT d.id, d.user_id, d.enc_pub, d.sig_pub FROM devices d JOIN members m ON m.user_id = d.user_id
+	WHERE m.chat_id = ? AND d.status = 'active' AND NOT (d.recovery = 1 AND m.joined_at < d.created_at
+		AND NOT EXISTS (SELECT 1 FROM chat_keys k WHERE k.chat_id = m.chat_id AND k.device_id = d.id))`
+
 func (s *Server) storeEpochKeys(ctx context.Context, tx *sql.Tx, chatID int64, epoch int, keys []wrappedKey) error {
-	rows, err := tx.QueryContext(ctx, `SELECT d.id FROM devices d JOIN members m ON m.user_id = d.user_id
-		WHERE m.chat_id = ? AND d.status = 'active'`, chatID)
+	rows, err := tx.QueryContext(ctx, `SELECT id FROM (`+keyHoldersSQL+`)`, chatID)
 	if err != nil {
 		return err
 	}

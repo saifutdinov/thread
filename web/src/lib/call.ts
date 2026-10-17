@@ -246,7 +246,12 @@ async function connect(local: MediaStream): Promise<RTCPeerConnection> {
     if (peerDevice) sendIce(c).catch(() => {});
     else outIce.push(c);
   };
-  p.ontrack = (ev) => update({ remote: ev.streams[0] ?? new MediaStream([ev.track]) });
+  // One remote stream for the whole call: a voice call's video slot comes
+  // without a stream and must not replace the one that carries the sound.
+  p.ontrack = (ev) => {
+    const tracks = call.value?.remote?.getTracks() ?? [];
+    if (!tracks.includes(ev.track)) update({ remote: new MediaStream([...tracks, ev.track]) });
+  };
   p.onconnectionstatechange = () => {
     const v = call.value;
     if (!v || pc !== p) return;
@@ -503,8 +508,10 @@ export async function toggleCamera() {
   try {
     if (v.camOff) {
       await useCamera();
+      if (pc) void senders(pc); // the new track gets the video caps
       if (!v.video) {
         update({ video: true }); // a voice call turns into a video call
+        audioSession('auto'); // loudspeaker, as in a video call
         void keepAwake();
       }
     } else {

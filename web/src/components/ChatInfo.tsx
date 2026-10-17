@@ -42,6 +42,8 @@ export function ChatInfo(props: { id: number }) {
       setMoreMedia(list.length === 50);
     }, () => {});
     loadInvites();
+    setLink('');
+    setRescue(null);
   }, [props.id]);
 
   if (!c) return null;
