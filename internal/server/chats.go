@@ -759,6 +759,9 @@ func (s *Server) handleRotate(w http.ResponseWriter, r *http.Request, a *Auth) {
 		if !isMember(r.Context(), tx, chatID, a.UserID) {
 			return errNotMember
 		}
+		if !isKeyHolder(r.Context(), tx, chatID, a.DeviceID) {
+			return errForbidden
+		}
 		var epoch int
 		if err := tx.QueryRowContext(r.Context(), `SELECT epoch FROM chats WHERE id = ?`, chatID).Scan(&epoch); err != nil {
 			return err
@@ -779,14 +782,20 @@ func (s *Server) handleRotate(w http.ResponseWriter, r *http.Request, a *Auth) {
 	writeJSON(w, http.StatusOK, map[string]any{})
 }
 
-// handleChatDevices lists the encryption keys a rotation must wrap for.
+// handleChatDevices lists the encryption keys a rotation must wrap for,
+// or with ?all=1 every active device of the members (safety codes).
 func (s *Server) handleChatDevices(w http.ResponseWriter, r *http.Request, a *Auth) {
 	chatID, _ := pathID(r)
 	if !isMember(r.Context(), s.db, chatID, a.UserID) {
 		fail(w, http.StatusNotFound, "not_found")
 		return
 	}
-	rows, err := s.db.QueryContext(r.Context(), keyHoldersSQL, chatID)
+	q := keyHoldersSQL
+	if r.URL.Query().Get("all") == "1" {
+		q = `SELECT d.id, d.user_id, d.enc_pub, d.sig_pub FROM devices d JOIN members m ON m.user_id = d.user_id
+			WHERE m.chat_id = ? AND d.status = 'active'`
+	}
+	rows, err := s.db.QueryContext(r.Context(), q, chatID)
 	if err != nil {
 		s.internal(w, err)
 		return
@@ -835,10 +844,6 @@ func (s *Server) handleShareKeys(w http.ResponseWriter, r *http.Request, a *Auth
 		return
 	}
 	err := inTx(r.Context(), s.db, func(tx *sql.Tx) error {
-		var selfRecovery bool
-		if err := tx.QueryRowContext(r.Context(), `SELECT recovery FROM devices WHERE id = ?`, a.DeviceID).Scan(&selfRecovery); err != nil {
-			return err
-		}
 		for _, k := range req.Keys {
 			var epoch int
 			if err := tx.QueryRowContext(r.Context(), `SELECT epoch FROM chats WHERE id = ?`, k.Chat).Scan(&epoch); err != nil {
@@ -846,19 +851,15 @@ func (s *Server) handleShareKeys(w http.ResponseWriter, r *http.Request, a *Auth
 			}
 			var owner int64
 			var status string
-			var recovery bool
-			if err := tx.QueryRowContext(r.Context(), `SELECT user_id, status, recovery FROM devices WHERE id = ?`, k.Device).
-				Scan(&owner, &status, &recovery); err != nil {
+			if err := tx.QueryRowContext(r.Context(), `SELECT user_id, status FROM devices WHERE id = ?`, k.Device).Scan(&owner, &status); err != nil {
 				return errBadRequest
 			}
 			if owner != a.UserID || status != "active" || k.Epoch < 1 || k.Epoch > epoch || len(k.Wrapped) != wrappedSize ||
 				!isMember(r.Context(), tx, k.Chat, a.UserID) {
 				return errBadRequest
 			}
-			// A recovery device only adds keys where its target is already in
-			// (older epochs): a first key in a chat would let it in by itself.
-			if selfRecovery && recovery && !hasChatKey(r.Context(), tx, k.Chat, k.Device) {
-				continue
+			if !isKeyHolder(r.Context(), tx, k.Chat, a.DeviceID) {
+				return errForbidden
 			}
 			if _, err := tx.ExecContext(r.Context(), `INSERT OR IGNORE INTO chat_keys (chat_id, epoch, device_id, wrapped) VALUES (?, ?, ?, ?)`,
 				k.Chat, k.Epoch, k.Device, k.Wrapped); err != nil {

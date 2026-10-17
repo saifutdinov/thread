@@ -1034,7 +1034,7 @@ export type Trust = 'none' | 'ok' | 'changed';
 // safetyFor computes the code two people compare, and whether the other
 // person's devices still match what was verified last time.
 export async function safetyFor(chatId: number, userId: number): Promise<{ code: Code; fp: string; trust: Trust }> {
-  const devs = await api.chatDevices(chatId);
+  const devs = await api.chatDevices(chatId, true);
   const mine = await fingerprint(devs.filter((d) => d.user === myId()));
   const theirs = await fingerprint(devs.filter((d) => d.user === userId));
   const fp = toHex(theirs);

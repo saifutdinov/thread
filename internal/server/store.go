@@ -260,12 +260,6 @@ func chatUserIDs(ctx context.Context, db *sql.DB, chatID int64) ([]int64, error)
 }
 
 // contactIDs lists users sharing at least one chat with userID, plus userID.
-func hasChatKey(ctx context.Context, tx *sql.Tx, chatID, deviceID int64) bool {
-	var one int
-	err := tx.QueryRowContext(ctx, `SELECT 1 FROM chat_keys WHERE chat_id = ? AND device_id = ? LIMIT 1`, chatID, deviceID).Scan(&one)
-	return err == nil
-}
-
 func contactIDs(ctx context.Context, db *sql.DB, userID int64) ([]int64, error) {
 	return queryIDs(ctx, db, `SELECT DISTINCT m2.user_id FROM members m1
 		JOIN members m2 ON m2.chat_id = m1.chat_id WHERE m1.user_id = ?`, userID)

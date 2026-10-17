@@ -194,20 +194,45 @@ func TestRecoveryDeviceStaysOutOfOtherChats(t *testing.T) {
 		{"device": c.id, "wrapped": wrapped()}, {"device": b.id, "wrapped": wrapped()},
 	}}, nil)
 
-	// A key of its own making does not let it in.
-	fresh.do("POST", "/api/keys", map[string]any{"keys": []map[string]any{{"chat": bc, "epoch": 2, "device": dev, "wrapped": wrapped()}}}, nil)
+	// It cannot rotate the chat to a key of its own choosing.
+	if code := fresh.rotate(bc, 3, c.id, b.id); code != 403 {
+		t.Fatalf("rotation by a device left out: %d", code)
+	}
+	// A key of its own making does not let it in, nor plants one on B's
+	// trusted device.
+	for _, target := range []int64{dev, b.id} {
+		if code := fresh.do("POST", "/api/keys", map[string]any{"keys": []map[string]any{
+			{"chat": bc, "epoch": 2, "device": target, "wrapped": wrapped()},
+		}}, nil); code != 403 {
+			t.Fatalf("keys for a chat it is not in, for device %d: %d", target, code)
+		}
+	}
 	if keyHolders(c, bc)[dev] {
 		t.Fatal("let itself in")
 	}
-	// Nor does a device it approves, which stays a recovery device.
+	// Nor does a device it approves: it stays a recovery device and gets no
+	// keys the approver does not hold.
 	other := e.newUser()
 	var login struct {
 		DeviceID int64 `json:"device_id"`
 	}
 	other.must(200, "POST", "/api/auth/login", map[string]any{"password": got.Password, "device": other.dev.pub()}, &login)
+	if code := fresh.do("POST", fmt.Sprintf("/api/devices/%d/approve", login.DeviceID), map[string]any{"keys": []map[string]any{
+		{"chat": bc, "epoch": 2, "device": login.DeviceID, "wrapped": wrapped()},
+	}}, nil); code != 403 {
+		t.Fatalf("approval with keys it does not hold: %d", code)
+	}
 	fresh.must(200, "POST", fmt.Sprintf("/api/devices/%d/approve", login.DeviceID), map[string]any{"keys": []any{}}, nil)
 	if keyHolders(c, bc)[login.DeviceID] {
 		t.Fatal("a device it approved got in")
+	}
+	// Safety codes still count every device of the person.
+	var all []struct {
+		ID int64 `json:"id"`
+	}
+	c.must(200, "GET", fmt.Sprintf("/api/chats/%d/devices?all=1", bc), nil, &all)
+	if len(all) != 4 { // C, B's old device, the recovered one and the one it approved
+		t.Fatalf("all devices = %+v", all)
 	}
 
 	// C sees the request and answers it: from then on it is in.

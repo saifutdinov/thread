@@ -332,18 +332,24 @@ func (s *Server) handleCreateChat(w http.ResponseWriter, r *http.Request, a *Aut
 
 var errDevices = errors.New("device set mismatch")
 
-// storeEpochKeys requires one wrapped key per active device of every member:
-// nobody is silently left unable to read, nobody extra gets the key.
 // keyHoldersSQL selects the devices (id, user_id, enc_pub, sig_pub) a new
 // key of chat ? is wrapped for: every active device of every member, except
 // a recovery device (let in by a link or a partner) in a chat its user was
 // in before it appeared, until someone hands it that chat's key. Otherwise
 // the next rotation, weekly at the latest, would let it into every chat of
-// the account. It cannot hand itself keys (handleShareKeys).
+// the account. Only a key holder may rotate a chat or hand out its keys
+// (isKeyHolder), so a device left out cannot let itself or others in.
 const keyHoldersSQL = `SELECT d.id, d.user_id, d.enc_pub, d.sig_pub FROM devices d JOIN members m ON m.user_id = d.user_id
 	WHERE m.chat_id = ? AND d.status = 'active' AND NOT (d.recovery = 1 AND m.joined_at < d.created_at
 		AND NOT EXISTS (SELECT 1 FROM chat_keys k WHERE k.chat_id = m.chat_id AND k.device_id = d.id))`
 
+func isKeyHolder(ctx context.Context, tx *sql.Tx, chatID, deviceID int64) bool {
+	var one int
+	return tx.QueryRowContext(ctx, `SELECT 1 FROM (`+keyHoldersSQL+`) WHERE id = ?`, chatID, deviceID).Scan(&one) == nil
+}
+
+// storeEpochKeys requires one wrapped key per key holder of the chat:
+// nobody is silently left unable to read, nobody extra gets the key.
 func (s *Server) storeEpochKeys(ctx context.Context, tx *sql.Tx, chatID int64, epoch int, keys []wrappedKey) error {
 	rows, err := tx.QueryContext(ctx, `SELECT id FROM (`+keyHoldersSQL+`)`, chatID)
 	if err != nil {

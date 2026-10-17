@@ -160,6 +160,9 @@ func (s *Server) handleApprove(w http.ResponseWriter, r *http.Request, a *Auth) 
 				!isMember(r.Context(), tx, k.Chat, a.UserID) || !isMember(r.Context(), tx, k.Chat, owner) {
 				return errBadRequest
 			}
+			if !isKeyHolder(r.Context(), tx, k.Chat, a.DeviceID) {
+				return errForbidden // keys only from a device that holds them
+			}
 			if _, err := tx.ExecContext(r.Context(), `INSERT OR IGNORE INTO chat_keys (chat_id, epoch, device_id, wrapped) VALUES (?, ?, ?, ?)`,
 				k.Chat, k.Epoch, deviceID, k.Wrapped); err != nil {
 				return err

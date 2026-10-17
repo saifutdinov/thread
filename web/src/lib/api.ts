@@ -212,7 +212,8 @@ export const api = {
   setPhoto: (chat: number, epoch: number, body: string | null) => call('PUT', `/chats/${chat}/photo`, { epoch, body }),
   preview: (url: string) => call<LinkPreview>('POST', '/preview', { url }),
   copyMedia: (id: string, chat: number) => call<{ id: string }>('POST', `/media/${id}/copy`, { chat }),
-  chatDevices: (chat: number) => call<DevicePub[]>('GET', `/chats/${chat}/devices`),
+  // all: every device of the members (safety codes), not only those a new key is wrapped for
+  chatDevices: (chat: number, all = false) => call<DevicePub[]>('GET', `/chats/${chat}/devices${all ? '?all=1' : ''}`),
   edit: (id: number, p: Sealed) => call<RawMessage>('PATCH', `/messages/${id}`, p),
   deleteMessage: (id: number) => call<RawMessage>('DELETE', `/messages/${id}`),
   react: (id: number, p: { epoch: number; body: string }) => call<RawMessage>('PUT', `/messages/${id}/reaction`, p),
