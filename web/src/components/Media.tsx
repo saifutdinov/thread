@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'preact/hooks';
 import { errText, t } from '../lib/i18n';
+import { cameras, refreshDevices } from '../lib/devices';
 import { fmtDuration, fmtSize, openStream, type Recording, startRecording, VIDEO_MAX_MS } from '../lib/recorder';
 import { type Attachment, mediaUrl, type Outgoing, showToast } from '../lib/store';
 import { Icon, IconButton, Modal } from './ui';
@@ -245,6 +246,7 @@ export function CircleRecorder(props: { onSend: (o: Outgoing) => void; onClose: 
       (st) => {
         s = st;
         setStream(st);
+        void refreshDevices(); // a second camera shows up only after the permission
         if (preview.current) preview.current.srcObject = st;
       },
       (e) => {
@@ -337,16 +339,20 @@ export function CircleRecorder(props: { onSend: (o: Outgoing) => void; onClose: 
             <span />
           </button>
         )}
-        <IconButton
-          icon="flip"
-          label={t('rec.switch')}
-          disabled={!!rec}
-          onClick={() => {
-            stream?.getTracks().forEach((tr) => tr.stop());
-            setStream(null);
-            setFacing(facing === 'user' ? 'environment' : 'user');
-          }}
-        />
+        {cameras().length > 1 ? (
+          <IconButton
+            icon="flip"
+            label={t('rec.switch')}
+            disabled={!!rec}
+            onClick={() => {
+              stream?.getTracks().forEach((tr) => tr.stop());
+              setStream(null);
+              setFacing(facing === 'user' ? 'environment' : 'user');
+            }}
+          />
+        ) : (
+          <span class="btn-spacer" aria-hidden="true" /> // keeps the record button centred
+        )}
       </div>
     </Modal>
   );

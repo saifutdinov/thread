@@ -1,9 +1,71 @@
 import { useEffect, useRef, useState } from 'preact/hooks';
-import { accept, call, decline, hangup, type Quality, switchCamera, toggleCamera, toggleMute } from '../lib/call';
+import {
+  accept,
+  call,
+  decline,
+  hangup,
+  type Quality,
+  selectMic,
+  selectSpeaker,
+  speaker,
+  switchCamera,
+  toggleCamera,
+  toggleMute,
+} from '../lib/call';
+import { cameras, canPickOutput, deviceName, microphones, speakers } from '../lib/devices';
 import { t } from '../lib/i18n';
 import { fmtDuration } from '../lib/recorder';
 import { type CallLog, chatPicture, findChat } from '../lib/store';
-import { Avatar, Icon, type IconName } from './ui';
+import { Avatar, Icon, type IconName, Modal } from './ui';
+
+// attach sets a stream on a media element whenever the element appears:
+// the self view is a new element each time the camera comes back on.
+const attach = (s?: MediaStream) => (el: HTMLMediaElement | null) => {
+  if (el && el.srcObject !== (s ?? null)) el.srcObject = s ?? null;
+};
+
+// AudioPicker: which microphone and which speakers the call uses. On
+// Android the "microphones" include the earpiece and the speakerphone.
+function AudioPicker(props: { onClose: () => void }) {
+  const mic = call.value?.local?.getAudioTracks()[0]?.getSettings().deviceId;
+  const ins = microphones();
+  const outs = speakers();
+  return (
+    <Modal label={t('call.audio.title')} onClose={props.onClose} class="device-picker">
+      <h2>{t('call.audio.title')}</h2>
+      {ins.length > 1 && (
+        <fieldset>
+          <legend>{t('call.audio.mic')}</legend>
+          {ins.map((d, i) => (
+            <label key={d.deviceId} class="row">
+              <input type="radio" name="mic" checked={d.deviceId === mic} onChange={() => void selectMic(d.deviceId)} />
+              <span>{deviceName(d, i)}</span>
+            </label>
+          ))}
+        </fieldset>
+      )}
+      {outs.length > 1 && (
+        <fieldset>
+          <legend>{t('call.audio.out')}</legend>
+          {outs.map((d, i) => (
+            <label key={d.deviceId} class="row">
+              <input
+                type="radio"
+                name="speaker"
+                checked={d.deviceId === (speaker.value || 'default')}
+                onChange={() => selectSpeaker(d.deviceId)}
+              />
+              <span>{deviceName(d, i)}</span>
+            </label>
+          ))}
+        </fieldset>
+      )}
+      <button type="button" class="btn secondary" onClick={props.onClose}>
+        {t('common.done')}
+      </button>
+    </Modal>
+  );
+}
 
 function Btn(props: { icon: IconName; label: string; onClick: () => void; tone?: 'red' | 'green' | 'on' }) {
   return (
@@ -39,22 +101,13 @@ function QualityBadge(props: { q: Quality }) {
 // through an <audio> element; the remote <video> is muted to avoid echo.
 export function CallScreen() {
   const c = call.value;
-  const remoteVideo = useRef<HTMLVideoElement>(null);
-  const remoteAudio = useRef<HTMLAudioElement>(null);
-  const localVideo = useRef<HTMLVideoElement>(null);
   const dialog = useRef<HTMLDialogElement>(null);
   const [, tick] = useState(0);
+  const [picker, setPicker] = useState(false);
   useEffect(() => {
     const i = setInterval(() => tick((n) => n + 1), 1000);
     return () => clearInterval(i);
   }, []);
-  useEffect(() => {
-    if (remoteVideo.current) remoteVideo.current.srcObject = c?.remote ?? null;
-    if (remoteAudio.current) remoteAudio.current.srcObject = c?.remote ?? null;
-  }, [c?.remote]);
-  useEffect(() => {
-    if (localVideo.current) localVideo.current.srcObject = c?.local ?? null;
-  }, [c?.local]);
   // A modal <dialog>: focus moves in and the app behind turns inert.
   useEffect(() => {
     const d = dialog.current;
@@ -64,7 +117,15 @@ export function CallScreen() {
 
   const chat = findChat(c.chat);
   const name = chat?.members.find((m) => m.id === c.peer)?.name ?? '';
-  const theirVideo = c.video && !!c.remote?.getVideoTracks().length;
+  // Their camera off (they say so over the data channel): show the avatar,
+  // not a frozen or black picture.
+  const theirVideo = c.video && !c.peerCamOff && !!c.remote?.getVideoTracks().length;
+  const sink = speaker.value;
+  const audioRef = (el: HTMLAudioElement | null) => {
+    attach(c.remote)(el);
+    if (el && canPickOutput && el.sinkId !== sink) el.setSinkId(sink).catch(() => {});
+  };
+  const canPickAudio = microphones().length > 1 || speakers().length > 1;
   const status =
     c.phase === 'outgoing'
       ? t('call.calling')
@@ -85,14 +146,19 @@ export function CallScreen() {
       aria-label={name}
       onCancel={(e) => e.preventDefault() /* Escape must not end a call */}
     >
-      <audio ref={remoteAudio} autoPlay />
-      {theirVideo && <video ref={remoteVideo} class="call-remote" autoPlay playsInline muted />}
-      {c.video && c.local && !c.camOff && <video ref={localVideo} class="call-local" autoPlay playsInline muted />}
+      <audio ref={audioRef} autoPlay />
+      {theirVideo && <video ref={attach(c.remote)} class="call-remote" autoPlay playsInline muted />}
+      {c.video && c.local && !c.camOff && <video ref={attach(c.local)} class="call-local" autoPlay playsInline muted />}
       {c.phase === 'active' && c.q && <QualityBadge q={c.q} />}
       <div class="call-who">
         {!theirVideo && <Avatar id={c.peer} name={name} size={120} src={chat && chatPicture(chat)} />}
         <h2>{name}</h2>
         <p>{status}</p>
+        {c.phase === 'active' && c.peerMuted && (
+          <p class="call-note">
+            <Icon name="micOff" size={16} /> {t('call.peerMuted')}
+          </p>
+        )}
         {/* Announces phase changes only, not every tick of the timer. */}
         <p class="sr-only" aria-live="polite">
           {c.phase === 'active' ? (c.reconnecting ? t('call.reconnecting') : t('call.connected')) : status}
@@ -116,11 +182,13 @@ export function CallScreen() {
                 onClick={toggleCamera}
               />
             )}
-            {c.video && !c.camOff && <Btn icon="flip" label={t('call.switch')} onClick={switchCamera} />}
+            {c.video && !c.camOff && cameras().length > 1 && <Btn icon="flip" label={t('call.switch')} onClick={switchCamera} />}
+            {canPickAudio && <Btn icon="volume" label={t('call.sound')} onClick={() => setPicker(true)} />}
             <Btn icon="callEnd" label={t('call.hangup')} tone="red" onClick={() => hangup()} />
           </>
         )}
       </div>
+      {picker && <AudioPicker onClose={() => setPicker(false)} />}
     </dialog>
   );
 }

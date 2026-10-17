@@ -1,6 +1,7 @@
 import { signal } from '@preact/signals';
 import { api } from './api';
 import { rand, toB64u } from './crypto';
+import { refreshDevices, remember, remembered } from './devices';
 import { errText, t } from './i18n';
 import { type Level, preferCodecs, rate, tuneOpus, videoOrder } from './rtc';
 import {
@@ -48,6 +49,8 @@ export interface CallView {
   since?: number;
   reconnecting?: boolean;
   q?: Quality;
+  peerCamOff?: boolean; // told over the call's own data channel
+  peerMuted?: boolean;
   local?: MediaStream;
   remote?: MediaStream;
 }
@@ -71,6 +74,7 @@ let retryTimer: ReturnType<typeof setTimeout> | undefined;
 let statsTimer: ReturnType<typeof setInterval> | undefined;
 let stopTone: (() => void) | null = null;
 let wake: WakeLockSentinel | null = null;
+let state: RTCDataChannel | null = null; // camera and microphone state, device to device
 const ended = new Set<string>(); // calls that ended before they rang here
 const device = videoOrder(navigator.userAgent);
 
@@ -119,13 +123,38 @@ const CAMERA = (facingMode: 'user' | 'environment'): MediaTrackConstraints => ({
   frameRate: { ideal: 30, max: 30 },
 });
 
+const MIC: MediaTrackConstraints = { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1, sampleRate: 48000 };
+
+// The speaker chosen in the call's sound menu; '' is the system default.
+export const speaker = signal(remembered('callSpeaker'));
+
 async function media(video: boolean): Promise<MediaStream> {
+  const mic = remembered('callMic');
   const s = await navigator.mediaDevices.getUserMedia({
-    audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1, sampleRate: 48000 },
+    audio: mic ? { ...MIC, deviceId: { ideal: mic } } : MIC,
     video: video ? CAMERA('user') : false,
   });
   hint(s);
+  void refreshDevices(); // labels and the full list appear after the permission
   return s;
+}
+
+// iOS 17+: declaring a call before the microphone opens is the only way a
+// page can steer the route. A voice call asks for the phone-call session
+// (earpiece, like a phone call); video calls keep the default (loudspeaker).
+type WithAudioSession = Navigator & { audioSession?: { type: string } };
+function audioSession(type: 'play-and-record' | 'auto') {
+  const s = (navigator as WithAudioSession).audioSession;
+  if (s) s.type = type;
+}
+
+const senderOf = (kind: 'audio' | 'video') => pc?.getTransceivers().find((tr) => tr.receiver.track.kind === kind)?.sender;
+
+// sendState tells the other side whether our camera and microphone are on,
+// so it shows our avatar instead of a black picture.
+function sendState() {
+  const v = call.value;
+  if (v && state?.readyState === 'open') state.send(JSON.stringify({ camOff: v.camOff, muted: v.muted }));
 }
 
 // Hints tell the encoder what matters: smooth motion for a face (drop
@@ -198,6 +227,18 @@ async function connect(local: MediaStream): Promise<RTCPeerConnection> {
   // caller's reused mDNS host name), seen in Chrome 152.
   const p = new RTCPeerConnection({ iceServers, bundlePolicy: 'max-bundle' });
   local.getTracks().forEach((tr) => p.addTrack(tr, local));
+  // Negotiated on both sides with the same id: no signaling, and it rides
+  // the call's DTLS transport, so it is end-to-end encrypted like the media.
+  state = p.createDataChannel('state', { negotiated: true, id: 0 });
+  state.onopen = sendState;
+  state.onmessage = (ev) => {
+    try {
+      const m = JSON.parse(String(ev.data));
+      update({ peerCamOff: m.camOff === true, peerMuted: m.muted === true });
+    } catch {
+      /* not ours to read */
+    }
+  };
   p.onicecandidate = (ev) => {
     if (!ev.candidate) return;
     const c = ev.candidate.toJSON();
@@ -329,6 +370,7 @@ export async function startCall(chatId: number, peer: number, video: boolean) {
   socketHold.call = true;
   call.value = { id, chat: chatId, peer, video, phase: 'outgoing', muted: false, camOff: !video };
   void keepAwake();
+  if (!video) audioSession('play-and-record');
   try {
     const local = await media(video);
     update({ local });
@@ -352,11 +394,17 @@ export async function accept(withVideo: boolean) {
   peerDevice = offer.dev;
   update({ phase: 'connecting', camOff: !video });
   void keepAwake();
+  if (!video) audioSession('play-and-record');
   try {
     const local = await media(video);
     update({ local });
     const p = await connect(local);
     await p.setRemoteDescription(JSON.parse(await openSignal(v.chat, offer.e, v.id, 'offer', offer.body)));
+    // Answered without the camera: keep the video slot able to send, so the
+    // camera can be turned on later without renegotiating.
+    if (v.video && !video) {
+      for (const tr of p.getTransceivers()) if (tr.receiver.track.kind === 'video') tr.direction = 'sendrecv';
+    }
     codecs(p, false);
     await localDescription(p, await p.createAnswer());
     const { e, body } = await sealSignal(v.chat, v.id, 'answer', JSON.stringify(p.localDescription));
@@ -402,6 +450,8 @@ function cleanup() {
   prev = null;
   wake?.release().catch(() => {});
   wake = null;
+  state = null;
+  audioSession('auto');
   call.value?.local?.getTracks().forEach((tr) => tr.stop());
   pc?.close();
   pc = null;
@@ -419,33 +469,83 @@ export function toggleMute() {
   if (!v) return;
   v.local?.getAudioTracks().forEach((tr) => (tr.enabled = v.muted));
   update({ muted: !v.muted });
-}
-
-export function toggleCamera() {
-  const v = call.value;
-  if (!v) return;
-  v.local?.getVideoTracks().forEach((tr) => (tr.enabled = v.camOff));
-  update({ camOff: !v.camOff });
+  sendState();
 }
 
 let facing: 'user' | 'environment' = 'user';
-export async function switchCamera() {
+
+// useCamera puts a fresh camera track (the current facing) into the call and
+// the self view; the previous one is stopped.
+async function useCamera(): Promise<void> {
   const v = call.value;
-  const sender = pc?.getSenders().find((s) => s.track?.kind === 'video');
+  const sender = senderOf('video');
   if (!v || !sender) return;
+  const s = await navigator.mediaDevices.getUserMedia({ video: CAMERA(facing) });
+  hint(s);
+  const track = s.getVideoTracks()[0];
+  await sender.replaceTrack(track);
+  const now = call.value?.local;
+  now?.getVideoTracks().forEach((tr) => tr.stop());
+  update({ local: new MediaStream([...(now?.getAudioTracks() ?? []), track]) });
+}
+
+// toggleCamera really stops the camera when off (its light goes out) and
+// starts it again when on; the other side shows our avatar meanwhile.
+export async function toggleCamera() {
+  const v = call.value;
+  const sender = senderOf('video');
+  if (!v || !sender) return;
+  try {
+    if (v.camOff) {
+      await useCamera();
+    } else {
+      await sender.replaceTrack(null);
+      v.local?.getVideoTracks().forEach((tr) => tr.stop());
+      update({ local: new MediaStream(v.local?.getAudioTracks() ?? []) });
+    }
+    update({ camOff: !v.camOff });
+    sendState();
+  } catch (e) {
+    // A camera busy in another app must not end the call.
+    const name = (e as DOMException)?.name;
+    showToast(name === 'NotAllowedError' || name === 'NotFoundError' || name === 'NotReadableError' ? t('call.noMedia') : errText(e));
+  }
+}
+
+export async function switchCamera() {
   facing = facing === 'user' ? 'environment' : 'user';
   try {
-    const s = await navigator.mediaDevices.getUserMedia({ video: CAMERA(facing) });
-    hint(s);
-    const track = s.getVideoTracks()[0];
-    const old = v.local?.getVideoTracks()[0];
-    await sender.replaceTrack(track);
-    old?.stop();
-    const local = new MediaStream([...(v.local?.getAudioTracks() ?? []), track]);
-    update({ local });
+    await useCamera();
   } catch (e) {
     showToast(errText(e));
   }
+}
+
+// selectMic swaps the microphone mid-call. On Android this is also how a
+// call moves between the earpiece and the speakerphone: Chrome lists them
+// as microphones, and picking one routes the whole call there.
+export async function selectMic(deviceId: string) {
+  const v = call.value;
+  const sender = senderOf('audio');
+  if (!v || !sender) return;
+  try {
+    const s = await navigator.mediaDevices.getUserMedia({ audio: { ...MIC, deviceId: { exact: deviceId } } });
+    hint(s);
+    const track = s.getAudioTracks()[0];
+    track.enabled = !v.muted;
+    await sender.replaceTrack(track);
+    const now = call.value?.local;
+    now?.getAudioTracks().forEach((tr) => tr.stop());
+    update({ local: new MediaStream([track, ...(now?.getVideoTracks() ?? [])]) });
+    remember('callMic', deviceId);
+  } catch (e) {
+    showToast(errText(e));
+  }
+}
+
+export function selectSpeaker(deviceId: string) {
+  speaker.value = deviceId;
+  remember('callSpeaker', deviceId);
 }
 
 // Mid-call renegotiation. Errors here never end the call: the retry loop

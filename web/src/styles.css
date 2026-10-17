@@ -64,6 +64,10 @@ body {
   -webkit-text-size-adjust: 100%;
   -webkit-tap-highlight-color: transparent;
   overscroll-behavior: none;
+  /* An app, not a page: buttons, lists and icons are not selectable. */
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
 }
 
 #root {
@@ -209,6 +213,35 @@ p {
   padding: 0.35rem 0.85rem;
   font-size: 0.875rem;
   border-radius: 0.6rem;
+}
+
+/* Modal dialogs live in the top layer and start over at "text": same rule. */
+dialog {
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+}
+
+/* Text people may copy stays selectable. On touch screens a long press on
+   a message opens its menu (with Copy) instead of the browser's selection. */
+.text,
+input,
+textarea,
+[contenteditable] {
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+@media (pointer: coarse) {
+  .text {
+    -webkit-user-select: none;
+    user-select: none;
+  }
+}
+
+.btn-spacer {
+  flex: none;
+  width: 2.75rem;
 }
 
 .icon-btn {
@@ -2247,6 +2280,33 @@ img.blur {
   margin: 0;
   opacity: 0.85;
   font-variant-numeric: tabular-nums;
+}
+
+.call-who .call-note {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.875rem;
+}
+
+.device-picker fieldset {
+  border: 0;
+  margin: 0 0 1rem;
+  padding: 0;
+}
+
+.device-picker legend {
+  padding: 0;
+  margin-bottom: 0.25rem;
+  font-weight: 600;
+}
+
+.device-picker .row {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  min-height: 2.75rem;
+  cursor: pointer;
 }
 
 .call-controls {

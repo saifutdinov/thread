@@ -33,6 +33,7 @@ web/                   Preact + Vite PWA
   src/lib/emoji.ts     emoji-only messages drawn large
   src/lib/call.ts      WebRTC call state machine, tones, sealed signaling, ICE restart, quality stats
   src/lib/rtc.ts       call tuning without the DOM: Opus SDP params, codec order per device, quality level
+  src/lib/devices.ts   cameras, microphones, speakers; names for Android audio routes; remembered choices
   src/lib/markup.tsx   **bold** __italic__ ~~strike~~ `code` > quote, links
   src/lib/recorder.ts  voice/circle recording (MediaRecorder), waveform, format fallback
   src/lib/lock.ts      app lock: PIN (PBKDF2), WebAuthn biometrics, timeout, hidden push text
