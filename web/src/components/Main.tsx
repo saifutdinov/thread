@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'preact/hooks';
+import { call } from '../lib/call';
 import { fromB64 } from '../lib/crypto';
 import { deviceCode } from '../lib/crypto';
 import { errText, t } from '../lib/i18n';
@@ -6,7 +7,7 @@ import { isIOS, notifPermission, pushSupported, standalone } from '../lib/pwa';
 import { go, route } from '../lib/route';
 import { approveDevice, denyDevice, pending, showToast, toast } from '../lib/store';
 import { DeviceCode } from './Auth';
-import { CallScreen } from './Call';
+import { CallScreen, minimized } from './Call';
 import { ChatInfo } from './ChatInfo';
 import { ChatList } from './ChatList';
 import { ChatView } from './ChatView';
@@ -147,7 +148,7 @@ export function Main() {
   }, [pending.value]);
 
   return (
-    <div class={'app' + (chatId ? ' in-chat' : '') + (r.name === 'info' ? ' in-info' : '')}>
+    <div class={'app' + (chatId ? ' in-chat' : '') + (r.name === 'info' ? ' in-info' : '') + (call.value && minimized.value ? ' with-call-bar' : '')}>
       <aside class="sidebar">
         <ChatList />
         {r.name === 'settings' && <Settings />}

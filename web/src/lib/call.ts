@@ -42,7 +42,8 @@ export interface CallView {
   id: string;
   chat: number;
   peer: number;
-  video: boolean; // the call carries video
+  video: boolean; // the call shows video (started as a video call, or a camera came on)
+  canVideo?: boolean; // the connection has a video slot: the camera can come on mid-call
   phase: Phase;
   muted: boolean;
   camOff: boolean;
@@ -375,6 +376,10 @@ export async function startCall(chatId: number, peer: number, video: boolean) {
     const local = await media(video);
     update({ local });
     const p = await connect(local);
+    // A voice call opens a video slot too (no media flows until a camera is
+    // on), so either side can turn its camera on later without renegotiating.
+    if (!video) p.addTransceiver('video', { direction: 'sendrecv' });
+    update({ canVideo: true });
     codecs(p, true);
     await localDescription(p, await p.createOffer());
     const { e, body } = await sealSignal(chatId, id, 'offer', JSON.stringify(p.localDescription));
@@ -400,11 +405,11 @@ export async function accept(withVideo: boolean) {
     update({ local });
     const p = await connect(local);
     await p.setRemoteDescription(JSON.parse(await openSignal(v.chat, offer.e, v.id, 'offer', offer.body)));
-    // Answered without the camera: keep the video slot able to send, so the
-    // camera can be turned on later without renegotiating.
-    if (v.video && !video) {
-      for (const tr of p.getTransceivers()) if (tr.receiver.track.kind === 'video') tr.direction = 'sendrecv';
-    }
+    // Keep the video slot able to send even without a camera now (a voice
+    // call, or answered without video), so the camera can come on later.
+    const slot = p.getTransceivers().find((tr) => tr.receiver.track.kind === 'video');
+    if (slot) slot.direction = 'sendrecv';
+    update({ canVideo: !!slot });
     codecs(p, false);
     await localDescription(p, await p.createAnswer());
     const { e, body } = await sealSignal(v.chat, v.id, 'answer', JSON.stringify(p.localDescription));
@@ -498,6 +503,10 @@ export async function toggleCamera() {
   try {
     if (v.camOff) {
       await useCamera();
+      if (!v.video) {
+        update({ video: true }); // a voice call turns into a video call
+        void keepAwake();
+      }
     } else {
       await sender.replaceTrack(null);
       v.local?.getVideoTracks().forEach((tr) => tr.stop());

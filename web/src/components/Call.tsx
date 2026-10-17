@@ -1,3 +1,4 @@
+import { signal } from '@preact/signals';
 import { useEffect, useRef, useState } from 'preact/hooks';
 import {
   accept,
@@ -16,7 +17,11 @@ import { cameras, canPickOutput, deviceName, microphones, speakers } from '../li
 import { t } from '../lib/i18n';
 import { fmtDuration } from '../lib/recorder';
 import { type CallLog, chatPicture, findChat } from '../lib/store';
-import { Avatar, Icon, type IconName, Modal } from './ui';
+import { Avatar, Icon, IconButton, type IconName, Modal } from './ui';
+
+// A minimized call shrinks to a strip at the top (and, with video, a small
+// tile) so the app stays usable; the sound keeps playing.
+export const minimized = signal(false);
 
 // attach sets a stream on a media element whenever the element appears:
 // the self view is a new element each time the camera comes back on.
@@ -97,29 +102,36 @@ function QualityBadge(props: { q: Quality }) {
   );
 }
 
-// CallScreen covers the app while a call rings or runs. Sound always plays
-// through an <audio> element; the remote <video> is muted to avoid echo.
+// CallScreen covers the app while a call rings or runs, or shrinks to a
+// strip when minimized. Sound always plays through an <audio> element that
+// stays mounted either way; remote <video> elements are muted (no echo).
 export function CallScreen() {
   const c = call.value;
   const dialog = useRef<HTMLDialogElement>(null);
   const [, tick] = useState(0);
   const [picker, setPicker] = useState(false);
+  const mini = !!c && minimized.value && c.phase !== 'incoming';
   useEffect(() => {
     const i = setInterval(() => tick((n) => n + 1), 1000);
     return () => clearInterval(i);
   }, []);
+  useEffect(() => {
+    if (!c) minimized.value = false; // the next call opens full screen
+  }, [c?.id]);
   // A modal <dialog>: focus moves in and the app behind turns inert.
   useEffect(() => {
     const d = dialog.current;
     if (d && !d.open) d.showModal();
-  }, [c?.id]);
+  }, [c?.id, mini]);
   if (!c) return null;
 
   const chat = findChat(c.chat);
   const name = chat?.members.find((m) => m.id === c.peer)?.name ?? '';
   // Their camera off (they say so over the data channel): show the avatar,
   // not a frozen or black picture.
-  const theirVideo = c.video && !c.peerCamOff && !!c.remote?.getVideoTracks().length;
+  // An older app on the other side sends no state: go by the call type.
+  const theyShow = c.peerCamOff === undefined ? c.video : !c.peerCamOff;
+  const theirVideo = theyShow && !!c.remote?.getVideoTracks().length;
   const sink = speaker.value;
   const audioRef = (el: HTMLAudioElement | null) => {
     attach(c.remote)(el);
@@ -139,6 +151,29 @@ export function CallScreen() {
             ? t('call.reconnecting')
             : fmtDuration(Date.now() - (c.since ?? Date.now()));
 
+  const expand = () => (minimized.value = false);
+
+  if (mini)
+    return (
+      <>
+        <audio ref={audioRef} autoPlay />
+        <div class="call-bar" role="region" aria-label={t('call.ongoing', { name })}>
+          <button type="button" class="call-bar-main" onClick={expand} aria-label={t('call.expand')}>
+            <Icon name={c.video ? 'videocam' : 'phone'} size={18} />
+            <b>{name}</b>
+            <span>{status}</span>
+          </button>
+          <IconButton icon={c.muted ? 'micOff' : 'mic'} label={c.muted ? t('call.unmute') : t('call.mute')} onClick={toggleMute} />
+          <IconButton icon="callEnd" label={t('call.hangup')} class="danger" onClick={() => hangup()} />
+        </div>
+        {theirVideo && (
+          <button type="button" class="call-tile" onClick={expand} aria-label={t('call.expand')}>
+            <video ref={attach(c.remote)} autoPlay playsInline muted />
+          </button>
+        )}
+      </>
+    );
+
   return (
     <dialog
       ref={dialog}
@@ -147,6 +182,9 @@ export function CallScreen() {
       onCancel={(e) => e.preventDefault() /* Escape must not end a call */}
     >
       <audio ref={audioRef} autoPlay />
+      {c.phase !== 'incoming' && (
+        <IconButton icon="down" label={t('call.minimize')} class="call-minimize" onClick={() => (minimized.value = true)} />
+      )}
       {theirVideo && <video ref={attach(c.remote)} class="call-remote" autoPlay playsInline muted />}
       {c.video && c.local && !c.camOff && <video ref={attach(c.local)} class="call-local" autoPlay playsInline muted />}
       {c.phase === 'active' && c.q && <QualityBadge q={c.q} />}
@@ -174,7 +212,7 @@ export function CallScreen() {
         ) : (
           <>
             <Btn icon={c.muted ? 'micOff' : 'mic'} label={c.muted ? t('call.unmute') : t('call.mute')} tone={c.muted ? 'on' : undefined} onClick={toggleMute} />
-            {c.video && (
+            {(c.canVideo ?? c.video) && (
               <Btn
                 icon={c.camOff ? 'videocamOff' : 'videocam'}
                 label={c.camOff ? t('call.camOn') : t('call.camOff')}

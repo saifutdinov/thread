@@ -10,7 +10,7 @@
 - **End-to-end encryption.** Messages, photos, files, voice messages, reactions, group names and avatars are encrypted on the devices; the server stores only ciphertext. Safety codes let you check that nobody added or swapped a contact's devices.
 - **Messaging:** private chats and groups, replies, reactions, formatting, editing and deleting, forwarding, pinned messages, search on the device, link previews (off by default), swipe to reply.
 - **Media:** photos (location and other metadata removed), videos, files up to 50 MB, voice messages with playback speed, round video messages.
-- **Calls:** one-to-one voice and video calls with your own relay server, recovery after network changes (Wi-Fi to mobile data) and a connection quality indicator.
+- **Calls:** one-to-one voice and video calls with your own relay server, the camera can be turned on mid-call, a call minimizes so you can keep chatting, recovery after network changes (Wi-Fi to mobile data) and a connection quality indicator.
 - **App:** push notifications, light and dark themes, English and Russian, adjustable text size, app lock with a PIN or Face ID / fingerprint, hidden online status.
 - **Small server:** one Go binary with SQLite, encrypted daily backups (optionally to S3), Prometheus metrics. Runs on a 1 GB VPS.
 
