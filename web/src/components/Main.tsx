@@ -3,7 +3,7 @@ import { fromB64 } from '../lib/crypto';
 import { deviceCode } from '../lib/crypto';
 import { errText, t } from '../lib/i18n';
 import { isIOS, notifPermission, pushSupported, standalone } from '../lib/pwa';
-import { route } from '../lib/route';
+import { go, route } from '../lib/route';
 import { approveDevice, denyDevice, pending, showToast, toast } from '../lib/store';
 import { DeviceCode } from './Auth';
 import { CallScreen } from './Call';
@@ -12,7 +12,7 @@ import { ChatList } from './ChatList';
 import { ChatView } from './ChatView';
 import { NewChat } from './NewChat';
 import { InstallRow, NotificationsRow, Settings } from './Settings';
-import { approving, Lightbox, Modal } from './ui';
+import { approving, Icon, Lightbox, Modal } from './ui';
 
 function ApproveDialog() {
   const p = approving.value;
@@ -57,6 +57,36 @@ function ApproveDialog() {
         </button>
       </div>
     </Modal>
+  );
+}
+
+// EmptyPane fills the right side when no chat is open, with what helps in
+// the current section rather than a bare "pick a chat".
+function EmptyPane() {
+  const r = route.value.name;
+  return (
+    <div class="main-empty">
+      {r === 'settings' ? (
+        <div class="empty-card">
+          <Icon name="check" />
+          <b>{t('empty.settings')}</b>
+          <p>{t('empty.settingsTip')}</p>
+        </div>
+      ) : r === 'new' ? (
+        <div class="empty-card">
+          <Icon name="link" />
+          <b>{t('empty.newTitle')}</b>
+          <p>{t('empty.newTip')}</p>
+        </div>
+      ) : (
+        <div class="empty-card">
+          <span>{t('empty.list')}</span>
+          <button type="button" class="btn small" onClick={() => go('new')}>
+            <Icon name="edit" /> {t('list.new')}
+          </button>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -124,13 +154,7 @@ export function Main() {
         {r.name === 'new' && <NewChat />}
       </aside>
       <main class="main">
-        {chatId ? (
-          <ChatView id={chatId} />
-        ) : (
-          <div class="main-empty">
-            <span>{t('chat.pick')}</span>
-          </div>
-        )}
+        {chatId ? <ChatView id={chatId} /> : <EmptyPane />}
       </main>
       {r.name === 'info' && chatId && <ChatInfo id={chatId} />}
       <CallScreen />

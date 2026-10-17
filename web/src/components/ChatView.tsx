@@ -3,7 +3,7 @@ import { errText, fmtDay, fmtLastSeen, fmtTime, t } from '../lib/i18n';
 import { jumbo } from '../lib/emoji';
 import { Markup } from '../lib/markup';
 import { fmtDuration } from '../lib/recorder';
-import { back, go } from '../lib/route';
+import { back, go, replace, route } from '../lib/route';
 import {
   type Chat,
   chats,
@@ -85,6 +85,18 @@ export function ChatView(props: { id: number }) {
     openChat(props.id).catch((e) => showToast(errText(e)));
   }, [props.id]);
 
+  // Esc closes the chat profile, then the chat itself, unless something on
+  // top claims it first: a reply or an edit (the composer prevents the
+  // default), search, a menu, the emoji panel or a dialog.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape' || e.defaultPrevented || document.querySelector('dialog[open], .menu-layer, .emoji-picker')) return;
+      replace(route.value.name === 'info' ? `c/${props.id}` : '');
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [props.id]);
+
   // A verified partner whose devices changed since gets a visible warning.
   const partnerId = c && partner(c)?.id;
   useEffect(() => {
@@ -158,7 +170,10 @@ export function ChatView(props: { id: number }) {
               onInput={(e) => setSearch(e.currentTarget.value)}
               onKeyDown={(e) => {
                 if (e.key === 'Enter') step(e.shiftKey ? -1 : 1);
-                if (e.key === 'Escape') setSearch(null);
+                if (e.key === 'Escape') {
+                  e.preventDefault(); // closes the search, not the chat
+                  setSearch(null);
+                }
               }}
             />
             <span class="search-count" aria-live="polite">
