@@ -180,6 +180,14 @@ func TestOldChatKeyMustRotate(t *testing.T) {
 	if code, _ := a.send(chat, 1, "stale"); code != 409 {
 		t.Fatalf("send with a week-old key: %d, want 409 rotate", code)
 	}
+	// The chat list says so, or the client would never rotate.
+	var list []struct {
+		Rotate bool `json:"rotate"`
+	}
+	a.must(200, "GET", "/api/chats", nil, &list)
+	if !list[0].Rotate {
+		t.Fatal("chat list does not ask to rotate a week-old key")
+	}
 	if code := a.rotate(chat, 2, a.id); code != 200 {
 		t.Fatalf("rotate: %d", code)
 	}

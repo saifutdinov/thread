@@ -130,10 +130,11 @@ func (s *Server) loadMessage(ctx context.Context, id int64) (*message, error) {
 // handleChats is the chat list: everything the sidebar needs in one call.
 func (s *Server) handleChats(w http.ResponseWriter, r *http.Request, a *Auth) {
 	ctx := r.Context()
-	rows, err := s.db.QueryContext(ctx, `SELECT c.id, c.kind, c.title, c.title_epoch, c.epoch, c.rotate, c.cleared_upto,
+	// rotate also when the key outlived keyMaxAge: chatEpoch refuses it.
+	rows, err := s.db.QueryContext(ctx, `SELECT c.id, c.kind, c.title, c.title_epoch, c.epoch, c.rotate OR c.epoch_at < ?, c.cleared_upto,
 		COALESCE(c.created_by, 0), c.created_at, c.pinned, c.photo_v,
 		(SELECT COUNT(*) FROM messages m WHERE m.chat_id = c.id AND m.id > mb.last_read AND m.deleted = 0 AND m.user_id <> ?)
-		FROM chats c JOIN members mb ON mb.chat_id = c.id AND mb.user_id = ?`, a.UserID, a.UserID)
+		FROM chats c JOIN members mb ON mb.chat_id = c.id AND mb.user_id = ?`, now()-keyMaxAge.Milliseconds(), a.UserID, a.UserID)
 	if err != nil {
 		s.internal(w, err)
 		return
