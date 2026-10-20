@@ -260,7 +260,9 @@ func (s *Server) cleanup(ctx context.Context) {
 func (s *Server) secure(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h := w.Header()
-		h.Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "+
+		// 'wasm-unsafe-eval' lets call effects compile their face detector
+		// (WebAssembly); JavaScript eval stays off.
+		h.Set("Content-Security-Policy", "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; "+
 			"img-src 'self' blob: data:; media-src 'self' blob:; connect-src 'self' wss://"+r.Host+" ws://"+r.Host+"; "+
 			"worker-src 'self'; manifest-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'")
 		h.Set("X-Content-Type-Options", "nosniff")
@@ -299,11 +301,38 @@ func (s *Server) static() http.Handler {
 		}
 		if strings.HasPrefix(r.URL.Path, "/assets/") {
 			w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+			// The face detector's 13.5 MB WebAssembly comes with a brotli copy
+			// (web/scripts/brotli.mjs): the proxies in front compress text only.
+			if strings.HasSuffix(p, ".wasm") {
+				w.Header().Add("Vary", "Accept-Encoding")
+				if acceptsBrotli(r) {
+					if f, err := os.Open(p + ".br"); err == nil {
+						defer f.Close()
+						if st, err := f.Stat(); err == nil {
+							w.Header().Set("Content-Encoding", "br")
+							w.Header().Set("Content-Type", "application/wasm")
+							http.ServeContent(w, r, "", st.ModTime(), f)
+							return
+						}
+					}
+				}
+			}
 		} else {
 			w.Header().Set("Cache-Control", "no-cache")
 		}
 		fs.ServeHTTP(w, r)
 	})
+}
+
+// acceptsBrotli: the request lists br, and not with q=0.
+func acceptsBrotli(r *http.Request) bool {
+	for _, part := range strings.Split(r.Header.Get("Accept-Encoding"), ",") {
+		name, params, _ := strings.Cut(part, ";")
+		if strings.TrimSpace(name) == "br" {
+			return strings.ReplaceAll(params, " ", "") != "q=0"
+		}
+	}
+	return false
 }
 
 // --- helpers ---

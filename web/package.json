@@ -4,7 +4,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc --noEmit && vite build",
+    "build": "tsc --noEmit && vite build && node scripts/brotli.mjs",
     "check": "tsc --noEmit",
     "test": "node --experimental-strip-types --no-warnings --test src/lib/*.test.ts"
   },
