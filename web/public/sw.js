@@ -162,7 +162,9 @@ self.addEventListener('notificationclick', (e) => {
     self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((list) => {
       for (const c of list) {
         if ('focus' in c) {
-          c.navigate(url).catch(() => {});
+          // An open app routes in place: a navigation would reload it, and
+          // iOS home-screen apps lose the microphone permission on each one.
+          c.postMessage({ t: 'open', url });
           return c.focus();
         }
       }
