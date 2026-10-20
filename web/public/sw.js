@@ -164,8 +164,14 @@ self.addEventListener('notificationclick', (e) => {
         if ('focus' in c) {
           // An open app routes in place: a navigation would reload it, and
           // iOS home-screen apps lose the microphone permission on each one.
-          c.postMessage({ t: 'open', url });
-          return c.focus();
+          // An app too old to answer is navigated as before.
+          const routed = new Promise((ok) => {
+            const ch = new MessageChannel();
+            ch.port1.onmessage = () => ok(true);
+            c.postMessage({ t: 'open', url }, [ch.port2]);
+            setTimeout(() => ok(false), 500);
+          });
+          return Promise.all([c.focus(), routed.then((done) => done || c.navigate(url).catch(() => {}))]);
         }
       }
       return self.clients.openWindow(url);

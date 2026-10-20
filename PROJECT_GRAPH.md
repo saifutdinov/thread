@@ -26,7 +26,7 @@ web/                   Preact + Vite PWA
   src/lib/idb.ts       IndexedDB kv (device keys, chat keys, lang); shared with public/sw.js
   src/lib/api.ts       typed /api client
   src/lib/store.ts     app state (signals), decrypt/encrypt, sending, sync, WebSocket, devices, invites
-  src/lib/route.ts     hash router on real history entries
+  src/lib/route.ts     hash router on real history entries; in memory in iOS home-screen apps (WebKit 215884)
   src/lib/i18n.ts      ru/en strings, plurals, date formats
   src/lib/prefs.ts     theme, text size, language effects
   src/lib/pwa.ts       install prompt, push subscription, SW registration
@@ -42,7 +42,7 @@ web/                   Preact + Vite PWA
                        EmojiPicker, ChatInfo, NewChat, Settings, Media (voice, circles, files),
                        Security (lock screen, lock settings, safety codes), Call (call screen),
                        ui (icons, Modal, Avatar, PictureButtons)
-  public/sw.js         app-shell cache, push decrypt + notification, click-to-open
+  public/sw.js         app-shell cache, push decrypt + notification, click-to-open (asks an open app to route, else navigates)
 deploy/                docker compose: app, Caddy (automatic HTTPS), coturn (host network)
 scripts/               server setup, install, update, status (see scripts/README.md)
 ```

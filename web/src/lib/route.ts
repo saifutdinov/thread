@@ -50,12 +50,6 @@ export function replace(path: string) {
   }
 }
 
-// A tapped notification opens its chat in place (see sw.js): navigating
-// would reload the app.
-navigator.serviceWorker?.addEventListener('message', (e) => {
-  if (e.data?.t === 'open') go(String(e.data.url).split('#/')[1] ?? '');
-});
-
 export function back(fallback = '') {
   if (history.state?.app) history.back();
   else replace(fallback);

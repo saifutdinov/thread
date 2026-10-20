@@ -122,7 +122,8 @@ interface StoredDevice extends DeviceKeys {
   id: number;
 }
 
-export type Screen = 'loading' | 'login' | 'invite' | 'password' | 'pending' | 'lost' | 'app';
+// Invite and recovery links are routes: login and app screens show them.
+export type Screen = 'loading' | 'login' | 'password' | 'pending' | 'lost' | 'app';
 
 // ---------- state ----------
 
@@ -165,7 +166,6 @@ let markReady!: () => void;
 export const appReady = new Promise<void>((r) => (markReady = r));
 
 export async function start() {
-  const r = parse(location.hash);
   try {
     me.value = await api.me();
   } catch (e) {
@@ -175,7 +175,7 @@ export async function start() {
       return;
     }
     me.value = null;
-    screen.value = r.name === 'invite' ? 'invite' : 'login';
+    screen.value = 'login';
     return;
   }
   device = (await idbGet<StoredDevice>('device')) ?? null;
@@ -192,7 +192,7 @@ export async function start() {
   seq = (await api.sync(Number.MAX_SAFE_INTEGER)).seq;
   await syncKeys(true);
   await loadChats();
-  screen.value = r.name === 'invite' ? 'invite' : 'app';
+  screen.value = 'app';
   markReady();
   loadPending();
   subscribe().catch(() => {});
@@ -1251,6 +1251,16 @@ export function goChat(id: number) {
   if (route.value.name === 'chat' || route.value.name === 'info') replace(`c/${id}`);
   else go(`c/${id}`);
 }
+
+// A tapped notification opens its chat in place (see sw.js): navigating
+// would reload the app. Answering tells the worker it need not navigate.
+navigator.serviceWorker?.addEventListener('message', (e) => {
+  if (e.data?.t !== 'open') return;
+  e.ports[0]?.postMessage(1);
+  const r = parse('#/' + (String(e.data.url).split('#/')[1] ?? ''));
+  if (r.name === 'chat' && r.id) goChat(r.id);
+  else if (route.value.name !== r.name) go(r.name === 'list' ? '' : r.name);
+});
 
 // ---------- avatars, group photos, link previews ----------
 

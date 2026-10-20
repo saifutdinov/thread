@@ -29,7 +29,7 @@ export function NotificationsRow() {
 // MicHint: Safari, not the app, decides how long a microphone permission
 // lasts; say where to make it stick. Other browsers remember it per site.
 const ua = navigator.userAgent;
-const safari = /Safari/.test(ua) && !/Chrome|Chromium|CriOS|FxiOS|Edg|OPR|Firefox/.test(ua);
+const safari = /Safari/.test(ua) && !/Chrome|Chromium|CriOS|FxiOS|EdgiOS|Edg|OPR|Firefox|YaBrowser/.test(ua);
 function MicHint() {
   const key = isIOS ? (standalone.value ? 'settings.micIosApp' : safari ? 'settings.micIosSafari' : '') : safari ? 'settings.micMac' : '';
   return key ? <p class="muted small">{t(key)}</p> : null;

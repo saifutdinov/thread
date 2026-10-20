@@ -500,7 +500,7 @@ function finish() {
 function cleanup() {
   // Only a call that rang or ran here ends with a sound: not a declined,
   // missed or elsewhere-answered one.
-  if (call.value && call.value.phase !== 'incoming') hangupTone();
+  const rang = !!call.value && call.value.phase !== 'incoming';
   quiet();
   clearTimeout(lostTimer);
   clearTimeout(retryTimer);
@@ -521,6 +521,7 @@ function cleanup() {
   socketHold.call = false;
   releaseSocket();
   call.value = null;
+  if (rang) hangupTone(); // after the call's audio is gone: speaker, not earpiece
 }
 
 export function toggleMute() {

@@ -16,8 +16,6 @@ function App() {
       return <div class="splash" aria-busy="true" />;
     case 'login':
       return route.value.name === 'invite' ? <InviteScreen /> : <LoginScreen />;
-    case 'invite':
-      return <InviteScreen />;
     case 'password':
       return <PasswordScreen />;
     case 'pending':

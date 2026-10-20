@@ -124,8 +124,7 @@ export function PasteInvite(props: { label?: string }) {
     e.preventDefault();
     const m = value.match(/#\/([ifr])\/([A-Za-z0-9_-]{20,})/);
     if (!m) return setError(true);
-    replace(`${m[1]}/${m[2]}`);
-    if (m[1] !== 'r') screen.value = 'invite';
+    replace(`${m[1]}/${m[2]}`); // the route alone brings up the invite or recovery screen
   };
   return (
     <details class="paste-invite">
@@ -195,6 +194,10 @@ function IOSInstallFirst(props: { onContinue: () => void; k?: 'ios' | 'friend.io
   );
 }
 
+// A sign-in from the invite screen may stop at the pending screen (a new
+// device waits for approval); the join waits for this screen to return.
+let joinAfterSignIn = '';
+
 export function InviteScreen() {
   const secret = route.value.secret ?? '';
   const [peeked, setPeeked] = useState<Peeked | null>(null);
@@ -206,13 +209,14 @@ export function InviteScreen() {
   const [inSafari, setInSafari] = useState(false);
   const friend = !!route.value.friend;
   // Signed in from this screen: the chat is what they came for.
-  const [autoJoin, setAutoJoin] = useState(false);
+  const [autoJoin, setAutoJoin] = useState(() => !!secret && joinAfterSignIn === secret);
 
   useEffect(() => {
     peekInvite(secret).then(setPeeked, (e) => setError(errText(e)));
   }, [secret, loggedIn]);
   useEffect(() => {
     if (autoJoin && loggedIn && peeked && !peeked.info.member) {
+      joinAfterSignIn = '';
       setAutoJoin(false);
       void join();
     }
@@ -311,7 +315,12 @@ export function InviteScreen() {
       ) : haveAccount || friend ? (
         <>
           {friend && <p class="muted">{t('invite.friendText')}</p>}
-          <LoginForm onDone={() => setAutoJoin(true)} />
+          <LoginForm
+            onDone={() => {
+              joinAfterSignIn = secret;
+              setAutoJoin(true);
+            }}
+          />
           <p class="muted small">{t('login.forgot')}</p>
           {friend && <p class="muted small">{t('invite.friendNoAccount')}</p>}
         </>
