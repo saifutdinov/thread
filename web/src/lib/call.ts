@@ -2,6 +2,7 @@ import { signal } from '@preact/signals';
 import { api } from './api';
 import { rand, toB64u } from './crypto';
 import { refreshDevices, remember, remembered } from './devices';
+import { type EffectId, type Effects, startEffects } from './effects';
 import { errText, t } from './i18n';
 import { type Level, preferCodecs, rate, tuneOpus, videoOrder } from './rtc';
 import {
@@ -53,6 +54,8 @@ export interface CallView {
   peerCamOff?: boolean; // told over the call's own data channel
   peerMuted?: boolean;
   peerBattery?: { level: number; charging: boolean }; // level in %, where their browser knows it
+  effect?: EffectId; // drawn over our camera (effects.ts)
+  effectLoading?: boolean;
   local?: MediaStream;
   remote?: MediaStream;
 }
@@ -551,6 +554,7 @@ function cleanup() {
   state = null;
   unwatchBattery();
   audioSession('auto');
+  dropEffects();
   call.value?.local?.getTracks().forEach((tr) => tr.stop());
   pc?.close();
   pc = null;
@@ -583,10 +587,75 @@ async function useCamera(): Promise<void> {
   const s = await navigator.mediaDevices.getUserMedia({ video: CAMERA(facing) });
   hint(s);
   const track = s.getVideoTracks()[0];
+  const keep = fx?.id; // the effect moves over to the new camera
+  dropEffects();
   await sender.replaceTrack(track);
   const now = call.value?.local;
   now?.getVideoTracks().forEach((tr) => tr.stop());
-  update({ local: new MediaStream([...(now?.getAudioTracks() ?? []), track]) });
+  update({ local: new MediaStream([...(now?.getAudioTracks() ?? []), track]), effect: undefined });
+  if (keep) void setEffect(keep);
+}
+
+// Effects (effects.ts) put a canvas track in place of the camera, in the
+// call and in the self view; fx keeps the camera underneath.
+let fx: Effects | null = null;
+
+// A hidden page stops drawing (no frame callbacks), which would freeze the
+// picture the other side sees: send the bare camera until it is back.
+document.addEventListener('visibilitychange', () => {
+  if (fx) void senderOf('video')?.replaceTrack(document.hidden ? fx.camera : fx.track);
+});
+
+// dropEffects stops the effect canvas and the camera under it.
+function dropEffects() {
+  fx?.stop();
+  fx?.camera.stop();
+  fx = null;
+}
+
+// setEffect draws an effect over the camera, or none (null). The engine
+// downloads on first use.
+export async function setEffect(id: EffectId | null) {
+  const v = call.value;
+  const sender = senderOf('video');
+  if (!v || !sender || v.camOff) return;
+  if (fx && id) {
+    fx.set(id);
+    update({ effect: id });
+    return;
+  }
+  if (!id) {
+    if (!fx) return;
+    const { camera } = fx;
+    fx.stop();
+    fx = null;
+    await sender.replaceTrack(camera);
+    update({ local: new MediaStream([...(call.value?.local?.getAudioTracks() ?? []), camera]), effect: undefined });
+    return;
+  }
+  const camera = v.local?.getVideoTracks()[0];
+  if (!camera || v.effectLoading) return;
+  update({ effectLoading: true });
+  try {
+    const started = await startEffects(camera, id, () => {
+      void setEffect(null);
+      showToast(t('fx.slow'));
+    });
+    const now = call.value;
+    // The call ended, or the camera changed, while the engine loaded.
+    if (!now || now.id !== v.id || now.local?.getVideoTracks()[0] !== camera) {
+      started.stop();
+      return;
+    }
+    fx = started;
+    hint(new MediaStream([fx.track]));
+    await sender.replaceTrack(fx.track);
+    update({ local: new MediaStream([...(now.local?.getAudioTracks() ?? []), fx.track]), effect: id });
+  } catch {
+    showToast(t('fx.failed'));
+  } finally {
+    update({ effectLoading: false });
+  }
 }
 
 // toggleCamera really stops the camera when off (its light goes out) and
@@ -605,9 +674,10 @@ export async function toggleCamera() {
         void keepAwake();
       }
     } else {
+      dropEffects();
       await sender.replaceTrack(null);
       v.local?.getVideoTracks().forEach((tr) => tr.stop());
-      update({ local: new MediaStream(v.local?.getAudioTracks() ?? []) });
+      update({ local: new MediaStream(v.local?.getAudioTracks() ?? []), effect: undefined });
     }
     update({ camOff: !v.camOff });
     sendState();

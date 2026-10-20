@@ -8,12 +8,14 @@ import {
   type Quality,
   selectMic,
   selectSpeaker,
+  setEffect,
   speaker,
   switchCamera,
   toggleCamera,
   toggleMute,
 } from '../lib/call';
 import { cameras, canPickOutput, deviceName, microphones, speakers } from '../lib/devices';
+import { EFFECTS } from '../lib/effects';
 import { t } from '../lib/i18n';
 import { fmtDuration } from '../lib/recorder';
 import { type CallLog, chatPicture, findChat } from '../lib/store';
@@ -125,6 +127,7 @@ export function CallScreen() {
   const [, tick] = useState(0);
   const [picker, setPicker] = useState(false);
   const [tileRatio, setTileRatio] = useState('3 / 4'); // the minimized tile takes the picture's own shape
+  const [fxOpen, setFxOpen] = useState(false);
   const mini = !!c && minimized.value && c.phase !== 'incoming';
   useEffect(() => {
     const i = setInterval(() => tick((n) => n + 1), 1000);
@@ -229,6 +232,32 @@ export function CallScreen() {
             {c.phase === 'active' ? (c.reconnecting ? t('call.reconnecting') : t('call.connected')) : status}
           </p>
         </div>
+        {fxOpen && c.video && !c.camOff && (
+          <div class="fx-tray" role="group" aria-label={t('call.effects')}>
+            <button type="button" class="fx" aria-pressed={!c.effect} title={t('fx.none')} aria-label={t('fx.none')} onClick={() => void setEffect(null)}>
+              <Icon name="close" size={22} />
+            </button>
+            {EFFECTS.map((e) => (
+              <button
+                key={e.id}
+                type="button"
+                class="fx"
+                aria-pressed={c.effect === e.id}
+                title={t(`fx.${e.id}`)}
+                aria-label={t(`fx.${e.id}`)}
+                disabled={c.effectLoading}
+                onClick={() => void setEffect(e.id)}
+              >
+                <span aria-hidden="true">{e.icon}</span>
+              </button>
+            ))}
+          </div>
+        )}
+        {c.effectLoading && (
+          <p class="fx-loading" role="status">
+            {t('fx.loading')}
+          </p>
+        )}
         <div class="call-controls">
           {c.phase === 'incoming' ? (
             <>
@@ -248,6 +277,9 @@ export function CallScreen() {
                 />
               )}
               {c.video && !c.camOff && cameras().length > 1 && <Btn icon="flip" label={t('call.switch')} onClick={switchCamera} />}
+              {c.video && !c.camOff && (
+                <Btn icon="sparkle" label={t('call.effects')} tone={c.effect || fxOpen ? 'on' : undefined} onClick={() => setFxOpen(!fxOpen)} />
+              )}
               {canPickAudio && <Btn icon="volume" label={t('call.sound')} onClick={() => setPicker(true)} />}
               <Btn icon="callEnd" label={t('call.hangup')} tone="red" onClick={() => hangup()} />
             </>

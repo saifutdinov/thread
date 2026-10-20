@@ -2429,6 +2429,57 @@ img.blur {
   cursor: pointer;
 }
 
+.fx-tray {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  gap: 0.5rem;
+  width: 100%;
+  margin: auto 0 0.75rem; /* right above the controls */
+  padding: 0.25rem 0.5rem;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+/* Centred while they fit, scrollable from the first one when not. */
+.fx-tray .fx:first-child {
+  margin-left: auto;
+}
+
+.fx-tray .fx:last-child {
+  margin-right: auto;
+}
+
+.fx-tray .fx {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 3rem;
+  height: 3rem;
+  border: 2px solid transparent;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.45);
+  color: #fff;
+  font-size: 1.5rem;
+  cursor: pointer;
+}
+
+.fx-tray .fx[aria-pressed='true'] {
+  border-color: #fff;
+  background: rgba(255, 255, 255, 0.25);
+}
+
+.fx-tray .fx:disabled {
+  opacity: 0.5;
+}
+
+.fx-loading {
+  position: relative;
+  z-index: 1;
+  margin: 0 0 0.5rem;
+  font-size: 0.875rem;
+}
+
 .call-controls {
   position: relative;
   z-index: 1;
