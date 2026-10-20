@@ -6,7 +6,7 @@
 
 ## Features
 
-- **Your own server, your own circle.** People join only through one-time invite links that you or they create. Sign-in uses a generated, easy-to-remember password plus approval from one of your own devices. Forgot the password? The person who invited you can send a recovery link.
+- **Your own server, your own circle.** People join only through one-time invite links that you or they create. Sign-in uses a generated, easy-to-remember password plus approval from one of your own devices. Forgot the password? The person who invited you can send a recovery link. Someone who already has an account is added with a friend link, which only lets them sign in.
 - **End-to-end encryption.** Messages, photos, files, voice messages, reactions, group names and avatars are encrypted on the devices; the server stores only ciphertext. Safety codes let you check that nobody added or swapped a contact's devices.
 - **Messaging:** private chats and groups, replies, reactions, formatting, editing and deleting, forwarding, pinned messages, search on the device, link previews (off by default), swipe to reply.
 - **Media:** photos (location and other metadata removed), videos, files up to 50 MB, voice messages with playback speed, round video messages.
