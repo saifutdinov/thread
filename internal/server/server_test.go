@@ -678,3 +678,15 @@ func TestExpiredInviteRejected(t *testing.T) {
 		t.Fatalf("expired invite: %d", code)
 	}
 }
+
+// WebSockets hijack their connections, so the HTTP server does not wait for
+// them: Close must stop their handlers before it closes the database.
+func TestCloseStopsSockets(t *testing.T) {
+	e := newEnv(t)
+	e.register("A").socket(t)
+	e.ts.Close()
+	e.s.Close()
+	if n := e.s.hub.count(); n != 0 {
+		t.Fatalf("%d socket handlers outlived Close", n)
+	}
+}

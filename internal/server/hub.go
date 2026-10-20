@@ -162,12 +162,14 @@ func (h *hub) deliver(c *client, b []byte) {
 }
 
 func (s *Server) handleWS(w http.ResponseWriter, r *http.Request, a *Auth) {
+	s.ws.Add(1) // before Accept hijacks the conn, so Shutdown still covers the Add
+	defer s.ws.Done()
 	conn, err := websocket.Accept(w, r, nil) // default: same-origin only
 	if err != nil {
 		return
 	}
 	conn.SetReadLimit(64 << 10) // call offers carry a sealed SDP
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(s.wsCtx)
 	defer cancel()
 	c := &client{user: a.UserID, device: a.DeviceID, active: a.Status == "active", send: make(chan []byte, 256), cancel: cancel}
 	if s.hub.add(c) {
@@ -187,7 +189,7 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request, a *Auth) {
 		conn.CloseNow()
 	}()
 
-	go s.readWS(ctx, conn, c)
+	s.ws.Go(func() { s.readWS(ctx, conn, c) })
 	ping := time.NewTicker(25 * time.Second) // under nginx's 60s proxy_read_timeout
 	defer ping.Stop()
 	for {

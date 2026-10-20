@@ -20,6 +20,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"filippo.io/age"
@@ -57,6 +58,12 @@ type Server struct {
 	preview *http.Client // link previews; tests swap the address check
 
 	backupTo []age.Recipient
+
+	// WebSockets hijack their connections, so http.Server.Shutdown does
+	// not wait for them: Close cancels wsCtx and waits for ws.
+	wsCtx  context.Context
+	wsStop context.CancelFunc
+	ws     sync.WaitGroup
 }
 
 func New(ctx context.Context, cfg Config, log *slog.Logger) (*Server, error) {
@@ -91,10 +98,17 @@ func New(ctx context.Context, cfg Config, log *slog.Logger) (*Server, error) {
 		db.Close()
 		return nil, err
 	}
+	s.wsCtx, s.wsStop = context.WithCancel(ctx)
 	return s, nil
 }
 
-func (s *Server) Close() { s.db.Close() }
+// Close stops the sockets and waits for their handlers, which still write
+// to the database, before closing it.
+func (s *Server) Close() {
+	s.wsStop()
+	s.ws.Wait()
+	s.db.Close()
+}
 
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
@@ -188,7 +202,9 @@ func (s *Server) Run(ctx context.Context) error {
 		Handler:           s.Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
+	stopped := make(chan struct{})
 	go func() {
+		defer close(stopped)
 		<-ctx.Done()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
@@ -200,6 +216,7 @@ func (s *Server) Run(ctx context.Context) error {
 	if err := srv.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}
+	<-stopped // Close waits for sockets only once no new one can start
 	return nil
 }
 
