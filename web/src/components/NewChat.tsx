@@ -2,6 +2,7 @@ import { useState } from 'preact/hooks';
 import { errText, t } from '../lib/i18n';
 import { back, replace } from '../lib/route';
 import { createChat, showToast } from '../lib/store';
+import { PasteInvite } from './Auth';
 import { copyText, Icon, Panel, Segmented } from './ui';
 
 // LinkView shows a fresh invite link, or any other one-time link when the
@@ -41,7 +42,8 @@ export function LinkView(props: {
 }
 
 export function NewChat() {
-  const [kind, setKind] = useState<'direct' | 'group'>('direct');
+  // friend: a private chat with someone who already has an account
+  const [kind, setKind] = useState<'direct' | 'friend' | 'group'>('direct');
   const [title, setTitle] = useState('');
   const [seats, setSeats] = useState(5);
   const [busy, setBusy] = useState(false);
@@ -52,7 +54,8 @@ export function NewChat() {
     if (busy) return;
     setBusy(true);
     try {
-      setMade(await createChat(kind, kind === 'group' ? title.trim() : '', kind === 'group' ? seats : 1));
+      const group = kind === 'group';
+      setMade(await createChat(group ? 'group' : 'direct', group ? title.trim() : '', group ? seats : 1, kind === 'friend'));
     } catch (err) {
       showToast(errText(err));
     } finally {
@@ -69,6 +72,7 @@ export function NewChat() {
             uses={kind === 'group' ? seats : 1}
             openLabel={t('link.open')}
             onOpen={() => replace(`c/${made.chatId}`)}
+            copy={kind === 'friend' ? { title: t('link.friendTitle'), text: t('link.friendText'), note: t('link.once') } : undefined}
           />
         </section>
       ) : (
@@ -78,6 +82,7 @@ export function NewChat() {
             value={kind}
             options={[
               ['direct', t('new.direct')],
+              ['friend', t('new.friend')],
               ['group', t('new.group')],
             ]}
             onChange={setKind}
@@ -101,11 +106,16 @@ export function NewChat() {
               </label>
             </>
           )}
-          <p class="muted small">{kind === 'group' ? t('new.groupHint') : t('new.directHint')}</p>
+          <p class="muted small">{t(`new.${kind}Hint`)}</p>
           <button class="btn" disabled={busy || (kind === 'group' && !title.trim())}>
             <Icon name="link" /> {t('new.create')}
           </button>
         </form>
+      )}
+      {!made && (
+        <section class="card">
+          <PasteInvite label={t('new.haveLink')} />
+        </section>
       )}
     </Panel>
   );

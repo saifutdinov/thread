@@ -832,7 +832,9 @@ export async function mediaMessages(chatId: number, before = 0): Promise<Msg[]> 
 
 // ---------- chats & invites ----------
 
-async function makeInvite(keys: Map<number, Bytes>, maxUses: number) {
+// makeInvite seals the keys under a fresh link secret. A friend link (f/)
+// is the same invite, opened sign-in only by the person's browser.
+async function makeInvite(keys: Map<number, Bytes>, maxUses: number, friend = false) {
   const secret = rand(32);
   const { wrap, id } = await inviteKeys(secret);
   const k: Record<string, string> = {};
@@ -840,7 +842,7 @@ async function makeInvite(keys: Map<number, Bytes>, maxUses: number) {
   const bundle = await seal(wrap, 'invite', utf8(JSON.stringify({ k })));
   return {
     invite: { id: toB64(id), bundle: toB64(bundle), max_uses: maxUses },
-    link: `${location.origin}/#/i/${toB64u(secret)}`,
+    link: `${location.origin}/#/${friend ? 'f' : 'i'}/${toB64u(secret)}`,
   };
 }
 
@@ -850,11 +852,11 @@ async function myActiveDevices(exceptSelf: boolean) {
   return devs.map((d) => pubs.get(d.id)!).filter(Boolean);
 }
 
-export async function createChat(kind: 'direct' | 'group', title: string, maxUses: number) {
+export async function createChat(kind: 'direct' | 'group', title: string, maxUses: number, friend = false) {
   const raw = rand(32);
   const keys = await wrapFor(await myActiveDevices(false), 0, new Map([[1, raw]]));
   const sealedTitle = title ? toB64(await seal(await aesKey(raw), 't:1', utf8(title))) : undefined;
-  const { invite, link } = await makeInvite(new Map([[1, raw]]), maxUses);
+  const { invite, link } = await makeInvite(new Map([[1, raw]]), maxUses, friend);
   const { chat_id } = await api.createChat({ kind, title: sealedTitle, keys, invite });
   await idbSet(`k:${chat_id}:1`, raw);
   await loadChats();

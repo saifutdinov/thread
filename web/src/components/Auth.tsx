@@ -115,21 +115,21 @@ export function LoginForm(props: { onDone?: () => void }) {
   );
 }
 
-// PasteInvite lets an installed app (which has no URL bar) open an invite
-// or a recovery link.
-function PasteInvite() {
+// PasteInvite lets an installed app (which has no URL bar) open an invite,
+// a friend link or a recovery link.
+export function PasteInvite(props: { label?: string }) {
   const [value, setValue] = useState('');
   const [error, setError] = useState(false);
   const open = (e: Event) => {
     e.preventDefault();
-    const m = value.match(/#\/([ir])\/([A-Za-z0-9_-]{20,})/);
+    const m = value.match(/#\/([ifr])\/([A-Za-z0-9_-]{20,})/);
     if (!m) return setError(true);
     replace(`${m[1]}/${m[2]}`);
-    if (m[1] === 'i') screen.value = 'invite';
+    if (m[1] !== 'r') screen.value = 'invite';
   };
   return (
     <details class="paste-invite">
-      <summary>{t('login.haveInvite')}</summary>
+      <summary>{props.label ?? t('login.haveInvite')}</summary>
       <form class="stack" onSubmit={open}>
         <input
           class="link-box"
@@ -171,23 +171,25 @@ export function LoginScreen() {
 
 // IOSInstallFirst: an installed iOS web app has its own storage, separate
 // from Safari's. Registering in Safari and installing later would leave the
-// app without keys, so on iOS the invite is carried over by copy-paste.
-function IOSInstallFirst(props: { onContinue: () => void }) {
+// app without keys, so on iOS the invite is carried over by copy-paste. A
+// friend link goes the same way into the app the person already uses.
+function IOSInstallFirst(props: { onContinue: () => void; k?: 'ios' | 'friend.ios' }) {
   const [copied, setCopied] = useState(false);
+  const k = props.k ?? 'ios';
   return (
     <div class="stack notice-block">
-      <h2>{t('ios.title')}</h2>
-      <p>{t('ios.text')}</p>
+      <h2>{t(`${k}.title`)}</h2>
+      <p>{t(`${k}.text`)}</p>
       <ol class="steps">
-        <li>{t('ios.step1')}</li>
-        <li>{t('ios.step2')}</li>
-        <li>{t('ios.step3')}</li>
+        <li>{t(`${k}.step1`)}</li>
+        <li>{t(`${k}.step2`)}</li>
+        <li>{t(`${k}.step3`)}</li>
       </ol>
       <button class="btn" onClick={async () => setCopied(await copyText(location.href))}>
         <Icon name="copy" /> {copied ? t('common.copied') : t('ios.copy')}
       </button>
       <button class="link-btn" onClick={props.onContinue}>
-        {t('ios.continue')}
+        {t(`${k}.continue`)}
       </button>
     </div>
   );
@@ -202,10 +204,19 @@ export function InviteScreen() {
   const [haveAccount, setHaveAccount] = useState(false);
   const loggedIn = !!me.value;
   const [inSafari, setInSafari] = useState(false);
+  const friend = !!route.value.friend;
+  // Signed in from this screen: the chat is what they came for.
+  const [autoJoin, setAutoJoin] = useState(false);
 
   useEffect(() => {
     peekInvite(secret).then(setPeeked, (e) => setError(errText(e)));
   }, [secret, loggedIn]);
+  useEffect(() => {
+    if (autoJoin && loggedIn && peeked && !peeked.info.member) {
+      setAutoJoin(false);
+      void join();
+    }
+  }, [autoJoin, loggedIn, peeked]);
 
   async function join(e?: Event) {
     e?.preventDefault();
@@ -255,7 +266,7 @@ export function InviteScreen() {
   const { info, title } = peeked;
   const heading =
     info.kind === 'direct'
-      ? t('invite.direct', { name: info.inviter ?? '' })
+      ? t(friend ? 'invite.friend' : 'invite.direct', { name: info.inviter ?? '' })
       : info.kind === 'group'
         ? t('invite.group', { name: info.inviter ?? '' })
         : t('invite.register');
@@ -266,7 +277,7 @@ export function InviteScreen() {
       {title && <p class="invite-title">«{title}»</p>}
       {info.kind === 'group' && info.members !== undefined && <p class="muted">{t('chat.members', { n: info.members })}</p>}
       {!loggedIn && isIOS && !standalone.value && !inSafari ? (
-        <IOSInstallFirst onContinue={() => setInSafari(true)} />
+        <IOSInstallFirst onContinue={() => setInSafari(true)} k={friend ? 'friend.ios' : 'ios'} />
       ) : loggedIn ? (
         info.member ? (
           <>
@@ -297,10 +308,12 @@ export function InviteScreen() {
             </button>
           </div>
         )
-      ) : haveAccount ? (
+      ) : haveAccount || friend ? (
         <>
-          <LoginForm />
+          {friend && <p class="muted">{t('invite.friendText')}</p>}
+          <LoginForm onDone={() => setAutoJoin(true)} />
           <p class="muted small">{t('login.forgot')}</p>
+          {friend && <p class="muted small">{t('invite.friendNoAccount')}</p>}
         </>
       ) : (
         <form class="stack" onSubmit={join}>
