@@ -52,6 +52,7 @@ export interface CallView {
   q?: Quality;
   peerCamOff?: boolean; // told over the call's own data channel
   peerMuted?: boolean;
+  peerBattery?: { level: number; charging: boolean }; // level in %, where their browser knows it
   local?: MediaStream;
   remote?: MediaStream;
 }
@@ -198,10 +199,40 @@ function audioSession(type: 'play-and-record' | 'auto') {
 const senderOf = (kind: 'audio' | 'video') => pc?.getTransceivers().find((tr) => tr.receiver.track.kind === kind)?.sender;
 
 // sendState tells the other side whether our camera and microphone are on,
-// so it shows our avatar instead of a black picture.
+// so it shows our avatar instead of a black picture, and how charged our
+// battery is.
 function sendState() {
   const v = call.value;
-  if (v && state?.readyState === 'open') state.send(JSON.stringify({ camOff: v.camOff, muted: v.muted }));
+  const b = battery && { level: Math.round(battery.level * 100), charging: battery.charging };
+  if (v && state?.readyState === 'open') state.send(JSON.stringify({ camOff: v.camOff, muted: v.muted, battery: b }));
+}
+
+// The Battery API exists in Chromium browsers only (not Safari or Firefox):
+// elsewhere the other side just sees no battery line. Changes resend the
+// state while a call runs.
+type Battery = EventTarget & { level: number; charging: boolean };
+let battery: Battery | null = null;
+
+async function watchBattery() {
+  const nav = navigator as Navigator & { getBattery?: () => Promise<Battery> };
+  if (battery || !nav.getBattery) return;
+  const b = await nav.getBattery().catch(() => null);
+  if (!b || battery || !call.value) return; // the call may be over by now
+  battery = b;
+  battery.addEventListener('levelchange', sendState);
+  battery.addEventListener('chargingchange', sendState);
+  sendState();
+}
+
+function unwatchBattery() {
+  battery?.removeEventListener('levelchange', sendState);
+  battery?.removeEventListener('chargingchange', sendState);
+  battery = null;
+}
+
+function peerBattery(b: unknown): CallView['peerBattery'] {
+  const { level, charging } = (b ?? {}) as { level?: unknown; charging?: unknown };
+  return typeof level === 'number' && level >= 0 && level <= 100 && typeof charging === 'boolean' ? { level, charging } : undefined;
 }
 
 // Hints tell the encoder what matters: smooth motion for a face (drop
@@ -278,10 +309,11 @@ async function connect(local: MediaStream): Promise<RTCPeerConnection> {
   // the call's DTLS transport, so it is end-to-end encrypted like the media.
   state = p.createDataChannel('state', { negotiated: true, id: 0 });
   state.onopen = sendState;
+  void watchBattery();
   state.onmessage = (ev) => {
     try {
       const m = JSON.parse(String(ev.data));
-      update({ peerCamOff: m.camOff === true, peerMuted: m.muted === true });
+      update({ peerCamOff: m.camOff === true, peerMuted: m.muted === true, peerBattery: peerBattery(m.battery) });
     } catch {
       /* not ours to read */
     }
@@ -510,6 +542,7 @@ function cleanup() {
   wake?.release().catch(() => {});
   wake = null;
   state = null;
+  unwatchBattery();
   audioSession('auto');
   call.value?.local?.getTracks().forEach((tr) => tr.stop());
   pc?.close();

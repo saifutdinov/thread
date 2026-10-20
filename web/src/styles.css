@@ -2405,6 +2405,10 @@ img.blur {
   font-size: 0.875rem;
 }
 
+.call-who .call-note.warn {
+  color: #ffb74d;
+}
+
 .device-picker fieldset {
   border: 0;
   margin: 0 0 1rem;

@@ -81,6 +81,19 @@ function Btn(props: { icon: IconName; label: string; onClick: () => void; tone?:
   );
 }
 
+// BatteryNote: how charged the other side's phone or laptop is; a low,
+// uncharged battery stands out, in words as well as in colour.
+function BatteryNote(props: { b: { level: number; charging: boolean } }) {
+  const { level: n, charging } = props.b;
+  const low = !charging && n <= 20;
+  return (
+    <p class={'call-note' + (low ? ' warn' : '')}>
+      <Icon name={charging ? 'bolt' : 'battery'} size={16} />{' '}
+      {charging ? t('call.batteryCharging', { n }) : low ? t('call.batteryLow', { n }) : t('call.battery', { n })}
+    </p>
+  );
+}
+
 // QualityBadge: the connection level, with the numbers behind it on tap.
 // Text, not just a colour, carries the level.
 function QualityBadge(props: { q: Quality }) {
@@ -200,6 +213,7 @@ export function CallScreen() {
               <Icon name="micOff" size={16} /> {t('call.peerMuted')}
             </p>
           )}
+          {c.phase === 'active' && c.peerBattery && <BatteryNote b={c.peerBattery} />}
           {/* Announces phase changes only, not every tick of the timer. */}
           <p class="sr-only" aria-live="polite">
             {c.phase === 'active' ? (c.reconnecting ? t('call.reconnecting') : t('call.connected')) : status}
