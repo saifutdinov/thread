@@ -124,6 +124,7 @@ export function CallScreen() {
   const dialog = useRef<HTMLDialogElement>(null);
   const [, tick] = useState(0);
   const [picker, setPicker] = useState(false);
+  const [tileRatio, setTileRatio] = useState('3 / 4'); // the minimized tile takes the picture's own shape
   const mini = !!c && minimized.value && c.phase !== 'incoming';
   useEffect(() => {
     const i = setInterval(() => tick((n) => n + 1), 1000);
@@ -182,8 +183,17 @@ export function CallScreen() {
           <IconButton icon="callEnd" label={t('call.hangup')} class="danger" onClick={() => hangup()} />
         </div>
         {theirVideo && (
-          <button type="button" class="call-tile" onClick={expand} aria-label={t('call.expand')}>
-            <video ref={attach(c.remote)} autoPlay playsInline muted />
+          <button type="button" class="call-tile" style={{ aspectRatio: tileRatio }} onClick={expand} aria-label={t('call.expand')}>
+            <video
+              ref={attach(c.remote)}
+              autoPlay
+              playsInline
+              muted
+              onResize={(e) => {
+                const v = e.currentTarget;
+                if (v.videoWidth && v.videoHeight) setTileRatio(`${v.videoWidth} / ${v.videoHeight}`);
+              }}
+            />
           </button>
         )}
       </>

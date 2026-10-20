@@ -203,7 +203,12 @@ const senderOf = (kind: 'audio' | 'video') => pc?.getTransceivers().find((tr) =>
 // battery is.
 function sendState() {
   const v = call.value;
-  const b = battery && { level: Math.round(battery.level * 100), charging: battery.charging };
+  // A desktop without a battery reads as full and charging: say nothing then
+  // (a full laptop on the charger loses nothing by it either).
+  const b =
+    battery && !(battery.level === 1 && battery.charging)
+      ? { level: Math.round(battery.level * 100), charging: battery.charging }
+      : undefined;
   if (v && state?.readyState === 'open') state.send(JSON.stringify({ camOff: v.camOff, muted: v.muted, battery: b }));
 }
 
@@ -232,7 +237,9 @@ function unwatchBattery() {
 
 function peerBattery(b: unknown): CallView['peerBattery'] {
   const { level, charging } = (b ?? {}) as { level?: unknown; charging?: unknown };
-  return typeof level === 'number' && level >= 0 && level <= 100 && typeof charging === 'boolean' ? { level, charging } : undefined;
+  return typeof level === 'number' && level >= 0 && level <= 100 && typeof charging === 'boolean'
+    ? { level: Math.round(level), charging }
+    : undefined;
 }
 
 // Hints tell the encoder what matters: smooth motion for a face (drop
