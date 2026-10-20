@@ -31,6 +31,9 @@ web/                   Preact + Vite PWA
   src/lib/prefs.ts     theme, text size, language effects
   src/lib/pwa.ts       install prompt, push subscription, SW registration
   src/lib/image.ts     client-side image, video poster, avatar and link-card picture preparation
+  src/lib/effects.ts   call effects: head position, particles, drawing, canvas pipeline
+  src/lib/face.ts      lazy MediaPipe face detector (self-hosted WebAssembly and model)
+  scripts/brotli.mjs   brotli copies of the build's WebAssembly (served by static())
   src/lib/emoji.ts     emoji-only messages drawn large
   src/lib/call.ts      WebRTC call state machine, tones, sealed signaling, ICE restart, quality stats
   src/lib/rtc.ts       call tuning without the DOM: Opus SDP params, codec order per device, quality level

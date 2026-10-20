@@ -21,7 +21,7 @@ const canEncodeWebp = () =>
 // Bytes per pixel a photo may take at the higher quality. Busy photos go
 // out at 0.85 as before; ones that come out under the budget (documents,
 // sky, close-ups) get 0.92, which keeps fine detail and text crisp.
-// ponytail: fixed per codec, tune from real upload sizes.
+// Limit: fixed per codec, tune from real upload sizes.
 const BUDGET: Record<string, number> = { 'image/webp': 0.15, 'image/jpeg': 0.25 };
 
 // scaleSteps lists the sizes to draw through when shrinking. Browsers
