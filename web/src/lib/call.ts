@@ -588,8 +588,13 @@ async function useCamera(): Promise<void> {
   hint(s);
   const track = s.getVideoTracks()[0];
   const keep = fx?.id; // the effect moves over to the new camera
-  dropEffects();
-  await sender.replaceTrack(track);
+  try {
+    await sender.replaceTrack(track);
+  } catch (e) {
+    track.stop();
+    throw e;
+  }
+  dropEffects(); // the old camera and its effect, now that they are not sent
   const now = call.value?.local;
   now?.getVideoTracks().forEach((tr) => tr.stop());
   update({ local: new MediaStream([...(now?.getAudioTracks() ?? []), track]), effect: undefined });
@@ -603,7 +608,7 @@ let fx: Effects | null = null;
 // A hidden page stops drawing (no frame callbacks), which would freeze the
 // picture the other side sees: send the bare camera until it is back.
 document.addEventListener('visibilitychange', () => {
-  if (fx) void senderOf('video')?.replaceTrack(document.hidden ? fx.camera : fx.track);
+  if (fx) senderOf('video')?.replaceTrack(document.hidden ? fx.camera : fx.track).catch(() => {}); // a closing call
 });
 
 // dropEffects stops the effect canvas and the camera under it.
@@ -629,17 +634,19 @@ export async function setEffect(id: EffectId | null) {
     const { camera } = fx;
     fx.stop();
     fx = null;
-    await sender.replaceTrack(camera);
+    // The camera goes back into the call state first: a call that ends
+    // meanwhile then stops it, and its light goes out.
     update({ local: new MediaStream([...(call.value?.local?.getAudioTracks() ?? []), camera]), effect: undefined });
+    await sender.replaceTrack(camera).catch(() => {});
     return;
   }
   const camera = v.local?.getVideoTracks()[0];
   if (!camera || v.effectLoading) return;
   update({ effectLoading: true });
   try {
-    const started = await startEffects(camera, id, () => {
+    const started = await startEffects(camera, id, (why) => {
       void setEffect(null);
-      showToast(t('fx.slow'));
+      showToast(t(why === 'slow' ? 'fx.slow' : 'fx.failed'));
     });
     const now = call.value;
     // The call ended, or the camera changed, while the engine loaded.
@@ -649,10 +656,12 @@ export async function setEffect(id: EffectId | null) {
     }
     fx = started;
     hint(new MediaStream([fx.track]));
-    await sender.replaceTrack(fx.track);
+    // Loaded while the app was in the background: the bare camera until it is back.
+    await sender.replaceTrack(document.hidden ? camera : fx.track);
     update({ local: new MediaStream([...(now.local?.getAudioTracks() ?? []), fx.track]), effect: id });
   } catch {
-    showToast(t('fx.failed'));
+    // A camera switched or turned off while loading is not a failure.
+    if (camera.readyState !== 'ended') showToast(t('fx.failed'));
   } finally {
     update({ effectLoading: false });
   }

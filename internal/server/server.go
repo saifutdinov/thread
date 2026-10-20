@@ -19,6 +19,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -309,8 +310,12 @@ func (s *Server) static() http.Handler {
 					if f, err := os.Open(p + ".br"); err == nil {
 						defer f.Close()
 						if st, err := f.Stat(); err == nil {
+							// Whole files only: ranges of the compressed bytes mean
+							// nothing to a browser, and the length helps its progress.
+							r.Header.Del("Range")
 							w.Header().Set("Content-Encoding", "br")
 							w.Header().Set("Content-Type", "application/wasm")
+							w.Header().Set("Content-Length", strconv.FormatInt(st.Size(), 10))
 							http.ServeContent(w, r, "", st.ModTime(), f)
 							return
 						}
@@ -324,13 +329,19 @@ func (s *Server) static() http.Handler {
 	})
 }
 
-// acceptsBrotli: the request lists br, and not with q=0.
+// acceptsBrotli: the request lists br with a weight above zero.
 func acceptsBrotli(r *http.Request) bool {
 	for _, part := range strings.Split(r.Header.Get("Accept-Encoding"), ",") {
 		name, params, _ := strings.Cut(part, ";")
-		if strings.TrimSpace(name) == "br" {
-			return strings.ReplaceAll(params, " ", "") != "q=0"
+		if !strings.EqualFold(strings.TrimSpace(name), "br") {
+			continue
 		}
+		key, q, found := strings.Cut(strings.TrimSpace(params), "=")
+		if !found || !strings.EqualFold(strings.TrimSpace(key), "q") {
+			return true
+		}
+		w, err := strconv.ParseFloat(strings.TrimSpace(q), 64)
+		return err == nil && w > 0
 	}
 	return false
 }

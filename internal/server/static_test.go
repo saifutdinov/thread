@@ -55,6 +55,49 @@ func TestStaticServesBrotliWasm(t *testing.T) {
 	if !strings.Contains(resp.Header.Get("Vary"), "Accept-Encoding") {
 		t.Fatalf("a cache must keep both: %v", resp.Header)
 	}
+
+	for _, tc := range []struct {
+		accept string
+		br     bool
+	}{
+		{"br;q=0", false},
+		{"gzip, br;q=0.0", false},
+		{"BR", true},
+		{"gzip;q=1, br;q=0.5", true},
+	} {
+		resp, body := get(tc.accept)
+		if (resp.Header.Get("Content-Encoding") == "br") != tc.br || (body == "brotli wasm") != tc.br {
+			t.Errorf("Accept-Encoding %q: got %q %q", tc.accept, resp.Header.Get("Content-Encoding"), body)
+		}
+	}
+
+	// No brotli copy: the file as it is.
+	if err := os.WriteFile(filepath.Join(assets, "y.wasm"), []byte("only raw"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	req, _ := http.NewRequest("GET", e.ts.URL+"/assets/y.wasm", nil)
+	req.Header.Set("Accept-Encoding", "br")
+	resp, err := rt.RoundTrip(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if string(b) != "only raw" || resp.Header.Get("Content-Encoding") != "" {
+		t.Fatalf("missing .br: %q %v", b, resp.Header)
+	}
+
+	// HEAD gets the same headers and no body.
+	req, _ = http.NewRequest("HEAD", e.ts.URL+"/assets/x.wasm", nil)
+	req.Header.Set("Accept-Encoding", "br")
+	resp, err = rt.RoundTrip(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != 200 || resp.Header.Get("Content-Encoding") != "br" || resp.Header.Get("Content-Length") != "11" {
+		t.Fatalf("HEAD: %d %v", resp.StatusCode, resp.Header)
+	}
 }
 
 // Effects run WebAssembly, which a CSP without 'wasm-unsafe-eval' forbids;

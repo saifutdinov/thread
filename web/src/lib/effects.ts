@@ -237,10 +237,17 @@ export interface Effects {
 const MAX_SIDE = 1280;
 
 // startEffects draws `camera` with the effect on a canvas and returns the
-// canvas's track. onSlow fires when this device cannot keep up.
-export async function startEffects(camera: MediaStreamTrack, first: EffectId, onSlow: () => void): Promise<Effects> {
+// canvas's track. onGiveUp fires when the device cannot keep up ('slow')
+// or the detector keeps failing ('failed'); the loop has stopped by then.
+export async function startEffects(
+  camera: MediaStreamTrack,
+  first: EffectId,
+  onGiveUp: (why: 'slow' | 'failed') => void,
+): Promise<Effects> {
   const { detector } = await import('./face');
   const faces = await detector();
+  // The first load takes seconds: the camera may be switched or off by now.
+  if (camera.readyState === 'ended') throw new Error('camera ended');
 
   const video = document.createElement('video');
   video.muted = true;
@@ -250,38 +257,83 @@ export async function startEffects(camera: MediaStreamTrack, first: EffectId, on
   // camera preview (WebKit bug 321693).
   Object.assign(video.style, { position: 'fixed', left: '0', top: '0', width: '1px', height: '1px', opacity: '0', pointerEvents: 'none' });
   document.body.append(video);
-  await video.play();
-
-  const { width = 640, height = 480 } = camera.getSettings();
-  const k = Math.min(1, MAX_SIDE / Math.max(width, height));
   const canvas = document.createElement('canvas');
-  const w = (canvas.width = Math.round(width * k));
-  const h = (canvas.height = Math.round(height * k));
   const ctx = canvas.getContext('2d')!;
-  const track = canvas.captureStream(30).getVideoTracks()[0];
+  let track: MediaStreamTrack | undefined;
+  let running = true;
+  let handle = 0;
+  const rvfc = 'requestVideoFrameCallback' in video;
+  const release = () => {
+    running = false;
+    if (rvfc) video.cancelVideoFrameCallback(handle);
+    else cancelAnimationFrame(handle);
+    track?.stop();
+    video.srcObject = null;
+    video.remove();
+  };
+  try {
+    // A camera that ends now would leave play() pending for good.
+    const playing = video.play();
+    playing.catch(() => {});
+    await Promise.race([playing, new Promise((_, no) => setTimeout(() => no(new Error('camera')), 5000))]);
+  } catch (e) {
+    release();
+    throw e;
+  }
 
   let id = first;
   let head: Head | null = null;
   let missed = 0;
+  let errors = 0;
   let lastDetect = 0;
   let last = performance.now();
   let slow = 0;
-  let running = true;
   let kind: ParticleKind | null = null;
   let ps: Particle[] = [];
+  let w = 0;
+  let h = 0;
+
+  // fit: the canvas follows the picture's shape (a phone turned mid-call;
+  // iOS reports the camera's size before rotation). Its track carries on.
+  const fit = () => {
+    const vw = video.videoWidth;
+    const vh = video.videoHeight;
+    if (!vw || !vh) return false;
+    const k = Math.min(1, MAX_SIDE / Math.max(vw, vh));
+    if (Math.round(vw * k) !== w || Math.round(vh * k) !== h) {
+      canvas.width = w = Math.round(vw * k);
+      canvas.height = h = Math.round(vh * k);
+      head = null;
+      kind = null; // particles start over on the new picture
+    }
+    return true;
+  };
+  fit();
+  track = canvas.captureStream(30).getVideoTracks()[0];
+
+  const giveUp = (why: 'slow' | 'failed') => {
+    running = false;
+    onGiveUp(why);
+  };
 
   const frame = () => {
     if (!running) return;
     const now = performance.now();
     const dt = Math.min(0.1, (now - last) / 1000);
     last = now;
-    if (video.readyState >= 2) {
+    if (video.readyState >= 2 && fit()) {
       const face = EFFECTS.find((e) => e.id === id)?.face;
       // ~15 detections a second are plenty; the overlay glides in between.
       if (face && now - lastDetect > 66) {
         lastDetect = now;
-        const kp = faces.detectForVideo(video, now).detections[0]?.keypoints;
-        const next = kp && headFrom(kp, w, h);
+        let next: Head | null = null;
+        try {
+          const kp = faces.detectForVideo(video, now).detections[0]?.keypoints;
+          next = kp ? headFrom(kp, w, h) : null;
+          errors = 0;
+        } catch {
+          if (++errors > 10) return giveUp('failed'); // one bad frame is "no face"
+        }
         if (next) {
           head = follow(head, next, 0.6);
           missed = 0;
@@ -301,13 +353,9 @@ export async function startEffects(camera: MediaStreamTrack, first: EffectId, on
       }
       // A frame over 80 ms, again and again: the phone cannot keep up.
       slow = performance.now() - now > 80 ? slow + 1 : 0;
-      if (slow > 30) {
-        onSlow();
-        return;
-      }
+      if (slow > 30) return giveUp('slow');
     }
-    if ('requestVideoFrameCallback' in video) video.requestVideoFrameCallback(frame);
-    else requestAnimationFrame(frame);
+    handle = rvfc ? video.requestVideoFrameCallback(frame) : requestAnimationFrame(frame);
   };
   frame();
 
@@ -321,11 +369,6 @@ export async function startEffects(camera: MediaStreamTrack, first: EffectId, on
       id = next;
       head = null;
     },
-    stop() {
-      running = false;
-      track.stop();
-      video.srcObject = null;
-      video.remove();
-    },
+    stop: release,
   };
 }

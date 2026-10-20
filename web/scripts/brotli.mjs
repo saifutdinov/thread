@@ -4,9 +4,10 @@
 // that accept it (internal/server/server.go, static).
 import { readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { brotliCompressSync, constants } from 'node:zlib';
 
-const dir = new URL('../dist/assets/', import.meta.url).pathname;
+const dir = fileURLToPath(new URL('../dist/assets/', import.meta.url));
 for (const f of readdirSync(dir).filter((n) => n.endsWith('.wasm'))) {
   const raw = readFileSync(join(dir, f));
   const br = brotliCompressSync(raw, { params: { [constants.BROTLI_PARAM_QUALITY]: 11, [constants.BROTLI_PARAM_SIZE_HINT]: raw.length } });

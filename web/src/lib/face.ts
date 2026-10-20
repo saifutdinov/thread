@@ -8,6 +8,8 @@ import wasmBinaryPath from '@mediapipe/tasks-vision/vision_wasm_internal.wasm?ur
 // from storage.googleapis.com/mediapipe-models/face_detector/blaze_face_short_range/float16/1/
 import modelAssetPath from '../assets/blaze_face_short_range.tflite?url';
 
+// Limit: the detector stays loaded for the life of the page (a second
+// open is instant); close() it when memory on old phones turns out tight.
 let ready: Promise<FaceDetector> | null = null;
 
 export function detector(): Promise<FaceDetector> {

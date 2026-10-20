@@ -74,9 +74,16 @@ function AudioPicker(props: { onClose: () => void }) {
   );
 }
 
-function Btn(props: { icon: IconName; label: string; onClick: () => void; tone?: 'red' | 'green' | 'on' }) {
+function Btn(props: { icon: IconName; label: string; onClick: () => void; tone?: 'red' | 'green' | 'on'; expanded?: boolean }) {
   return (
-    <button type="button" class={'call-btn ' + (props.tone ?? '')} onClick={props.onClick} aria-label={props.label} title={props.label}>
+    <button
+      type="button"
+      class={'call-btn ' + (props.tone ?? '')}
+      onClick={props.onClick}
+      aria-label={props.label}
+      title={props.label}
+      aria-expanded={props.expanded}
+    >
       <Icon name={props.icon} size={28} />
       <small>{props.label}</small>
     </button>
@@ -234,7 +241,15 @@ export function CallScreen() {
         </div>
         {fxOpen && c.video && !c.camOff && (
           <div class="fx-tray" role="group" aria-label={t('call.effects')}>
-            <button type="button" class="fx" aria-pressed={!c.effect} title={t('fx.none')} aria-label={t('fx.none')} onClick={() => void setEffect(null)}>
+            <button
+              type="button"
+              class="fx"
+              aria-pressed={!c.effect}
+              title={t('fx.none')}
+              aria-label={t('fx.none')}
+              disabled={c.effectLoading}
+              onClick={() => void setEffect(null)}
+            >
               <Icon name="close" size={22} />
             </button>
             {EFFECTS.map((e) => (
@@ -278,7 +293,13 @@ export function CallScreen() {
               )}
               {c.video && !c.camOff && cameras().length > 1 && <Btn icon="flip" label={t('call.switch')} onClick={switchCamera} />}
               {c.video && !c.camOff && (
-                <Btn icon="sparkle" label={t('call.effects')} tone={c.effect || fxOpen ? 'on' : undefined} onClick={() => setFxOpen(!fxOpen)} />
+                <Btn
+                  icon="sparkle"
+                  label={t('call.effects')}
+                  tone={c.effect || fxOpen ? 'on' : undefined}
+                  expanded={fxOpen}
+                  onClick={() => setFxOpen(!fxOpen)}
+                />
               )}
               {canPickAudio && <Btn icon="volume" label={t('call.sound')} onClick={() => setPicker(true)} />}
               <Btn icon="callEnd" label={t('call.hangup')} tone="red" onClick={() => hangup()} />
