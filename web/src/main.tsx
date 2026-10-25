@@ -3,6 +3,7 @@ import { InviteScreen, LoginScreen, LostScreen, PasswordScreen, PendingScreen, R
 import { Main } from './components/Main';
 import { LockScreen } from './components/Security';
 import { initLock, locked } from './lib/lock';
+import './lib/attention';
 import { initPrefs } from './lib/prefs';
 import { registerSW } from './lib/pwa';
 import { route } from './lib/route';

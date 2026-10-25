@@ -40,6 +40,7 @@ import { fmtDuration } from './recorder';
 import { idbClear, idbGet, idbSet } from './idb';
 import { prepareAvatar, prepareImage, prepareVideo, shrink } from './image';
 import { plain } from './markup';
+import { away, clear, notifyMessage } from './notify';
 import { subscribe, unsubscribe } from './pwa';
 import { go, parse, replace, route } from './route';
 
@@ -540,6 +541,12 @@ function onMessage(m: Msg) {
     x.id === m.chat ? { ...x, lastMsg: m, unread: fresh && !mine && !reading ? x.unread + 1 : x.unread } : x,
   );
   if (fresh && reading && !mine) markRead(m.chat);
+  // Open but not looked at: the system shows it (the server pushes only
+  // to devices without a socket).
+  if (fresh && !mine && away()) {
+    const from = nameOf(m.chat, m.user);
+    void notifyMessage(m.chat, c.kind === 'group' && c.titleText ? `${from} · ${c.titleText}` : from, summary(m.p), t('notify.message'));
+  }
 }
 
 let readTimer: ReturnType<typeof setTimeout> | undefined;
@@ -548,6 +555,7 @@ export function markRead(chatId: number) {
   const myMember = c?.members.find((x) => x.id === myId());
   const last = c?.lastMsg?.id ?? 0;
   if (!c || !myMember || !isVisible() || (last <= myMember.last_read && c.unread === 0)) return;
+  void clear('c' + chatId); // read here: its notifications are done
   chats.value = chats.value.map((x) =>
     x.id === chatId
       ? { ...x, unread: 0, members: x.members.map((mm) => (mm.id === myId() ? { ...mm, last_read: last } : mm)) }

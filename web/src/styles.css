@@ -666,6 +666,31 @@ textarea,
   padding: 1rem;
 }
 
+.notif-banner {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0.5rem 0.75rem;
+  align-items: start;
+  margin: 0.5rem;
+  padding: 0.75rem;
+  border-radius: 0.9rem;
+  background: var(--accent-soft);
+  color: var(--text);
+}
+
+.notif-banner > .icon {
+  color: var(--accent);
+}
+
+.notif-banner p {
+  margin: 0;
+  font-size: 0.875rem;
+}
+
+.notif-banner .row-buttons {
+  grid-column: 2;
+}
+
 .card .label {
   font-size: 0.875rem;
   color: var(--text-2);

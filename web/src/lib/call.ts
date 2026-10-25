@@ -4,6 +4,7 @@ import { rand, toB64u } from './crypto';
 import { refreshDevices, remember, remembered } from './devices';
 import { type EffectId, type Effects, startEffects } from './effects';
 import { errText, t } from './i18n';
+import { away, clear, notifyCall } from './notify';
 import { type Level, preferCodecs, rate, tuneOpus, videoOrder } from './rtc';
 import {
   appReady,
@@ -165,7 +166,15 @@ function quiet() {
   stopTone?.();
   stopTone = null;
   clearTimeout(ringTimer);
+  void clear('call'); // answered, declined, taken elsewhere or over
 }
+
+// The buttons on the call notification (notify.ts, sw.js).
+navigator.serviceWorker?.addEventListener('message', (e) => {
+  if (e.data?.t !== 'call' || call.value?.phase !== 'incoming') return;
+  if (e.data.k === 'answer') void accept(call.value.video);
+  else if (e.data.k === 'decline') decline();
+});
 
 const CAMERA = (facingMode: 'user' | 'environment'): MediaTrackConstraints => ({
   facingMode,
@@ -774,6 +783,10 @@ async function onSignal(ev: Record<string, unknown>) {
         stopTone = ringtone();
         navigator.vibrate?.([400, 200, 400]);
         ringTimer = setTimeout(cleanup, RING_MS);
+        if (away()) {
+          const name = findChat(ev.c as number)?.members.find((m) => m.id === ev.from)?.name ?? '';
+          void notifyCall(ev.c as number, name, t(ev.v ? 'call.incomingVideo' : 'call.incomingAudio'), t('call.accept'), t('call.decline'));
+        }
         return;
       case 'answer':
         // Only the first answer counts (the server lets one through too).

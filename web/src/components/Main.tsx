@@ -3,7 +3,7 @@ import { call } from '../lib/call';
 import { fromB64 } from '../lib/crypto';
 import { deviceCode } from '../lib/crypto';
 import { errText, t } from '../lib/i18n';
-import { isIOS, notifPermission, pushSupported, standalone } from '../lib/pwa';
+import { enablePush, isIOS, notifPermission, pushSupported, standalone } from '../lib/pwa';
 import { go, route } from '../lib/route';
 import { approveDevice, denyDevice, pending, showToast, toast } from '../lib/store';
 import { DeviceCode } from './Auth';
@@ -91,6 +91,43 @@ function EmptyPane() {
   );
 }
 
+// NotifBanner keeps asking for notifications until they are on: without
+// them calls and messages reach only a window that is in front. Browsers
+// let a page ask only on a tap; "not now" rests for a week.
+const LATER = 7 * 24 * 3600e3;
+function NotifBanner() {
+  const [later, setLater] = useState(() => {
+    try {
+      return Date.now() - Number(localStorage.getItem('notifLater') ?? 0) < LATER;
+    } catch {
+      return false;
+    }
+  });
+  if (!pushSupported || notifPermission.value !== 'default' || later) return null;
+  const snooze = () => {
+    try {
+      localStorage.setItem('notifLater', String(Date.now()));
+    } catch {
+      /* asks again next time, acceptable */
+    }
+    setLater(true);
+  };
+  return (
+    <section class="notif-banner" role="region" aria-label={t('settings.notifications')}>
+      <Icon name="bell" />
+      <p>{t('notify.banner')}</p>
+      <div class="row-buttons">
+        <button class="btn small" onClick={() => enablePush().catch((e) => showToast(errText(e)))}>
+          {t('settings.notifEnable')}
+        </button>
+        <button class="btn small secondary" onClick={snooze}>
+          {t('notify.later')}
+        </button>
+      </div>
+    </section>
+  );
+}
+
 // Onboarding asks once per device, right after sign-in: notifications,
 // then installing to the home screen (the only way to get push on iOS).
 function Onboarding() {
@@ -150,6 +187,7 @@ export function Main() {
   return (
     <div class={'app' + (chatId ? ' in-chat' : '') + (r.name === 'info' ? ' in-info' : '') + (call.value && minimized.value ? ' with-call-bar' : '')}>
       <aside class="sidebar">
+        <NotifBanner />
         <ChatList />
         {r.name === 'settings' && <Settings />}
         {r.name === 'new' && <NewChat />}

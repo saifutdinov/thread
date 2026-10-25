@@ -136,6 +136,8 @@ async function onPush(d) {
   } catch {
     /* no key on this device yet: generic text */
   }
+  // A dot on the app icon until the app opens and shows the real count.
+  if (self.navigator.setAppBadge) self.navigator.setAppBadge().catch(() => {});
   return self.registration.showNotification(d.n || L.app, {
     body,
     tag: 'c' + d.c,
@@ -157,10 +159,17 @@ self.addEventListener('push', (e) => {
 
 self.addEventListener('notificationclick', (e) => {
   e.notification.close();
-  const url = (e.notification.data && e.notification.data.url) || '/';
+  const data = e.notification.data || {};
+  const url = data.url || '/';
   e.waitUntil(
     self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((list) => {
       for (const c of list) {
+        // The call notification's buttons (notify.ts): declining needs no
+        // window in front, answering does.
+        if ('focus' in c && data.call && e.action) {
+          c.postMessage({ t: 'call', k: e.action });
+          return e.action === 'answer' ? c.focus() : undefined;
+        }
         if ('focus' in c) {
           // An open app routes in place: a navigation would reload it, and
           // iOS home-screen apps lose the microphone permission on each one.
