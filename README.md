@@ -11,7 +11,7 @@
 - **Messaging:** private chats and groups, replies, reactions, formatting, editing and deleting, forwarding, pinned messages, search on the device, link previews (off by default), swipe to reply.
 - **Media:** photos (location and other metadata removed), videos, files up to 50 MB, voice messages with playback speed, round video messages.
 - **Calls:** one-to-one voice and video calls with your own relay server, the camera can be turned on mid-call, a call minimizes so you can keep chatting, the other side's battery level (where their browser shares it), face effects drawn on your device (a crown, cat ears, hearts, snow, colour filters), recovery after network changes (Wi-Fi to mobile data) and a connection quality indicator.
-- **App:** push notifications, light and dark themes, English and Russian, adjustable text size, app lock with a PIN or Face ID / fingerprint, hidden online status.
+- **App:** push notifications (also when the app is open behind other windows; calls with Answer and Decline buttons), a floating call window above other windows (Chrome and Edge on computers), light and dark themes, English and Russian, adjustable text size, app lock with a PIN or Face ID / fingerprint, hidden online status.
 - **Small server:** one Go binary with SQLite, encrypted daily backups (optionally to S3), Prometheus metrics. Runs on a 1 GB VPS.
 
 ## Quick start
