@@ -1,8 +1,10 @@
 import { signal } from '@preact/signals';
+import { render } from 'preact';
 import { useEffect, useRef, useState } from 'preact/hooks';
 import {
   accept,
   call,
+  type CallView,
   decline,
   hangup,
   type Quality,
@@ -18,7 +20,7 @@ import { cameras, canPickOutput, deviceName, microphones, speakers } from '../li
 import { EFFECTS } from '../lib/effects';
 import { t } from '../lib/i18n';
 import { fmtDuration } from '../lib/recorder';
-import { type CallLog, chatPicture, findChat } from '../lib/store';
+import { type CallLog, chatPicture, findChat, showToast } from '../lib/store';
 import { Avatar, Icon, IconButton, type IconName, Modal } from './ui';
 
 // A minimized call shrinks to a strip at the top (and, with video, a small
@@ -124,6 +126,100 @@ function QualityBadge(props: { q: Quality }) {
   );
 }
 
+const peerName = (c: CallView) => findChat(c.chat)?.members.find((m) => m.id === c.peer)?.name ?? '';
+
+// remoteShown: their camera is on and its picture is here. Off (they say
+// so over the data channel): show the avatar, not a frozen or black
+// picture. An older app sends no state: go by the call type.
+const remoteShown = (c: CallView) => (c.peerCamOff === undefined ? c.video : !c.peerCamOff) && !!c.remote?.getVideoTracks().length;
+
+function statusOf(c: CallView): string {
+  if (c.phase === 'outgoing') return t('call.calling');
+  if (c.phase === 'incoming') return c.video ? t('call.incomingVideo') : t('call.incomingAudio');
+  if (c.phase === 'connecting') return t('call.connecting');
+  return c.reconnecting ? t('call.reconnecting') : fmtDuration(Date.now() - (c.since ?? Date.now()));
+}
+
+// ---------- the floating window ----------
+
+// Document Picture-in-Picture (Chrome, Edge on computers): a small window
+// above all others with the call in it. Safari floats only a <video>.
+type DocPip = { requestWindow(o: { width: number; height: number }): Promise<Window> };
+const docPip = (window as Window & { documentPictureInPicture?: DocPip }).documentPictureInPicture;
+let pipWindow: Window | null = null;
+
+export const canFloat = (c: CallView) => c.phase === 'active' && (!!docPip || (document.pictureInPictureEnabled && remoteShown(c)));
+
+// floatVideo: the other side's video alone in the browser's own floating
+// window (Safari, or when the document window is refused).
+async function floatVideo() {
+  const v = document.querySelector<HTMLVideoElement>('.call-remote, .call-tile video');
+  if (!v) throw new Error('no video');
+  await v.requestPictureInPicture();
+}
+
+export async function floatCall() {
+  if (!docPip) return floatVideo();
+  if (pipWindow) return;
+  let w: Window;
+  try {
+    w = await docPip.requestWindow({ width: 320, height: 400 });
+  } catch (e) {
+    if (call.value && remoteShown(call.value)) return floatVideo();
+    throw e;
+  }
+  // The app's own styles; the window's address is about:blank, so links
+  // need their full address.
+  for (const l of document.querySelectorAll<HTMLLinkElement>('link[rel=stylesheet]')) {
+    const n = w.document.createElement('link');
+    n.rel = 'stylesheet';
+    n.href = l.href;
+    w.document.head.append(n);
+  }
+  for (const s of document.querySelectorAll('style')) w.document.head.append(s.cloneNode(true));
+  w.document.documentElement.dataset.theme = document.documentElement.dataset.theme ?? '';
+  w.document.title = document.title;
+  pipWindow = w;
+  render(<FloatingCall />, w.document.body);
+  w.addEventListener('pagehide', () => {
+    render(null, w.document.body);
+    pipWindow = null;
+  });
+}
+
+// FloatingCall: the other side (or their avatar), the time and two buttons.
+// The call's sound keeps playing in the main window.
+function FloatingCall() {
+  const c = call.value;
+  const [, tick] = useState(0);
+  useEffect(() => {
+    const i = setInterval(() => tick((n) => n + 1), 1000);
+    return () => clearInterval(i);
+  }, []);
+  useEffect(() => {
+    if (!c) pipWindow?.close(); // the call is over: so is its window
+  }, [c?.id]);
+  if (!c) return null;
+  const chat = findChat(c.chat);
+  return (
+    <div class="pip-call">
+      {remoteShown(c) ? (
+        <video ref={attach(c.remote)} class="pip-video" autoPlay playsInline muted />
+      ) : (
+        <Avatar id={c.peer} name={peerName(c)} size={96} src={chat && chatPicture(chat)} />
+      )}
+      <div class="pip-bar">
+        <span class="pip-who">
+          <b>{peerName(c)}</b>
+          <small>{statusOf(c)}</small>
+        </span>
+        <IconButton icon={c.muted ? 'micOff' : 'mic'} label={c.muted ? t('call.unmute') : t('call.mute')} onClick={toggleMute} />
+        <IconButton icon="callEnd" label={t('call.hangup')} class="danger" onClick={() => hangup()} />
+      </div>
+    </div>
+  );
+}
+
 // CallScreen covers the app while a call rings or runs, or shrinks to a
 // strip when minimized. Sound plays through one <audio> element, first in
 // both layouts so it stays mounted across them; remote <video> elements are
@@ -143,6 +239,18 @@ export function CallScreen() {
   useEffect(() => {
     if (!c) minimized.value = false; // the next call opens full screen
   }, [c?.id]);
+  // Chrome 142+ opens the floating window by itself when the person
+  // switches tabs mid-call (the camera or microphone in use).
+  useEffect(() => {
+    if (!docPip || c?.phase !== 'active') return;
+    const action = 'enterpictureinpicture' as MediaSessionAction;
+    try {
+      navigator.mediaSession.setActionHandler(action, () => void floatCall().catch(() => {}));
+    } catch {
+      return; // an older browser without this action
+    }
+    return () => navigator.mediaSession.setActionHandler(action, null);
+  }, [c?.phase]);
   // A modal <dialog>: focus moves in and the app behind turns inert.
   useEffect(() => {
     const d = dialog.current;
@@ -151,30 +259,15 @@ export function CallScreen() {
   if (!c) return null;
 
   const chat = findChat(c.chat);
-  const name = chat?.members.find((m) => m.id === c.peer)?.name ?? '';
-  // Their camera off (they say so over the data channel): show the avatar,
-  // not a frozen or black picture.
-  // An older app on the other side sends no state: go by the call type.
-  const theyShow = c.peerCamOff === undefined ? c.video : !c.peerCamOff;
-  const theirVideo = theyShow && !!c.remote?.getVideoTracks().length;
+  const name = peerName(c);
+  const theirVideo = remoteShown(c);
   const sink = speaker.value;
   const audioRef = (el: HTMLAudioElement | null) => {
     attach(c.remote)(el);
     if (el && canPickOutput && el.sinkId !== sink) el.setSinkId(sink).catch(() => {});
   };
   const canPickAudio = microphones().length > 1 || speakers().length > 1;
-  const status =
-    c.phase === 'outgoing'
-      ? t('call.calling')
-      : c.phase === 'incoming'
-        ? c.video
-          ? t('call.incomingVideo')
-          : t('call.incomingAudio')
-        : c.phase === 'connecting'
-          ? t('call.connecting')
-          : c.reconnecting
-            ? t('call.reconnecting')
-            : fmtDuration(Date.now() - (c.since ?? Date.now()));
+  const status = statusOf(c);
 
   const expand = () => (minimized.value = false);
   const audio = <audio ref={audioRef} autoPlay />;
@@ -302,6 +395,7 @@ export function CallScreen() {
                 />
               )}
               {canPickAudio && <Btn icon="volume" label={t('call.sound')} onClick={() => setPicker(true)} />}
+              {canFloat(c) && <Btn icon="pip" label={t('call.pip')} onClick={() => void floatCall().catch(() => showToast(t('call.pipFailed')))} />}
               <Btn icon="callEnd" label={t('call.hangup')} tone="red" onClick={() => hangup()} />
             </>
           )}
