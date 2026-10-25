@@ -16,6 +16,12 @@ export const pushSupported = 'serviceWorker' in navigator && 'PushManager' in wi
 export const notifPermission = signal<NotificationPermission | 'unsupported'>(
   pushSupported ? Notification.permission : 'unsupported',
 );
+// The permission may change in the browser's site settings meanwhile.
+if (pushSupported)
+  navigator.permissions
+    ?.query({ name: 'notifications' })
+    .then((s) => (s.onchange = () => (notifPermission.value = Notification.permission)))
+    .catch(() => {});
 
 // Chromium offers a real install prompt; iOS has none, so the UI shows
 // "Share -> Add to Home Screen" instructions instead.

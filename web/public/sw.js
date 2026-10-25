@@ -163,13 +163,15 @@ self.addEventListener('notificationclick', (e) => {
   const url = data.url || '/';
   e.waitUntil(
     self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((list) => {
+      // The call notification's buttons (notify.ts): every open tab hears
+      // them and the ringing one acts. Declining needs no window in front,
+      // answering does; with no window left the call is gone anyway.
+      if (data.call && e.action) {
+        list.forEach((c) => c.postMessage({ t: 'call', k: e.action }));
+        const c = list.find((x) => 'focus' in x);
+        return e.action === 'answer' && c ? c.focus() : undefined;
+      }
       for (const c of list) {
-        // The call notification's buttons (notify.ts): declining needs no
-        // window in front, answering does.
-        if ('focus' in c && data.call && e.action) {
-          c.postMessage({ t: 'call', k: e.action });
-          return e.action === 'answer' ? c.focus() : undefined;
-        }
         if ('focus' in c) {
           // An open app routes in place: a navigation would reload it, and
           // iOS home-screen apps lose the microphone permission on each one.

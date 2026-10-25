@@ -117,10 +117,10 @@ function NotifBanner() {
       <Icon name="bell" />
       <p>{t('notify.banner')}</p>
       <div class="row-buttons">
-        <button class="btn small" onClick={() => enablePush().catch((e) => showToast(errText(e)))}>
+        <button class="btn" onClick={() => enablePush().catch((e) => showToast(errText(e)))}>
           {t('settings.notifEnable')}
         </button>
-        <button class="btn small secondary" onClick={snooze}>
+        <button class="btn secondary" onClick={snooze}>
           {t('notify.later')}
         </button>
       </div>

@@ -536,16 +536,22 @@ function onMessage(m: Msg) {
   if (m.deleted || m.id < lastId) return;
   const fresh = m.id > lastId;
   const mine = m.user === myId();
-  const reading = openChatId() === m.chat && isVisible();
+  // Read only when looked at: a window behind others neither marks the
+  // message read (no receipt for the sender) nor hides it from the count.
+  const reading = openChatId() === m.chat && !away();
   chats.value = chats.value.map((x) =>
     x.id === m.chat ? { ...x, lastMsg: m, unread: fresh && !mine && !reading ? x.unread + 1 : x.unread } : x,
   );
   if (fresh && reading && !mine) markRead(m.chat);
   // Open but not looked at: the system shows it (the server pushes only
   // to devices without a socket).
-  if (fresh && !mine && away()) {
+  // A finished call needs no word after the fact; a missed one does, the
+  // way the service worker says it.
+  const cl = m.p?.cl;
+  if (fresh && !mine && away() && cl?.s !== 'ok') {
     const from = nameOf(m.chat, m.user);
-    void notifyMessage(m.chat, c.kind === 'group' && c.titleText ? `${from} · ${c.titleText}` : from, summary(m.p), t('notify.message'));
+    const text = cl ? `📞 ${t('call.missed')}` : summary(m.p);
+    void notifyMessage(m.chat, c.kind === 'group' && c.titleText ? `${from} · ${c.titleText}` : from, text, t('notify.message'));
   }
 }
 
@@ -554,7 +560,7 @@ export function markRead(chatId: number) {
   const c = findChat(chatId);
   const myMember = c?.members.find((x) => x.id === myId());
   const last = c?.lastMsg?.id ?? 0;
-  if (!c || !myMember || !isVisible() || (last <= myMember.last_read && c.unread === 0)) return;
+  if (!c || !myMember || away() || (last <= myMember.last_read && c.unread === 0)) return;
   void clear('c' + chatId); // read here: its notifications are done
   chats.value = chats.value.map((x) =>
     x.id === chatId
@@ -1133,6 +1139,11 @@ document.addEventListener('visibilitychange', () => {
   }
 });
 window.addEventListener('pagehide', dropSocket);
+// Back in front: the open chat counts as read now (see onMessage).
+window.addEventListener('focus', () => {
+  const id = openChatId();
+  if (id) markRead(id);
+});
 
 // Advance the sync cursor now and then, so a long session does not end up
 // with more than one page of changes to catch up on.
@@ -1183,6 +1194,8 @@ async function handleEvent(e: ServerEvent) {
       if (e.m) onMessage((await hydrate([e.m]))[0]);
       break;
     case 'read':
+      // Read on another of my devices: its notifications here are done.
+      if (e.u === myId() && e.id! >= (findChat(e.c!)?.lastMsg?.id ?? 0)) void clear('c' + e.c);
       chats.value = chats.value.map((c) =>
         c.id === e.c
           ? {

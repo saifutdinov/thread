@@ -20,6 +20,7 @@ import { cameras, canPickOutput, deviceName, microphones, speakers } from '../li
 import { EFFECTS } from '../lib/effects';
 import { t } from '../lib/i18n';
 import { fmtDuration } from '../lib/recorder';
+import { locked } from '../lib/lock';
 import { type CallLog, chatPicture, findChat, showToast } from '../lib/store';
 import { Avatar, Icon, IconButton, type IconName, Modal } from './ui';
 
@@ -158,7 +159,13 @@ async function floatVideo() {
   await v.requestPictureInPicture();
 }
 
-export async function floatCall() {
+// One window at a time, also when the button and the browser ask at once.
+let opening: Promise<void> | null = null;
+export function floatCall(): Promise<void> {
+  return (opening ??= openFloat().finally(() => (opening = null)));
+}
+
+async function openFloat() {
   if (!docPip) return floatVideo();
   if (pipWindow) return;
   let w: Window;
@@ -177,40 +184,47 @@ export async function floatCall() {
     w.document.head.append(n);
   }
   for (const s of document.querySelectorAll('style')) w.document.head.append(s.cloneNode(true));
-  w.document.documentElement.dataset.theme = document.documentElement.dataset.theme ?? '';
+  const root = w.document.documentElement;
+  root.dataset.theme = document.documentElement.dataset.theme ?? '';
+  root.style.fontSize = document.documentElement.style.fontSize; // the text size setting
+  root.lang = document.documentElement.lang;
   w.document.title = document.title;
   pipWindow = w;
-  render(<FloatingCall />, w.document.body);
+  render(<FloatingCall win={w} />, w.document.body);
   w.addEventListener('pagehide', () => {
     render(null, w.document.body);
-    pipWindow = null;
+    if (pipWindow === w) pipWindow = null;
   });
 }
 
 // FloatingCall: the other side (or their avatar), the time and two buttons.
-// The call's sound keeps playing in the main window.
-function FloatingCall() {
+// The call's sound keeps playing in the main window. The app lock hides
+// who it is, as it hides the app.
+function FloatingCall(props: { win: Window }) {
   const c = call.value;
+  const hidden = locked.value;
   const [, tick] = useState(0);
   useEffect(() => {
     const i = setInterval(() => tick((n) => n + 1), 1000);
     return () => clearInterval(i);
   }, []);
   useEffect(() => {
-    if (!c) pipWindow?.close(); // the call is over: so is its window
+    if (!c) props.win.close(); // the call is over: so is its window
   }, [c?.id]);
   if (!c) return null;
   const chat = findChat(c.chat);
   return (
     <div class="pip-call">
-      {remoteShown(c) ? (
+      {hidden ? (
+        <Icon name="lock" size={48} />
+      ) : remoteShown(c) ? (
         <video ref={attach(c.remote)} class="pip-video" autoPlay playsInline muted />
       ) : (
         <Avatar id={c.peer} name={peerName(c)} size={96} src={chat && chatPicture(chat)} />
       )}
       <div class="pip-bar">
         <span class="pip-who">
-          <b>{peerName(c)}</b>
+          <b>{hidden ? '' : peerName(c)}</b>
           <small>{statusOf(c)}</small>
         </span>
         <IconButton icon={c.muted ? 'micOff' : 'mic'} label={c.muted ? t('call.unmute') : t('call.mute')} onClick={toggleMute} />
