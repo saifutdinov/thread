@@ -130,9 +130,13 @@ function NotifBanner() {
 
 // UpdateBanner: the server runs a newer release than this page (pwa.ts
 // checkUpdate); a reload picks it up. Not during a call, which a reload
-// would end; "Later" hides it until the app starts again.
+// would end; "Later" hides it until the app starts again. It lives above
+// the chat list, hidden on a phone inside a chat: a toast says it there.
 function UpdateBanner() {
   const [later, setLater] = useState(false);
+  useEffect(() => {
+    if (updateReady.value && !call.value) showToast(t('update.ready'));
+  }, [updateReady.value]);
   if (!updateReady.value || later || call.value) return null;
   return (
     <section class="notif-banner" role="region" aria-label={t('update.title')}>
