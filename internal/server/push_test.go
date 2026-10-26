@@ -205,3 +205,43 @@ func TestTestPushReachesThisDevice(t *testing.T) {
 		t.Fatalf("no subscription: %d %d", code, res.Sent)
 	}
 }
+
+// Presence follows the visible page: a tab left in the background keeps
+// its socket but does not show its owner as online all day.
+func TestHiddenTabIsNotOnline(t *testing.T) {
+	e := newEnv(t)
+	a := e.register("A")
+	_, inv := a.createChat("direct", 1)
+	b := e.join(inv, "B")
+	online := func() bool {
+		var chats []struct {
+			Members []struct {
+				ID     int64 `json:"id"`
+				Online bool  `json:"online"`
+			} `json:"members"`
+		}
+		a.must(200, "GET", "/api/chats", nil, &chats)
+		for _, m := range chats[0].Members {
+			if m.ID == b.user {
+				return m.Online
+			}
+		}
+		t.Fatal("B is not in the chat")
+		return false
+	}
+	ws := b.socket(t)
+	time.Sleep(50 * time.Millisecond)
+	if !online() {
+		t.Fatal("a visible page is online")
+	}
+	emit(t, ws, map[string]any{"t": "vis", "h": true})
+	time.Sleep(50 * time.Millisecond)
+	if online() {
+		t.Fatal("a background tab shows its owner online")
+	}
+	emit(t, ws, map[string]any{"t": "vis", "h": false})
+	time.Sleep(50 * time.Millisecond)
+	if !online() {
+		t.Fatal("back in front, still offline")
+	}
+}

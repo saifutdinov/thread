@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/coder/websocket"
@@ -20,7 +19,7 @@ type client struct {
 	active       bool
 	send         chan []byte
 	cancel       context.CancelFunc
-	hidden       atomic.Bool // its page is in the background (computers keep the socket)
+	hidden       bool // its page is in the background (computers keep the socket); guarded by hub.mu
 }
 
 // hub fans events out to connected devices and tracks presence.
@@ -52,23 +51,36 @@ func (h *hub) add(c *client) (first bool) {
 	}
 	first = !h.activeIn(set)
 	set[c] = struct{}{}
-	return first && c.active
+	return first && h.activeIn(set)
 }
 
 func (h *hub) remove(c *client) (last bool) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	set := h.users[c.user]
+	was := h.activeIn(set)
 	delete(set, c)
 	if len(set) == 0 {
 		delete(h.users, c.user)
 	}
-	return c.active && !h.activeIn(set)
+	return was && !h.activeIn(set)
 }
 
+// setHidden records a page going to the background or back; changed
+// reports whether its user's presence flipped with it.
+func (h *hub) setHidden(c *client, hidden bool) (changed bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	set := h.users[c.user]
+	was := h.activeIn(set)
+	c.hidden = hidden
+	return was != h.activeIn(set)
+}
+
+// activeIn: someone is here, an approved device with its page in front.
 func (h *hub) activeIn(set map[*client]struct{}) bool {
 	for c := range set {
-		if c.active {
+		if c.active && !c.hidden {
 			return true
 		}
 	}
@@ -101,7 +113,7 @@ func (h *hub) deviceInFront(device int64) bool {
 	defer h.mu.Unlock()
 	for _, set := range h.users {
 		for c := range set {
-			if c.device == device && !c.hidden.Load() {
+			if c.device == device && !c.hidden {
 				return true
 			}
 		}
@@ -198,10 +210,7 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request, a *Auth) {
 	}
 	defer func() {
 		if s.hub.remove(c) {
-			if _, err := s.db.ExecContext(context.Background(), `UPDATE users SET last_seen = ? WHERE id = ?`, now(), a.UserID); err != nil {
-				s.log.Warn("last seen", "err", err)
-			}
-			s.announce(context.Background(), a.UserID, false)
+			s.presenceChanged(context.Background(), a.UserID, false)
 		}
 		conn.CloseNow()
 	}()
@@ -246,7 +255,9 @@ func (s *Server) readWS(ctx context.Context, conn *websocket.Conn, c *client) {
 			continue
 		}
 		if in.T == "vis" {
-			c.hidden.Store(in.H)
+			if s.hub.setHidden(c, in.H) {
+				s.presenceChanged(ctx, c.user, !in.H)
+			}
 			continue
 		}
 		if in.T == "call" {
@@ -265,6 +276,17 @@ func (s *Server) readWS(ctx context.Context, conn *websocket.Conn, c *client) {
 		}
 		s.hub.toUsers(without(ids, c.user), event{"t": "typing", "c": in.C, "u": c.user})
 	}
+}
+
+// presenceChanged: the user came online or left (closed the app, or put
+// its last visible page in the background). Leaving stamps last_seen.
+func (s *Server) presenceChanged(ctx context.Context, userID int64, online bool) {
+	if !online {
+		if _, err := s.db.ExecContext(ctx, `UPDATE users SET last_seen = ? WHERE id = ?`, now(), userID); err != nil {
+			s.log.Warn("last seen", "err", err)
+		}
+	}
+	s.announce(ctx, userID, online)
 }
 
 // announce tells contacts the user came online or left, unless hidden.
