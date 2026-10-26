@@ -4,7 +4,8 @@ import { rand, toB64u } from './crypto';
 import { refreshDevices, remember, remembered } from './devices';
 import { type EffectId, type Effects, startEffects } from './effects';
 import { errText, t } from './i18n';
-import { behind, clear, notifyCall } from './notify';
+import { idbGet, idbSet } from './idb';
+import { clear, notifyCall, notifyHere } from './notify';
 import { type Level, preferCodecs, rate, tuneOpus, videoOrder } from './rtc';
 import {
   appReady,
@@ -785,9 +786,16 @@ async function onSignal(ev: Record<string, unknown>) {
         stopTone = ringtone();
         navigator.vibrate?.([400, 200, 400]);
         ringTimer = setTimeout(cleanup, RING_MS);
-        if (behind()) {
+        // Answered from the notification before the call reached this page
+        // (it opened, or woke, from the tap): pick it up.
+        const asked = await idbGet<{ id: string; at: number } | null>('answer');
+        if (asked?.id === id && Date.now() - asked.at < RING_MS) {
+          void idbSet('answer', null);
+          return void accept(true);
+        }
+        if (notifyHere()) {
           const name = findChat(ev.c as number)?.members.find((m) => m.id === ev.from)?.name ?? '';
-          void notifyCall(ev.c as number, name, t(ev.v ? 'call.incomingVideo' : 'call.incomingAudio'), t('call.accept'), t('call.decline'));
+          void notifyCall(ev.c as number, id, name, t(ev.v ? 'call.incomingVideo' : 'call.incomingAudio'), t('call.accept'), t('call.decline'));
         }
         return;
       case 'answer':

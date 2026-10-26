@@ -5,16 +5,17 @@
 // a notification instead of doubling it. Best effort: a notification that
 // cannot be shown is not worth an error.
 import { idbGet } from './idb';
-import { pushSupported } from './pwa';
+import { pushOn, pushSupported } from './pwa';
 
 const allowed = () => pushSupported && Notification.permission === 'granted';
 
 // away: the person is not looking at this page right now.
 export const away = () => document.visibilityState !== 'visible' || !document.hasFocus();
 
-// behind: visible, but another window has the focus. Only then the page
-// notifies: a hidden page gets the server's push, and both would double.
-export const behind = () => document.visibilityState === 'visible' && !document.hasFocus();
+// notifyHere: the page tells the system itself when it is visible but
+// another window has the focus. A hidden page gets the server's push (both
+// would double), unless this browser has no push subscription.
+export const notifyHere = () => (document.visibilityState === 'visible' ? !document.hasFocus() : !pushOn);
 
 // The service worker's registration: Android allows no page-made
 // `new Notification`, and only it can carry action buttons. None at all
@@ -43,7 +44,7 @@ export function notifyMessage(chat: number, from: string, text: string, fallback
 
 // An incoming call stays on screen until answered. Chromium browsers show
 // the two buttons; elsewhere a tap opens the app on the ringing call.
-export function notifyCall(chat: number, from: string, body: string, answer: string, decline: string) {
+export function notifyCall(chat: number, id: string, from: string, body: string, answer: string, decline: string) {
   return inOrder(async () => {
     const hide = await idbGet<boolean>('hidePreview');
     await display(hide || !from ? body : `📞 ${from}`, {
@@ -51,7 +52,7 @@ export function notifyCall(chat: number, from: string, body: string, answer: str
       tag: 'call',
       renotify: true,
       requireInteraction: true,
-      data: { url: '/#/c/' + chat, call: true },
+      data: { url: '/#/c/' + chat, call: true, c: chat, id },
       actions: [
         { action: 'answer', title: answer },
         { action: 'decline', title: decline },

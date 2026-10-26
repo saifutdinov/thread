@@ -40,7 +40,7 @@ import { fmtDuration } from './recorder';
 import { idbClear, idbGet, idbSet } from './idb';
 import { prepareAvatar, prepareImage, prepareVideo, shrink } from './image';
 import { plain } from './markup';
-import { away, behind, clear, notifyMessage } from './notify';
+import { away, clear, notifyHere, notifyMessage } from './notify';
 import { mobile, subscribe, unsubscribe } from './pwa';
 import { go, parse, replace, route } from './route';
 
@@ -544,11 +544,11 @@ function onMessage(m: Msg) {
   );
   if (fresh && reading && !mine) markRead(m.chat);
   // Visible but not in front: the system shows it (a hidden page gets the
-  // server's push). Of a call only a missed one is worth a word, the way
+  // server's push, see notifyHere). Of a call only a missed one is worth a word, the way
   // the service worker says it.
   const cl = m.p?.cl;
   const missed = cl?.s === 'missed' || cl?.s === 'busy';
-  if (fresh && !mine && behind() && (!cl || missed)) {
+  if (fresh && !mine && notifyHere() && (!cl || missed)) {
     const from = nameOf(m.chat, m.user);
     const text = cl ? `📞 ${t('call.missed')}` : summary(m.p);
     void notifyMessage(m.chat, c.kind === 'group' && c.titleText ? `${from} · ${c.titleText}` : from, text, t('notify.message'));

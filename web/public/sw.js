@@ -72,6 +72,23 @@ function idbGet(key) {
   });
 }
 
+function idbSet(key, value) {
+  return new Promise((resolve) => {
+    const open = indexedDB.open('thread', 1);
+    open.onupgradeneeded = () => open.result.createObjectStore('kv');
+    open.onerror = () => resolve();
+    open.onsuccess = () => {
+      try {
+        const tx = open.result.transaction('kv', 'readwrite');
+        tx.objectStore('kv').put(value, key);
+        tx.oncomplete = tx.onerror = () => resolve();
+      } catch {
+        resolve();
+      }
+    };
+  });
+}
+
 function fromB64(s) {
   const bin = atob(s);
   const out = new Uint8Array(bin.length);
@@ -97,11 +114,13 @@ async function decryptText(d) {
   return JSON.parse(new TextDecoder().decode(pt));
 }
 
-// close removes the notifications with this tag; with none left, the
-// app icon's dot goes too.
-async function close(tag) {
-  for (const n of await self.registration.getNotifications({ tag })) n.close();
-  if (!(await self.registration.getNotifications()).length && self.navigator.clearAppBadge) await self.navigator.clearAppBadge().catch(() => {});
+// close removes the notifications with this tag, those about messages up
+// to `upTo` when given (newer ones stay unread). The app icon's count is
+// the app's to reset: other chats may still be unread.
+async function close(tag, upTo) {
+  for (const n of await self.registration.getNotifications({ tag })) {
+    if (upTo === undefined || !(n.data && n.data.m > upTo)) n.close();
+  }
 }
 
 async function onPush(d) {
@@ -109,7 +128,7 @@ async function onPush(d) {
   const L = TEXT[lang];
   // Silent pushes (never through Apple or Mozilla, see push.go): the chat
   // was read on another device, the call answered or declined there.
-  if (d.t === 'read') return close('c' + d.c);
+  if (d.t === 'read') return close('c' + d.c, d.id);
   if (d.t === 'callEnd') return close('call');
   if (d.t === 'test') {
     return self.registration.showNotification(L.test, { body: L.testBody, tag: 'test', icon: '/icon-192.png', data: { url: '/#/settings' } });
@@ -131,7 +150,7 @@ async function onPush(d) {
       requireInteraction: true,
       vibrate: [400, 200, 400, 200, 400],
       icon: '/icon-192.png',
-      data: { url: '/#/c/' + d.c, call: true },
+      data: { url: '/#/c/' + d.c, call: true, c: d.c, id: d.id },
       actions: [
         { action: 'answer', title: L.answer },
         { action: 'decline', title: L.decline },
@@ -147,7 +166,7 @@ async function onPush(d) {
   if (p && p.cl) await close('call'); // the ring is over: the call log takes its place
   // App lock with hidden previews: say nothing about who or what.
   if (await idbGet('hidePreview')) {
-    return self.registration.showNotification(L.app, { body: L.msg, tag: 'c' + d.c, icon: '/icon-192.png', data: { url: '/#/c/' + d.c } });
+    return self.registration.showNotification(L.app, { body: L.msg, tag: 'c' + d.c, icon: '/icon-192.png', data: { url: '/#/c/' + d.c, m: d.m } });
   }
   let body = L.msg;
   if (p) {
@@ -163,7 +182,7 @@ async function onPush(d) {
     tag: 'c' + d.c,
     renotify: true,
     icon: '/icon-192.png',
-    data: { url: '/#/c/' + d.c },
+    data: { url: '/#/c/' + d.c, m: d.m },
   });
 }
 
@@ -183,15 +202,17 @@ self.addEventListener('notificationclick', (e) => {
   const url = data.url || '/';
   e.waitUntil(
     self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((list) => {
-      // The call notification's buttons (notify.ts): every open tab hears
-      // them and the ringing one acts. Declining needs no window in front,
-      // answering does.
+      // The call notification's buttons (here and notify.ts): a tab that
+      // is ringing acts at once. Decline also goes to the server, for a
+      // phone with no page awake; answer is left for a page that gets the
+      // call only once it opens (call.ts reads it), and needs one in front.
       if (data.call && e.action) {
         list.forEach((c) => c.postMessage({ t: 'call', k: e.action }));
+        if (e.action === 'decline') {
+          return fetch('/api/calls/decline', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ c: data.c, id: data.id }) }).catch(() => {});
+        }
         const c = list.find((x) => 'focus' in x);
-        if (e.action !== 'answer') return undefined;
-        // No window yet (a phone's push): opening the app picks the call up.
-        return c ? c.focus() : self.clients.openWindow(url);
+        return idbSet('answer', { id: data.id, at: Date.now() }).then(() => (c ? c.focus() : self.clients.openWindow(url)));
       }
       for (const c of list) {
         if ('focus' in c) {

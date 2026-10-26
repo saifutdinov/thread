@@ -89,6 +89,7 @@ export function Composer(props: {
   const [recLevel, setRecLevel] = useState(0);
   const press = useRef<Press | null>(null);
   const preview = useRef<HTMLVideoElement>(null);
+  const sendBtn = useRef<HTMLButtonElement>(null);
   const ta = useRef<HTMLTextAreaElement>(null);
   const photoInput = useRef<HTMLInputElement>(null);
   const fileInput = useRef<HTMLInputElement>(null);
@@ -224,9 +225,18 @@ export function Composer(props: {
     }
   }
 
+  // Locked by keyboard (the hold button is gone): the send button takes
+  // the focus.
+  useEffect(() => {
+    if (locked) sendBtn.current?.focus();
+  }, [locked]);
+
   async function stopRec(send: boolean) {
-    const r = rec;
+    // Once only: the old render's timer may still fire before the new one
+    // drops it, and would send the recording twice.
+    const r = recRef.current;
     if (!r) return;
+    recRef.current = null;
     const shot = recKind === 'circle' ? circleShot(preview.current) : null; // before the preview goes
     press.current = null;
     setRec(null);
@@ -359,9 +369,6 @@ export function Composer(props: {
     if (e.key === 'Enter' && !e.shiftKey && !coarse.matches && !e.isComposing) {
       e.preventDefault();
       send();
-    } else if (e.key === 'Escape' && rec) {
-      e.preventDefault();
-      stopRec(false);
     } else if (e.key === 'Escape' && (replyTo || editing)) {
       e.preventDefault();
       if (editing) setText(drafts.get(chat.id) ?? '');
@@ -447,7 +454,7 @@ export function Composer(props: {
           ))}
         </div>
       )}
-      <div class="composer">
+      <div class="composer" onKeyDown={(e) => rec && e.key === 'Escape' && (e.preventDefault(), stopRec(false))}>
         {rec ? (
           <div class="composer-field recording" role="status">
             {locked && <IconButton icon="trash" label={t('rec.cancel')} onClick={() => stopRec(false)} />}
@@ -517,6 +524,7 @@ export function Composer(props: {
         {(rec && locked) || canSend || editing || !canRecord() ? (
           <button
             key="send"
+            ref={sendBtn}
             type="button"
             class="send-btn"
             aria-label={editing ? t('common.save') : t('chat.send')}

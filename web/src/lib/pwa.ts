@@ -59,6 +59,9 @@ export async function enablePush(): Promise<boolean> {
   return true;
 }
 
+// pushOn: the server holds this device's push subscription (notify.ts).
+export let pushOn = false;
+
 // subscribe re-registers silently on every start, so the server always
 // holds a live endpoint for this device.
 export async function subscribe() {
@@ -70,6 +73,7 @@ export async function subscribe() {
     sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: fromB64(key) });
   }
   await api.subscribe(sub.toJSON());
+  pushOn = true;
 }
 
 export async function unsubscribe() {
