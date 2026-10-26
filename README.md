@@ -9,9 +9,9 @@
 - **Your own server, your own circle.** People join only through one-time invite links that you or they create. Sign-in uses a generated, easy-to-remember password plus approval from one of your own devices. Forgot the password? The person who invited you can send a recovery link. Someone who already has an account is added with a friend link, which only lets them sign in.
 - **End-to-end encryption.** Messages, photos, files, voice messages, reactions, group names and avatars are encrypted on the devices; the server stores only ciphertext. Safety codes let you check that nobody added or swapped a contact's devices.
 - **Messaging:** private chats and groups, replies, reactions, formatting, editing and deleting, forwarding, pinned messages, search on the device, link previews (off by default), swipe to reply.
-- **Media:** photos (location and other metadata removed), videos, files up to 50 MB, voice messages with playback speed, round video messages.
+- **Media:** photos (location and other metadata removed), videos, files up to 50 MB, voice messages (up to 5 minutes) with playback speed and round video messages (up to a minute), recorded as in Telegram: hold to record, let go to send, tap to switch, slide up to lock, left to cancel.
 - **Calls:** one-to-one voice and video calls with your own relay server, the camera can be turned on mid-call, a call minimizes so you can keep chatting, the other side's battery level (where their browser shares it), face effects drawn on your device (a crown, cat ears, hearts, snow, colour filters), recovery after network changes (Wi-Fi to mobile data) and a connection quality indicator.
-- **App:** push notifications (also when the app is open behind other windows; calls with Answer and Decline buttons), a floating call window above other windows (Chrome and Edge on computers), light and dark themes, English and Russian, adjustable text size, app lock with a PIN or Face ID / fingerprint, hidden online status.
+- **App:** push notifications (also in a background tab or behind other windows; one notification per call with Answer and Decline buttons, then a missed-call note if nobody answered; a chat read on one device clears its notifications on the others in Chromium browsers), a setup guide for every platform and a test button in Settings, a floating call window above other windows (Chrome and Edge on computers), light and dark themes, English and Russian, adjustable text size, app lock with a PIN or Face ID / fingerprint, hidden online status.
 - **Small server:** one Go binary with SQLite, encrypted daily backups (optionally to S3), Prometheus metrics. Runs on a 1 GB VPS.
 
 ## Quick start
@@ -32,7 +32,7 @@ Thread is built so that a server that stores and relays data honestly, its hosti
 
 **Encrypted on the devices:** message text, reactions, photos, videos, voice messages, files, group names, avatars and call setup. Device keys never leave the device and cannot be exported, even by the app itself. A new device gets access only when one of your devices (or, if you lost them all, a contact after comparing a code with you) approves it. Calls are encrypted by WebRTC end to end; the relay server sees only ciphertext.
 
-**Visible to the server:** names, who is in which chat, when messages are sent and how large they are, who called whom and for how long, IP addresses. With link previews turned on, the server also sees the links you send. **Visible to others:** push services (Apple, Google, Mozilla) see when a notification goes to which device, not its content; in a direct call the two people see each other's IP addresses, as in any WebRTC call.
+**Visible to the server:** names, who is in which chat, when messages are sent and how large they are, who called whom and for how long, IP addresses, whether an open app is in front. With link previews turned on, the server also sees the links you send. **Visible to others:** push services (Apple, Google, Mozilla) see when a notification goes to which device, not its content; in a direct call the two people see each other's IP addresses, as in any WebRTC call.
 
 **Honest limitations:**
 

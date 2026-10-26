@@ -14,7 +14,7 @@ internal/server        the whole backend, one package
   recovery.go          recovery links: the inviter vouches, a new password and device
   media.go             encrypted blob upload/download, orphan cleanup
   hub.go               WebSocket fan-out, presence, typing, call signaling relay
-  push.go              Web Push (VAPID) with ciphertext payloads, delivery counters
+  push.go              Web Push (VAPID) with ciphertext payloads, silent read/call-end clears, test push, delivery counters
   calls.go             1:1 call signaling (sealed SDP/ICE), ringing state, TURN REST credentials
   profiles.go          sealed avatars (per chat) and group photos, versioned
   preview.go           opt-in link preview fetcher with a dialer-level SSRF guard
@@ -31,7 +31,7 @@ web/                   Preact + Vite PWA
   src/lib/prefs.ts     theme, text size, language effects
   src/lib/pwa.ts       install prompt, push subscription, SW registration
   src/lib/image.ts     client-side image, video poster, avatar and link-card picture preparation
-  src/lib/notify.ts    system notifications from an open page that is not in front
+  src/lib/notify.ts    system notifications from a page that is visible but behind another window
   src/lib/attention.ts unread count in the tab title and on the app icon, a ringing call in the title
   src/lib/effects.ts   call effects: head position, particles, drawing, canvas pipeline
   src/lib/face.ts      lazy MediaPipe face detector (self-hosted WebAssembly and model)
@@ -41,7 +41,7 @@ web/                   Preact + Vite PWA
   src/lib/rtc.ts       call tuning without the DOM: Opus SDP params, codec order per device, quality level
   src/lib/devices.ts   cameras, microphones, speakers; names for Android audio routes; remembered choices
   src/lib/markup.tsx   **bold** __italic__ ~~strike~~ `code` > quote, links
-  src/lib/recorder.ts  voice/circle recording (MediaRecorder), waveform, format fallback
+  src/lib/recorder.ts  voice/circle recording (MediaRecorder), waveform, format fallback, hold-drag gesture
   src/lib/lock.ts      app lock: PIN (PBKDF2), WebAuthn biometrics, timeout, hidden push text
   src/components/*     screens: Auth, Main (layout, approval, onboarding), ChatList, ChatView, Composer,
                        EmojiPicker, ChatInfo, NewChat, Settings, Media (voice, circles, files),
@@ -59,9 +59,10 @@ Dependencies: Go `modernc.org/sqlite` (pure Go, CGO-free static binary), `coder/
 - **Register:** `#/i/<secret>` → `peek` (inviter, chat, encrypted key bundle) → name → `redeem` creates user + active device + membership, returns generated password once → keys from the bundle into IndexedDB. A friend link `#/f/<secret>` is the same invite; the browser offers only sign-in and joins right after it (signed in: `redeem` adds the membership).
 - **Recovery link:** the inviter's browser seals the keys of shared chats under a fragment secret (`#/r/<secret>`) → `POST /api/recoveries` (only for someone they invited) → the person opens it signed out → `redeem` (with the bundle keys wrapped for the new device) sets a new password, adds an active device flagged `recovery`, stores its keys for chats shared with the inviter only, flags them for rotation → keys into IndexedDB → partners in other chats approve it as in device recovery; until then `keyHoldersSQL` leaves it out of their rotations.
 - **Login:** password → `argon2id(pepper)` lookup. Known device signs a server nonce. Unknown device becomes `pending` (or `active` if the user has no chats) → own device or chat partner approves by wrapping chat keys for it.
-- **Send:** ensure epoch (rotate if flagged) → upload encrypted images → seal payload + sign → `POST` with client id → server stores, bumps `seq`, fans out over WebSocket, pushes to devices without a socket.
+- **Send:** ensure epoch (rotate if flagged) → upload encrypted images → seal payload + sign → `POST` with client id → server stores, bumps `seq`, fans out over WebSocket, pushes to devices without a visible page (no socket, or a socket that reported `vis` hidden) unless the send is `quiet` (an answered or declined call's log).
+- **Read elsewhere:** `POST /read` → `read` event to sockets → a silent `read` push (Chromium push services only) to the reader's other devices that got a push for that chat → the service worker closes the chat's notifications.
 - **Catch-up:** socket open → `/api/sync?since=<seq>` (messages changed since) → reload chat list and pending approvals.
-- **Call:** caller seals an SDP offer with the chat key → WS `call` (offers rate-limited per user) → server relays to the partner's active sockets and pushes sleeping phones, keeps the offer 45 s → a phone opened from the push gets it on connect and rings once its chat list has loaded → the first device to answer wins (the server drops later answers, others get `taken`) → ICE over the same channel → media peer-to-peer or via coturn. Mid-call, when media stops or the network changes, the caller re-offers with an ICE restart (`reoffer`/`reanswer`, the callee can ask with `restart`) every 5 s until it reconnects or 30 s pass; signals are handled strictly in order.
+- **Call:** caller seals an SDP offer with the chat key → WS `call` (offers rate-limited per user) → server relays to the partner's active sockets and pushes sleeping phones, keeps the offer 45 s → a phone opened from the push gets it on connect and rings once its chat list has loaded → the first device to answer wins (the server drops later answers, others get `taken`, sleeping ones a silent `callEnd` push that closes the ring) → ICE over the same channel → media peer-to-peer or via coturn. Mid-call, when media stops or the network changes, the caller re-offers with an ICE restart (`reoffer`/`reanswer`, the callee can ask with `restart`) every 5 s until it reconnects or 30 s pass; signals are handled strictly in order.
 - **Avatar:** pick → 256 px square → sealed once per chat (`a:<chat>:<user>:<epoch>`) → `PUT /api/me/avatar` bumps the version. After every chat list load the client copies the latest version into chats that lag (joined later, re-keyed direct chat). Lists carry versions; pictures are fetched and decrypted on first render.
 - **Link preview (opt-in):** composer finds the first link → `POST /api/preview` → server fetches the page (public IPs, ports 80/443 only) → card with a shrunk picture goes inside the sealed payload.
 - **Backup:** hourly loop → a snapshot when the last is a day old → age-encrypted file in `DATA_DIR/backups`, oldest pruned → with S3: snapshots newer than the last uploaded, media rows not `backed_up`.
@@ -77,7 +78,8 @@ Dependencies: Go `modernc.org/sqlite` (pure Go, CGO-free static binary), `coder/
 | Coalesced refetch | `loadChats` | Bursts of `chat` events collapse into few requests | Debounce timer: adds latency to single events |
 | Numbered schema migrations | `store.go` `migrations` | The base schema (version 0) is frozen; changes are appended and applied once via PRAGMA user_version | Editing CREATE TABLE: never reaches an existing database |
 | Recorder format fallback | `recorder.ts` `begin` | Browsers claim formats they then fail to encode (Chrome AAC with a bitrate); restart with the next one | Trusting isTypeSupported alone |
-| Socket only while visible | `store.ts` visibility handler, `notify.ts` | Lets Web Push take over when the app is in the background (iOS penalizes silent pushes); a page visible but not in front shows its own notifications, since the server will not push to it | Always-on socket: the server would skip push for a sleeping phone |
+| Socket by platform, visibility reported | `store.ts` visibility handler (`holdSocket`, `{t:'vis'}`), `hub.deviceInFront` | Phones drop the socket when hidden (frozen pages, iOS penalizes silent pushes); computers keep it in a background tab so a call rings there, and the server still pushes because the tab said it is hidden. A page visible but not in front shows its own notifications | Socket only while visible everywhere: a background tab neither rang nor got pushes in time; always-on socket without the flag: the server would skip push |
+| Hold-to-record state machine | `Composer.tsx` (`Press`, `pressDown`/`pressMove`/`pressUp`), `recorder.ts` `dragAction` | One button does tap (switch voice/circle), hold (record, release sends), drag up (lock), drag left (cancel); the press lives in a ref because opening the microphone is async, the gesture rule is a pure function | Separate buttons per action: not how people expect a messenger to work |
 | Version-keyed lazy pictures | `picture()` in `store.ts`, `avatar_v`/`photo_v` | Chat lists stay small; a picture is fetched once per version | Pictures inline in `/api/chats`: every list reload carries every avatar |
 | Copy-on-lag avatar reconcile | `reconcileAvatar`, `PUT /api/me/avatar` copy with `v` | The server cannot re-encrypt; after each chat list load the owner's client fills chats that lag (joined later, or a direct chat whose key moved on). The copy names the version it carries, so a race with a newer upload is refused (409 `stale`) instead of storing an old picture under the new version | A rotation hook that re-seals: the rotating writer may not be the avatar's owner |
 | SSRF check in the dialer | `newPreviewClient` `Dialer.Control` | Runs on the resolved IP of every connection, redirects included, so DNS rebinding cannot slip past | Resolving and checking the host before the request: time-of-check gap |
