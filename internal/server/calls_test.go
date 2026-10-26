@@ -39,15 +39,25 @@ func (c *user) socket(t *testing.T) *sock {
 	s := &sock{conn: conn, ch: make(chan map[string]any, 64)}
 	go func() {
 		defer close(s.ch)
+		// A socket that registers just as a call starts gets its offer live
+		// and again from the ring replay; the client ignores the repeat.
+		offered := map[any]bool{}
 		for {
 			_, b, err := conn.Read(context.Background())
 			if err != nil {
 				return
 			}
 			var ev map[string]any
-			if json.Unmarshal(b, &ev) == nil && ev["t"] == "call" {
-				s.ch <- ev
+			if json.Unmarshal(b, &ev) != nil || ev["t"] != "call" {
+				continue
 			}
+			if ev["k"] == "offer" {
+				if offered[ev["id"]] {
+					continue
+				}
+				offered[ev["id"]] = true
+			}
+			s.ch <- ev
 		}
 	}()
 	t.Cleanup(func() { conn.CloseNow() })
