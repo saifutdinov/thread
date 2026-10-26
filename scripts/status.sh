@@ -39,7 +39,7 @@ step "HTTPS" "HTTPS"
 https_ok() {
 	local health version
 	health="$(https_get "https://$DOMAIN/healthz" 2>/dev/null || true)"
-	if printf '%s' "$health" | grep -q '"status":"ok"'; then
+	if [[ $health == *'"status":"ok"'* ]]; then
 		version="$(printf '%s' "$health" | sed -n 's/.*"version":"\([^"]*\)".*/\1/p')"
 		ok "https://$DOMAIN отвечает, версия $version" "https://$DOMAIN answers, version $version"
 	else

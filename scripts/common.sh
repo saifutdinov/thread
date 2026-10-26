@@ -77,7 +77,7 @@ wait_healthy() {
 wait_https() {
 	local i
 	for i in $(seq 1 60); do
-		https_get "https://$DOMAIN/healthz" 2>/dev/null | grep -q '"status":"ok"' && return 0
+		case "$(https_get "https://$DOMAIN/healthz" 2>/dev/null || true)" in *'"status":"ok"'*) return 0 ;; esac
 		[ "$i" -eq 60 ] || sleep 3
 	done
 	return 1
