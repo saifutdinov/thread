@@ -37,8 +37,11 @@ check app_ok
 
 step "HTTPS" "HTTPS"
 https_ok() {
-	if [ "$(https_get "https://$DOMAIN/healthz" 2>/dev/null)" = ok ]; then
-		ok "https://$DOMAIN отвечает" "https://$DOMAIN answers"
+	local health version
+	health="$(https_get "https://$DOMAIN/healthz" 2>/dev/null || true)"
+	if printf '%s' "$health" | grep -q '"status":"ok"'; then
+		version="$(printf '%s' "$health" | sed -n 's/.*"version":"\([^"]*\)".*/\1/p')"
+		ok "https://$DOMAIN отвечает, версия $version" "https://$DOMAIN answers, version $version"
 	else
 		warn "https://$DOMAIN не отвечает: проверьте DNS и порты 80/443" "https://$DOMAIN does not answer: check DNS and ports 80/443"
 		return 1

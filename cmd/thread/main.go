@@ -19,6 +19,9 @@ import (
 	"github.com/saifutdinov/thread/internal/server"
 )
 
+// version is the release, set by the Dockerfile (-X main.version).
+var version = "dev"
+
 func main() {
 	// "thread healthcheck" is the container healthcheck: distroless has no curl.
 	if len(os.Args) > 1 && os.Args[1] == "healthcheck" {
@@ -37,6 +40,7 @@ func main() {
 
 func run(log *slog.Logger) error {
 	cfg := server.Config{
+		Version:    version,
 		Addr:       env("ADDR", ":8080"),
 		DataDir:    env("DATA_DIR", "./data"),
 		StaticDir:  env("STATIC_DIR", "./web/dist"),

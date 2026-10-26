@@ -42,6 +42,7 @@ type Config struct {
 	BackupKeep   int    // local snapshots kept
 	MetricsAddr  string // internal Prometheus listener; empty disables it
 	S3           S3Config
+	Version      string // the release tag, set at build time; empty is "dev"
 }
 
 type Server struct {
@@ -113,7 +114,7 @@ func (s *Server) Close() {
 
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { w.Write([]byte("ok")) })
+	mux.HandleFunc("GET /healthz", s.handleHealth)
 
 	mux.HandleFunc("POST /api/auth/challenge", s.handleChallenge)
 	mux.HandleFunc("POST /api/auth/login", s.handleLogin)
@@ -215,7 +216,7 @@ func (s *Server) Run(ctx context.Context) error {
 			s.log.Warn("shutdown", "err", err)
 		}
 	}()
-	s.log.Info("listening", "addr", s.cfg.Addr, "base_url", s.cfg.BaseURL)
+	s.log.Info("listening", "addr", s.cfg.Addr, "base_url", s.cfg.BaseURL, "version", s.cfg.Version)
 	if err := srv.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}
@@ -357,6 +358,16 @@ func readJSON(w http.ResponseWriter, r *http.Request, v any) bool {
 		return false
 	}
 	return true
+}
+
+// handleHealth: alive, and which release. The page compares the version
+// with its own build's and offers a reload after a deploy.
+func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
+	v := s.cfg.Version
+	if v == "" {
+		v = "dev"
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "version": v})
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {

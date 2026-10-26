@@ -11,7 +11,10 @@ name: thread
 
 services:
   app:
-    build: ..
+    build:
+      context: ..
+      args:
+        VERSION: ${THREAD_VERSION:-dev} # set by scripts/common.sh from git
     image: thread:local
     restart: unless-stopped
     environment:

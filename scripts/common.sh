@@ -34,7 +34,12 @@ need_docker() {
 }
 
 # compose runs docker compose on this repository's deploy file and .env.
-compose() { docker compose -f "$ROOT/deploy/docker-compose.yml" --env-file "$ENV_FILE" "$@"; }
+# The checkout's version (a tag, or tag-commits-hash on main) goes into the
+# image: /healthz reports it, and open pages offer a reload when it changes.
+compose() {
+	THREAD_VERSION="$(git -C "$ROOT" describe --tags --always 2>/dev/null || echo dev)" \
+		docker compose -f "$ROOT/deploy/docker-compose.yml" --env-file "$ENV_FILE" "$@"
+}
 
 load_env() {
 	[ -f "$ENV_FILE" ] || die "Нет файла .env. Сначала: scripts/install.sh" "No .env file. First run: scripts/install.sh"
@@ -72,7 +77,7 @@ wait_healthy() {
 wait_https() {
 	local i
 	for i in $(seq 1 60); do
-		[ "$(https_get "https://$DOMAIN/healthz" 2>/dev/null)" = ok ] && return 0
+		https_get "https://$DOMAIN/healthz" 2>/dev/null | grep -q '"status":"ok"' && return 0
 		[ "$i" -eq 60 ] || sleep 3
 	done
 	return 1

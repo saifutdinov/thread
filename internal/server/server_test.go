@@ -690,3 +690,21 @@ func TestCloseStopsSockets(t *testing.T) {
 		t.Fatalf("%d socket handlers outlived Close", n)
 	}
 }
+
+// /healthz names the running version: an open page compares it with its
+// own and offers a reload after a deploy.
+func TestHealthzReportsVersion(t *testing.T) {
+	e := newEnv(t)
+	c := e.newUser()
+	var h struct {
+		Status  string `json:"status"`
+		Version string `json:"version"`
+	}
+	if code := c.do("GET", "/healthz", nil, &h); code != 200 || h.Status != "ok" || h.Version != "dev" {
+		t.Fatalf("unversioned build: %d %+v", code, h)
+	}
+	e.s.cfg.Version = "v9.9.9"
+	if code := c.do("GET", "/healthz", nil, &h); code != 200 || h.Version != "v9.9.9" {
+		t.Fatalf("versioned build: %d %+v", code, h)
+	}
+}
