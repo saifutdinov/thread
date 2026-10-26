@@ -40,8 +40,8 @@ import { fmtDuration } from './recorder';
 import { idbClear, idbGet, idbSet } from './idb';
 import { prepareAvatar, prepareImage, prepareVideo, shrink } from './image';
 import { plain } from './markup';
-import { away, clear, notifyMessage } from './notify';
-import { subscribe, unsubscribe } from './pwa';
+import { away, behind, clear, notifyMessage } from './notify';
+import { mobile, subscribe, unsubscribe } from './pwa';
 import { go, parse, replace, route } from './route';
 
 // ---------- types ----------
@@ -543,12 +543,12 @@ function onMessage(m: Msg) {
     x.id === m.chat ? { ...x, lastMsg: m, unread: fresh && !mine && !reading ? x.unread + 1 : x.unread } : x,
   );
   if (fresh && reading && !mine) markRead(m.chat);
-  // Open but not looked at: the system shows it (the server pushes only
-  // to devices without a socket).
-  // A finished call needs no word after the fact; a missed one does, the
-  // way the service worker says it.
+  // Visible but not in front: the system shows it (a hidden page gets the
+  // server's push). Of a call only a missed one is worth a word, the way
+  // the service worker says it.
   const cl = m.p?.cl;
-  if (fresh && !mine && away() && cl?.s !== 'ok') {
+  const missed = cl?.s === 'missed' || cl?.s === 'busy';
+  if (fresh && !mine && behind() && (!cl || missed)) {
     const from = nameOf(m.chat, m.user);
     const text = cl ? `📞 ${t('call.missed')}` : summary(m.p);
     void notifyMessage(m.chat, c.kind === 'group' && c.titleText ? `${from} · ${c.titleText}` : from, text, t('notify.message'));
@@ -644,12 +644,12 @@ function localPreview(item: Outgoing): LocalFile {
 }
 
 // deliver seals and sends a payload, retrying once if the chat key moved on.
-async function deliver(chatId: number, payload: Payload, media: string[], cid: string, replyTo?: number) {
+async function deliver(chatId: number, payload: Payload, media: string[], cid: string, replyTo?: number, quiet?: boolean) {
   for (let attempt = 0; ; attempt++) {
     try {
       const epoch = await ensureEpoch(chatId);
       const sealed = await sealPayload(chatId, epoch, payload);
-      const saved = await api.send(chatId, { ...sealed, cid, reply_to: replyTo, media });
+      const saved = await api.send(chatId, { ...sealed, cid, reply_to: replyTo, media, quiet });
       onMessage((await hydrate([saved]))[0]);
       return;
     } catch (e) {
@@ -710,8 +710,10 @@ export async function forwardMessage(m: Msg, to: number) {
   await deliver(to, { t: m.p.t, a: a.length ? a : undefined, fw: { n } }, a.map((x) => x.id), toB64u(rand(12)));
 }
 
+// An answered or declined call needs no notification after the fact: the
+// ring already said it. A missed one does.
 export async function sendCallLog(chatId: number, cl: CallLog) {
-  await deliver(chatId, { cl }, [], toB64u(rand(12)));
+  await deliver(chatId, { cl }, [], toB64u(rand(12)), undefined, cl.s === 'ok' || cl.s === 'declined');
 }
 
 // Call signaling is sealed with the chat key so the server, which relays
@@ -1081,11 +1083,16 @@ let ws: WebSocket | null = null;
 let wsTimer: ReturnType<typeof setTimeout> | undefined;
 let backoff = 1000;
 
-// The socket lives only while the app is visible; when hidden, Web Push
-// takes over (the server pushes only to devices without a socket). A call
-// keeps it, hidden or not: it carries the call's signaling.
+// Phones keep the socket only while the app is visible: a hidden page is
+// frozen, and Web Push takes over. Computers keep it in the background and
+// say so ({t:'vis'}): the server still pushes to them for the system
+// notification, and a call rings in the tab. A call keeps it everywhere:
+// it carries the call's signaling.
+const holdSocket = () => isVisible() || socketHold.call || !mobile;
+const sendVis = () => wsSend({ t: 'vis', h: !isVisible() });
+
 function connect() {
-  if (ws || !me.value || (!isVisible() && !socketHold.call)) return;
+  if (ws || !me.value || !holdSocket()) return;
   const sock = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/api/ws`);
   ws = sock;
   sock.onopen = () => {
@@ -1093,6 +1100,7 @@ function connect() {
     connected.value = true;
     clearTimeout(offlineTimer);
     offline.value = false;
+    if (!isVisible()) sendVis();
     if (screen.value === 'app') catchUp();
   };
   sock.onmessage = (e) => {
@@ -1108,15 +1116,14 @@ function connect() {
     clearTimeout(offlineTimer);
     offlineTimer = setTimeout(() => (offline.value = !connected.value), 2000);
     clearTimeout(wsTimer);
-    if (!isVisible() && !socketHold.call) return; // visibilitychange reconnects
+    if (!holdSocket()) return; // visibilitychange reconnects
     // Mid-call every second counts: the call is reconnecting over it.
     wsTimer = setTimeout(connect, socketHold.call ? 1000 : backoff);
     backoff = Math.min(backoff * 2, 15000);
   };
 }
 
-// Close at once when hidden: a frozen page runs no timers, and while the
-// server sees a live socket it sends no push for this device.
+// Close at once when hidden on a phone: a frozen page runs no timers.
 function dropSocket() {
   if (socketHold.call) return;
   const s = ws;
@@ -1126,7 +1133,7 @@ function dropSocket() {
 
 // releaseSocket: a call that held the socket while hidden has ended.
 export function releaseSocket() {
-  if (!isVisible()) dropSocket();
+  if (!holdSocket()) dropSocket();
 }
 
 document.addEventListener('visibilitychange', () => {
@@ -1134,9 +1141,10 @@ document.addEventListener('visibilitychange', () => {
     connect();
     const id = openChatId();
     if (id) markRead(id);
-  } else {
+  } else if (mobile) {
     dropSocket();
   }
+  sendVis();
 });
 window.addEventListener('pagehide', dropSocket);
 // Back in front: the open chat counts as read now (see onMessage).

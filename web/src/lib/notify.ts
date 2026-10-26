@@ -1,7 +1,7 @@
-// System notifications from the open page. The server pushes only to
-// devices without a live socket, so a page that is open but not in front
-// (another window on top, an unfocused browser) has to tell the system
-// itself. Tags match the service worker's (sw.js): a later push replaces
+// System notifications from the open page. The server pushes to devices
+// whose page is hidden (or closed), so a page that is visible but not in
+// front (another window on top, an unfocused browser) has to tell the
+// system itself. Tags match the service worker's (sw.js): a later push replaces
 // a notification instead of doubling it. Best effort: a notification that
 // cannot be shown is not worth an error.
 import { idbGet } from './idb';
@@ -11,6 +11,10 @@ const allowed = () => pushSupported && Notification.permission === 'granted';
 
 // away: the person is not looking at this page right now.
 export const away = () => document.visibilityState !== 'visible' || !document.hasFocus();
+
+// behind: visible, but another window has the focus. Only then the page
+// notifies: a hidden page gets the server's push, and both would double.
+export const behind = () => document.visibilityState === 'visible' && !document.hasFocus();
 
 // The service worker's registration: Android allows no page-made
 // `new Notification`, and only it can carry action buttons. None at all

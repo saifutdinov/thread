@@ -80,8 +80,8 @@ function fromB64(s) {
 }
 
 const TEXT = {
-  ru: { app: 'Нитка', call: 'Входящий звонок', callVideo: 'Входящий видеозвонок', msg: 'Новое сообщение', photo: '📷 Фото', voice: '🎤 Голосовое сообщение', video: '📹 Видеосообщение', clip: '🎬 Видео', callLog: '📞 Звонок', missed: '📞 Пропущенный звонок', file: '📎 Файл', login: 'Новый вход в аккаунт: {label}. Откройте Нитку, чтобы разрешить или запретить.' },
-  en: { app: 'Thread', call: 'Incoming call', callVideo: 'Incoming video call', msg: 'New message', photo: '📷 Photo', voice: '🎤 Voice message', video: '📹 Video message', clip: '🎬 Video', callLog: '📞 Call', missed: '📞 Missed call', file: '📎 File', login: 'New sign-in to your account: {label}. Open Thread to allow or deny it.' },
+  ru: { app: 'Нитка', call: 'Входящий звонок', callVideo: 'Входящий видеозвонок', answer: 'Ответить', decline: 'Отклонить', test: 'Уведомления работают', testBody: 'Так будут выглядеть сообщения и звонки.', msg: 'Новое сообщение', photo: '📷 Фото', voice: '🎤 Голосовое сообщение', video: '📹 Видеосообщение', clip: '🎬 Видео', callLog: '📞 Звонок', missed: '📞 Пропущенный звонок', file: '📎 Файл', login: 'Новый вход в аккаунт: {label}. Откройте Нитку, чтобы разрешить или запретить.' },
+  en: { app: 'Thread', call: 'Incoming call', callVideo: 'Incoming video call', answer: 'Answer', decline: 'Decline', test: 'Notifications work', testBody: 'This is how messages and calls will look.', msg: 'New message', photo: '📷 Photo', voice: '🎤 Voice message', video: '📹 Video message', clip: '🎬 Video', callLog: '📞 Call', missed: '📞 Missed call', file: '📎 File', login: 'New sign-in to your account: {label}. Open Thread to allow or deny it.' },
 };
 
 async function decryptText(d) {
@@ -97,9 +97,23 @@ async function decryptText(d) {
   return JSON.parse(new TextDecoder().decode(pt));
 }
 
+// close removes the notifications with this tag; with none left, the
+// app icon's dot goes too.
+async function close(tag) {
+  for (const n of await self.registration.getNotifications({ tag })) n.close();
+  if (!(await self.registration.getNotifications()).length && self.navigator.clearAppBadge) await self.navigator.clearAppBadge().catch(() => {});
+}
+
 async function onPush(d) {
   const lang = (await idbGet('lang')) === 'en' ? 'en' : 'ru';
   const L = TEXT[lang];
+  // Silent pushes (never through Apple or Mozilla, see push.go): the chat
+  // was read on another device, the call answered or declined there.
+  if (d.t === 'read') return close('c' + d.c);
+  if (d.t === 'callEnd') return close('call');
+  if (d.t === 'test') {
+    return self.registration.showNotification(L.test, { body: L.testBody, tag: 'test', icon: '/icon-192.png', data: { url: '/#/settings' } });
+  }
   if (d.t === 'device') {
     return self.registration.showNotification(L.app, {
       body: L.login.replace('{label}', d.label || '?'),
@@ -117,24 +131,30 @@ async function onPush(d) {
       requireInteraction: true,
       vibrate: [400, 200, 400, 200, 400],
       icon: '/icon-192.png',
-      data: { url: '/#/c/' + d.c },
+      data: { url: '/#/c/' + d.c, call: true },
+      actions: [
+        { action: 'answer', title: L.answer },
+        { action: 'decline', title: L.decline },
+      ],
     });
   }
+  let p = null;
+  try {
+    p = await decryptText(d);
+  } catch {
+    /* no key on this device yet: generic text */
+  }
+  if (p && p.cl) await close('call'); // the ring is over: the call log takes its place
   // App lock with hidden previews: say nothing about who or what.
   if (await idbGet('hidePreview')) {
     return self.registration.showNotification(L.app, { body: L.msg, tag: 'c' + d.c, icon: '/icon-192.png', data: { url: '/#/c/' + d.c } });
   }
   let body = L.msg;
-  try {
-    const p = await decryptText(d);
-    if (p) {
-      const text = (p.t || '').replace(/\*\*|__|~~|`/g, '').replace(/^>\s?/gm, '').trim();
-      const a = p.a && p.a[0];
-      const missed = p.cl && (p.cl.s === 'missed' || p.cl.s === 'busy');
-      body = p.cl ? (missed ? L.missed : L.callLog) : text || (!a ? L.msg : a.t === 'voice' ? L.voice : a.t === 'video' ? L.video : a.t === 'clip' ? L.clip : a.t === 'file' ? `📎 ${a.n || L.file}` : L.photo);
-    }
-  } catch {
-    /* no key on this device yet: generic text */
+  if (p) {
+    const text = (p.t || '').replace(/\*\*|__|~~|`/g, '').replace(/^>\s?/gm, '').trim();
+    const a = p.a && p.a[0];
+    const missed = p.cl && (p.cl.s === 'missed' || p.cl.s === 'busy');
+    body = p.cl ? (missed ? L.missed : L.callLog) : text || (!a ? L.msg : a.t === 'voice' ? L.voice : a.t === 'video' ? L.video : a.t === 'clip' ? L.clip : a.t === 'file' ? `📎 ${a.n || L.file}` : L.photo);
   }
   // A dot on the app icon until the app opens and shows the real count.
   if (self.navigator.setAppBadge) self.navigator.setAppBadge().catch(() => {});
@@ -165,11 +185,13 @@ self.addEventListener('notificationclick', (e) => {
     self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((list) => {
       // The call notification's buttons (notify.ts): every open tab hears
       // them and the ringing one acts. Declining needs no window in front,
-      // answering does; with no window left the call is gone anyway.
+      // answering does.
       if (data.call && e.action) {
         list.forEach((c) => c.postMessage({ t: 'call', k: e.action }));
         const c = list.find((x) => 'focus' in x);
-        return e.action === 'answer' && c ? c.focus() : undefined;
+        if (e.action !== 'answer') return undefined;
+        // No window yet (a phone's push): opening the app picks the call up.
+        return c ? c.focus() : self.clients.openWindow(url);
       }
       for (const c of list) {
         if ('focus' in c) {

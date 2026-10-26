@@ -4,7 +4,7 @@ import { rand, toB64u } from './crypto';
 import { refreshDevices, remember, remembered } from './devices';
 import { type EffectId, type Effects, startEffects } from './effects';
 import { errText, t } from './i18n';
-import { away, clear, notifyCall } from './notify';
+import { behind, clear, notifyCall } from './notify';
 import { type Level, preferCodecs, rate, tuneOpus, videoOrder } from './rtc';
 import {
   appReady,
@@ -168,6 +168,8 @@ function quiet() {
   clearTimeout(ringTimer);
   void clear('call'); // answered, declined, taken elsewhere or over
 }
+quiet(); // a ring left on screen from before the app opened
+
 
 // The buttons on the call notification (notify.ts, sw.js).
 navigator.serviceWorker?.addEventListener('message', (e) => {
@@ -783,7 +785,7 @@ async function onSignal(ev: Record<string, unknown>) {
         stopTone = ringtone();
         navigator.vibrate?.([400, 200, 400]);
         ringTimer = setTimeout(cleanup, RING_MS);
-        if (away()) {
+        if (behind()) {
           const name = findChat(ev.c as number)?.members.find((m) => m.id === ev.from)?.name ?? '';
           void notifyCall(ev.c as number, name, t(ev.v ? 'call.incomingVideo' : 'call.incomingAudio'), t('call.accept'), t('call.decline'));
         }

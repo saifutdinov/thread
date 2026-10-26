@@ -9,6 +9,8 @@ interface InstallPromptEvent extends Event {
 
 const ua = navigator.userAgent;
 export const isIOS = /iPad|iPhone|iPod/.test(ua) || (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1);
+// Phones and tablets freeze pages in the background; computers keep them running.
+export const mobile = isIOS || /Android/i.test(ua);
 export const standalone = signal(
   matchMedia('(display-mode: standalone)').matches || (navigator as { standalone?: boolean }).standalone === true,
 );

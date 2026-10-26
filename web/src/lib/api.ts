@@ -199,7 +199,7 @@ export const api = {
   leaveChat: (chat: number) => call('DELETE', `/chats/${chat}`),
   messages: (chat: number, before = 0, media = false) =>
     call<RawMessage[]>('GET', `/chats/${chat}/messages?before=${before}&limit=50${media ? '&media=1' : ''}`),
-  send: (chat: number, p: Sealed & { cid: string; reply_to?: number; media?: string[] }) =>
+  send: (chat: number, p: Sealed & { cid: string; reply_to?: number; media?: string[]; quiet?: boolean }) =>
     call<RawMessage>('POST', `/chats/${chat}/messages`, p),
   clearHistory: (chat: number) => call('DELETE', `/chats/${chat}/messages`),
   read: (chat: number, id: number) => call('POST', `/chats/${chat}/read`, { id }),
