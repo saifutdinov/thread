@@ -9,9 +9,19 @@ const VIDEO = ['video/mp4;codecs=avc1.42E01E,mp4a.40.2', 'video/mp4', 'video/web
 
 export const canRecord = () => typeof MediaRecorder !== 'undefined' && !!navigator.mediaDevices?.getUserMedia;
 
-
-export const VOICE_MAX_MS = 10 * 60e3;
+export const VOICE_MAX_MS = 5 * 60e3;
 export const VIDEO_MAX_MS = 60e3;
+
+// The record button is held: dragged up past LOCK_PX it locks (keeps
+// recording without the finger), left past CANCEL_PX it throws the
+// recording away. dx, dy in px from where the press began.
+const LOCK_PX = 80;
+const CANCEL_PX = 120;
+export function dragAction(dx: number, dy: number): 'lock' | 'cancel' | null {
+  if (-dy > LOCK_PX && -dy >= -dx) return 'lock';
+  if (-dx > CANCEL_PX) return 'cancel';
+  return null;
+}
 
 export interface Recorded {
   blob: Blob;

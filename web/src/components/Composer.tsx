@@ -3,7 +3,17 @@ import type { Ref } from 'preact';
 import { errText, t } from '../lib/i18n';
 import { firstLink } from '../lib/markup';
 import { linkPreviews } from '../lib/prefs';
-import { canRecord, fmtDuration, fmtSize, openStream, type Recording, startRecording, VOICE_MAX_MS } from '../lib/recorder';
+import {
+  canRecord,
+  dragAction,
+  fmtDuration,
+  fmtSize,
+  openStream,
+  type Recording,
+  startRecording,
+  VIDEO_MAX_MS,
+  VOICE_MAX_MS,
+} from '../lib/recorder';
 import {
   type Chat,
   editMessage,
@@ -20,13 +30,30 @@ import {
   summary,
 } from '../lib/store';
 import { EmojiPicker } from './EmojiPicker';
-import { CircleRecorder } from './Media';
+import { circleShot, CircleRecorder } from './Media';
 import { Icon, IconButton } from './ui';
 
 const MAX_LEN = 4096;
 const MAX_FILES = 10;
 const drafts = new Map<number, string>();
 const coarse = matchMedia('(pointer: coarse)');
+
+// The record button works like Telegram's: hold to record, let go to
+// send; a tap switches between a voice message and a video circle;
+// dragging up locks the recording, dragging left throws it away.
+type RecKind = 'voice' | 'circle';
+let lastKind: RecKind = 'voice'; // the next chat starts with the last choice
+const HOLD_MS = 250; // a shorter press is a tap
+
+// Press: a hold under way, from the press to the recording's start.
+interface Press {
+  x: number;
+  y: number;
+  ctx?: AudioContext; // made inside the press: iOS keeps a later one silent
+  timer?: ReturnType<typeof setTimeout>;
+  holding: boolean; // past HOLD_MS: the microphone (or camera) is opening
+  locked: boolean;
+}
 
 export interface ComposerHandle {
   addFiles(files: File[]): void;
@@ -55,8 +82,13 @@ export function Composer(props: {
   const textNow = useRef(text);
   textNow.current = text;
   const [rec, setRec] = useState<Recording | null>(null);
+  const [recKind, setRecKind] = useState<RecKind>(lastKind); // what the button records next, or is recording
+  const [locked, setLocked] = useState(false);
+  const [drag, setDrag] = useState({ dx: 0, dy: 0 });
   const [recMs, setRecMs] = useState(0);
   const [recLevel, setRecLevel] = useState(0);
+  const press = useRef<Press | null>(null);
+  const preview = useRef<HTMLVideoElement>(null);
   const ta = useRef<HTMLTextAreaElement>(null);
   const photoInput = useRef<HTMLInputElement>(null);
   const fileInput = useRef<HTMLInputElement>(null);
@@ -85,33 +117,120 @@ export function Composer(props: {
       setRecMs(rec.elapsed());
       setRecLevel(rec.level());
       // At the limit, or when the recorder died on its own: send what we have.
-      if (rec.elapsed() >= VOICE_MAX_MS || !rec.alive()) stopVoice(true);
+      if (rec.elapsed() >= (recKind === 'voice' ? VOICE_MAX_MS : VIDEO_MAX_MS) || !rec.alive()) stopRec(true);
     }, 100);
+    if (recKind === 'circle' && preview.current) preview.current.srcObject = rec.stream;
     return () => clearInterval(timer);
   }, [rec]);
   // Leaving the chat mid-recording discards it (and frees the microphone).
   const recRef = useRef(rec);
   recRef.current = rec;
-  useEffect(() => () => recRef.current?.cancel(), []);
+  useEffect(
+    () => () => {
+      recRef.current?.cancel();
+      dropPress();
+    },
+    [],
+  );
 
-  async function startVoice() {
+  // dropPress ends a press that has no recording (yet): one opening later
+  // sees it gone and lets the microphone go.
+  function dropPress() {
+    const p = press.current;
+    press.current = null;
+    clearTimeout(p?.timer);
+    if (!rec) p?.ctx?.close().catch(() => {});
+  }
+
+  function pressDown(x: number, y: number) {
+    if (rec || press.current) return;
     if (!canRecord()) return showToast(t('rec.unsupported'));
-    // Created inside the tap: iOS would keep a later AudioContext silent.
-    const ctx = new AudioContext();
+    const ctx = recKind === 'voice' ? new AudioContext() : undefined;
+    ctx?.resume().catch(() => {});
+    const p: Press = { x, y, ctx, holding: false, locked: false };
+    p.timer = setTimeout(() => ((p.holding = true), void begin(p)), HOLD_MS);
+    press.current = p;
+  }
+
+  // startLocked: a keyboard or screen reader "click" has no hold; it
+  // starts a locked recording, sent with the send button.
+  function startLocked() {
+    if (rec || press.current || !canRecord()) return;
+    const p: Press = { x: 0, y: 0, ctx: recKind === 'voice' ? new AudioContext() : undefined, holding: true, locked: true };
+    press.current = p;
+    void begin(p);
+  }
+
+  async function begin(p: Press) {
+    const kind = recKind;
     try {
-      const stream = await openStream('audio');
+      const stream = await openStream(kind === 'voice' ? 'audio' : 'video');
+      if (press.current !== p) return stream.getTracks().forEach((tr) => tr.stop()); // let go meanwhile
       setRecMs(0);
-      setRec(startRecording(stream, 'audio', ctx));
+      setDrag({ dx: 0, dy: 0 });
+      setLocked(p.locked);
+      if (p.locked) press.current = null;
+      setRec(startRecording(stream, kind === 'voice' ? 'audio' : 'video', p.ctx));
+      navigator.vibrate?.(20);
     } catch (e) {
-      ctx.close().catch(() => {});
-      showToast((e as DOMException)?.name === 'NotAllowedError' ? t('rec.noMic') : t('rec.failed'));
+      p.ctx?.close().catch(() => {});
+      if (press.current === p) press.current = null;
+      const denied = (e as DOMException)?.name === 'NotAllowedError' || (e as DOMException)?.name === 'NotFoundError';
+      showToast(denied ? t(kind === 'voice' ? 'rec.noMic' : 'rec.noCamera') : t('rec.failed'));
     }
   }
 
-  async function stopVoice(send: boolean) {
+  function pressMove(x: number, y: number) {
+    const p = press.current;
+    if (!p?.holding) return;
+    const dx = x - p.x;
+    const dy = y - p.y;
+    const act = dragAction(dx, dy);
+    if (act === 'cancel') {
+      if (rec) stopRec(false);
+      else dropPress();
+    } else if (act === 'lock') lockPress();
+    else if (rec) setDrag({ dx, dy });
+  }
+
+  // lockPress: the recording goes on without the finger (one still
+  // opening starts locked).
+  function lockPress() {
+    const p = press.current;
+    if (!p) return;
+    p.locked = true;
+    if (rec) {
+      press.current = null;
+      setLocked(true);
+    }
+  }
+
+  function pressUp() {
+    const p = press.current;
+    if (!p) return;
+    p.ctx?.resume().catch(() => {}); // a touch's release counts as a gesture where its press did not
+    if (!p.holding) {
+      // A tap: switch between a voice message and a circle.
+      dropPress();
+      lastKind = recKind === 'voice' ? 'circle' : 'voice';
+      setRecKind(lastKind);
+      showToast(t(lastKind === 'voice' ? 'rec.nowVoice' : 'rec.nowCircle'));
+    } else if (p.locked) {
+      return; // still opening, locked on the way: it records on its own
+    } else if (rec) {
+      stopRec(true);
+    } else {
+      dropPress(); // let go before the microphone opened
+    }
+  }
+
+  async function stopRec(send: boolean) {
     const r = rec;
     if (!r) return;
+    const shot = recKind === 'circle' ? circleShot(preview.current) : null; // before the preview goes
+    press.current = null;
     setRec(null);
+    setLocked(false);
     if (!send) return r.cancel();
     let out;
     try {
@@ -121,7 +240,10 @@ export function Composer(props: {
     }
     if (out.d < 700) return showToast(t('rec.tooShort'));
     props.onSent();
-    await sendMessage(chat.id, '', [{ kind: 'voice', blob: out.blob, mime: out.mime, d: out.d, wf: out.wf }], replyTo ?? undefined);
+    const item: Outgoing = shot
+      ? { kind: 'video', blob: out.blob, mime: out.mime, d: out.d, ...shot }
+      : { kind: 'voice', blob: out.blob, mime: out.mime, d: out.d, wf: out.wf };
+    await sendMessage(chat.id, '', [item], replyTo ?? undefined);
     props.onCancel();
   }
 
@@ -239,7 +361,7 @@ export function Composer(props: {
       send();
     } else if (e.key === 'Escape' && rec) {
       e.preventDefault();
-      stopVoice(false);
+      stopRec(false);
     } else if (e.key === 'Escape' && (replyTo || editing)) {
       e.preventDefault();
       if (editing) setText(drafts.get(chat.id) ?? '');
@@ -328,12 +450,20 @@ export function Composer(props: {
       <div class="composer">
         {rec ? (
           <div class="composer-field recording" role="status">
-            <IconButton icon="trash" label={t('rec.cancel')} onClick={() => stopVoice(false)} />
+            {locked && <IconButton icon="trash" label={t('rec.cancel')} onClick={() => stopRec(false)} />}
             <span class="rec-dot" aria-hidden="true" />
             <span class="rec-time">{fmtDuration(recMs)}</span>
-            <span class="rec-level" aria-hidden="true">
-              <i style={{ transform: `scaleX(${Math.max(0.04, recLevel)})` }} />
-            </span>
+            {locked ? (
+              recKind === 'voice' && (
+                <span class="rec-level" aria-hidden="true">
+                  <i style={{ transform: `scaleX(${Math.max(0.04, recLevel)})` }} />
+                </span>
+              )
+            ) : (
+              <span class="rec-slide" style={{ transform: `translateX(${Math.min(0, drag.dx) / 2}px)` }}>
+                {t('rec.slideCancel')}
+              </span>
+            )}
           </div>
         ) : (
           <div class="composer-field">
@@ -384,22 +514,48 @@ export function Composer(props: {
             />
           </div>
         )}
-        {rec || canSend || editing || !canRecord() ? (
+        {(rec && locked) || canSend || editing || !canRecord() ? (
           <button
+            key="send"
             type="button"
             class="send-btn"
             aria-label={editing ? t('common.save') : t('chat.send')}
             title={editing ? t('common.save') : t('chat.send')}
             disabled={!rec && !canSend}
             onMouseDown={(e) => e.preventDefault()}
-            onClick={() => (rec ? stopVoice(true) : send())}
+            onClick={() => (rec ? stopRec(true) : send())}
           >
             <Icon name={editing ? 'check' : 'send'} />
           </button>
         ) : (
-          <button type="button" class="send-btn" aria-label={t('rec.voice')} title={t('rec.voice')} onClick={startVoice}>
-            <Icon name="mic" />
+          // Kept in place from press to release: the pointer is captured on it.
+          <button
+            key="hold"
+            type="button"
+            class={'send-btn rec-hold' + (rec ? ' holding' : '')}
+            style={{ '--lvl': rec ? recLevel : 0 }}
+            aria-label={t(recKind === 'voice' ? 'rec.holdVoice' : 'rec.holdCircle')}
+            title={t(recKind === 'voice' ? 'rec.holdVoice' : 'rec.holdCircle')}
+            onPointerDown={(e) => {
+              if (e.button !== 0) return;
+              e.preventDefault();
+              e.currentTarget.setPointerCapture(e.pointerId);
+              pressDown(e.clientX, e.clientY);
+            }}
+            onPointerMove={(e) => pressMove(e.clientX, e.clientY)}
+            onPointerUp={pressUp}
+            // Taken by the system (a swipe from the edge, a call): keep what was recorded.
+            onPointerCancel={() => (press.current?.holding ? lockPress() : dropPress())}
+            onContextMenu={(e) => e.preventDefault()}
+            onClick={(e) => e.detail === 0 && startLocked()}
+          >
+            <Icon name={recKind === 'voice' ? 'mic' : 'circle'} />
           </button>
+        )}
+        {rec && !locked && (
+          <div class="rec-lock" style={{ transform: `translateY(${Math.min(0, drag.dy) / 2}px)` }} aria-hidden="true">
+            <Icon name="lock" />
+          </div>
         )}
       </div>
       {menu && (
@@ -420,6 +576,16 @@ export function Composer(props: {
         </div>
       )}
       {circle && <CircleRecorder onSend={sendCircle} onClose={() => setCircle(false)} />}
+      {rec && recKind === 'circle' && (
+        <div class="circle-live" aria-hidden="true">
+          <div class="circle-preview mirror">
+            <video ref={preview} autoPlay muted playsInline />
+            <svg class="ring" viewBox="0 0 100 100">
+              <circle cx="50" cy="50" r="48" stroke-dasharray={2 * Math.PI * 48} stroke-dashoffset={2 * Math.PI * 48 * (1 - recMs / VIDEO_MAX_MS)} />
+            </svg>
+          </div>
+        </div>
+      )}
       {emoji && <EmojiPicker onPick={insert} onClose={() => setEmoji(false)} />}
     </div>
   );

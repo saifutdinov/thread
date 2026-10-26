@@ -1702,10 +1702,6 @@ img.blur {
   align-items: center;
 }
 
-.guide h4 {
-  margin: 0.75rem 0 0.25rem;
-}
-
 .guide ol {
   margin: 0;
   padding-left: 1.25rem;
@@ -2072,6 +2068,68 @@ img.blur {
   background: var(--accent);
   transform-origin: left;
   transition: transform 0.1s linear;
+}
+
+.rec-slide {
+  flex: 1;
+  color: var(--text-2);
+  text-align: center;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+/* Held, the record button grows and breathes with the voice. */
+.rec-hold {
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+  transition:
+    transform 0.15s,
+    box-shadow 0.1s;
+}
+
+.rec-hold.holding {
+  transform: scale(1.35);
+  box-shadow: 0 0 0 calc(0.2rem + var(--lvl) * 1rem) color-mix(in srgb, var(--accent) 25%, transparent);
+}
+
+.composer {
+  position: relative;
+}
+
+.rec-lock {
+  position: absolute;
+  right: 0.55rem;
+  bottom: calc(100% + 1.25rem);
+  width: 2rem;
+  padding: 0.5rem 0;
+  border-radius: 1rem;
+  background: var(--bg);
+  color: var(--text-2);
+  box-shadow: var(--shadow);
+  display: flex;
+  justify-content: center;
+  animation: rec-lock-hint 1.2s ease-in-out infinite;
+}
+
+@keyframes rec-lock-hint {
+  50% {
+    margin-bottom: 0.4rem;
+  }
+}
+
+.circle-live {
+  position: fixed;
+  left: 50%;
+  top: 42%;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+  z-index: 30;
+}
+
+.circle-live .circle-preview {
+  box-shadow: var(--shadow);
 }
 
 .attach-menu {

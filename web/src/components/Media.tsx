@@ -232,6 +232,18 @@ export function FileChip(props: { a: Attachment }) {
 
 // CircleRecorder: camera preview first, then record up to 60 s. Reaching
 // the limit sends, like Telegram.
+// circleShot: a circle's size and a tiny blurred-up thumbnail, taken
+// from its live preview before the camera goes.
+export function circleShot(v: HTMLVideoElement | null) {
+  if (!v?.videoWidth) return { w: 480, h: 480, th: '' };
+  const c = document.createElement('canvas');
+  const s = 24 / Math.max(v.videoWidth, v.videoHeight);
+  c.width = Math.round(v.videoWidth * s);
+  c.height = Math.round(v.videoHeight * s);
+  c.getContext('2d')!.drawImage(v, 0, 0, c.width, c.height);
+  return { w: v.videoWidth, h: v.videoHeight, th: c.toDataURL('image/jpeg', 0.6) };
+}
+
 export function CircleRecorder(props: { onSend: (o: Outgoing) => void; onClose: () => void }) {
   const preview = useRef<HTMLVideoElement>(null);
   const [facing, setFacing] = useState<'user' | 'environment'>('user');
@@ -279,23 +291,10 @@ export function CircleRecorder(props: { onSend: (o: Outgoing) => void; onClose: 
   async function send() {
     if (!rec || closing.current) return;
     closing.current = true;
-    const v = preview.current;
-    let th = '';
-    let w = 480;
-    let h = 480;
-    if (v && v.videoWidth) {
-      w = v.videoWidth;
-      h = v.videoHeight;
-      const c = document.createElement('canvas');
-      const s = 24 / Math.max(w, h);
-      c.width = Math.round(w * s);
-      c.height = Math.round(h * s);
-      c.getContext('2d')!.drawImage(v, 0, 0, c.width, c.height);
-      th = c.toDataURL('image/jpeg', 0.6);
-    }
+    const shot = circleShot(preview.current);
     try {
       const r = await rec.stop();
-      props.onSend({ kind: 'video', blob: r.blob, mime: r.mime, d: r.d, w, h, th });
+      props.onSend({ kind: 'video', blob: r.blob, mime: r.mime, d: r.d, ...shot });
     } catch {
       showToast(t('rec.failed'));
     }
