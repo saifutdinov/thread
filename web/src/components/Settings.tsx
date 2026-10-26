@@ -14,9 +14,14 @@ export function NotificationsRow() {
     return <p class="muted">{isIOS && !standalone.value ? t('onboard.iosNotif') : t('settings.notifUnsupported')}</p>;
   if (perm === 'granted')
     return (
-      <p class="row">
-        <Icon name="check" /> {t('settings.notifOn')}
-      </p>
+      <>
+        <p class="row">
+          <Icon name="check" /> {t('settings.notifOn')}
+        </p>
+        <button class="btn secondary" onClick={() => testPush().catch((e) => showToast(errText(e)))}>
+          <Icon name="bell" /> {t('settings.notifTest')}
+        </button>
+      </>
     );
   if (perm === 'denied') return <p class="muted">{t('settings.notifDenied')}</p>;
   return (
@@ -33,6 +38,39 @@ const safari = /Safari/.test(ua) && !/Chrome|Chromium|CriOS|FxiOS|EdgiOS|Edg|OPR
 function MicHint() {
   const key = isIOS ? (standalone.value ? 'settings.micIosApp' : safari ? 'settings.micIosSafari' : '') : safari ? 'settings.micMac' : '';
   return key ? <p class="muted small">{t(key)}</p> : null;
+}
+
+// testPush asks the server for a notification to this device. None sent:
+// the subscription got lost, so subscribe again and retry once.
+async function testPush() {
+  let { sent } = await api.pushTest();
+  if (!sent && (await enablePush())) ({ sent } = await api.pushTest());
+  showToast(t(sent ? 'settings.notifTestSent' : 'settings.notifTestNone'));
+}
+
+// NotifGuide: what to switch on where, this device's platform first.
+const guides = ['ios', 'android', 'macSafari', 'desktop'];
+function NotifGuide() {
+  const mine = isIOS ? 'ios' : /Android/i.test(ua) ? 'android' : safari ? 'macSafari' : 'desktop';
+  return (
+    <details class="guide">
+      <summary>{t('settings.notifHelp')}</summary>
+      {[mine, ...guides.filter((g) => g !== mine)].map((g) => (
+        <section key={g}>
+          <h4>
+            {t(`guide.${g}`)} {g === mine && <small class="muted">({t('settings.notifThis')})</small>}
+          </h4>
+          <ol>
+            {t(`guide.${g}Steps`)
+              .split('\n')
+              .map((s) => (
+                <li key={s}>{s}</li>
+              ))}
+          </ol>
+        </section>
+      ))}
+    </details>
+  );
 }
 
 export function InstallRow() {
@@ -166,6 +204,7 @@ export function Settings() {
       <section class="card stack">
         <h3>{t('settings.notifications')}</h3>
         <NotificationsRow />
+        <NotifGuide />
       </section>
 
       <section class="card stack">

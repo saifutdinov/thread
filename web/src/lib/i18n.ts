@@ -406,6 +406,23 @@ const ru: Record<string, Entry> = {
   'settings.notifEnable': 'Включить уведомления',
   'settings.notifDenied': 'Уведомления запрещены в настройках браузера или телефона.',
   'settings.notifUnsupported': 'Этот браузер не умеет показывать уведомления.',
+  'settings.notifTest': 'Проверить уведомления',
+  'settings.notifTestSent': 'Отправлено: уведомление придёт через несколько секунд. Если его нет, проверьте шаги ниже.',
+  'settings.notifTestNone': 'Это устройство не подписалось на уведомления. Перезапустите приложение и попробуйте снова.',
+  'settings.notifHelp': 'Как настроить уведомления',
+  'settings.notifThis': 'это устройство',
+  'guide.ios': 'iPhone и iPad',
+  'guide.iosSteps':
+    'Откройте сайт в Safari, нажмите «Поделиться» → «На экран „Домой“».\nЗапускайте Нитку только с экрана «Домой»: в Safari уведомлений нет.\nВ Нитке: Настройки → «Включить уведомления» → «Разрешить».\nНастройки iPhone → Уведомления → Нитка: включите допуск, звуки и наклейки, стиль баннеров «Постоянно», чтобы звонок не исчезал.\nВ режиме «Фокус» или «Не беспокоить» добавьте Нитку в разрешённые.\niPhone не убирает уведомления, прочитанные на другом устройстве, и не показывает кнопки «Ответить»/«Отклонить»: нажмите на уведомление.',
+  'guide.android': 'Android',
+  'guide.androidSteps':
+    'Откройте сайт в Chrome, меню ⋮ → «Установить приложение» (или «Добавить на главный экран»).\nВ Нитке: Настройки → «Включить уведомления» → «Разрешить».\nНастройки Android → Уведомления → Нитка (или Chrome): включите все категории, звук и всплывающие уведомления.\nОтключите экономию заряда для Chrome, иначе звонки и сообщения приходят с опозданием.',
+  'guide.macSafari': 'Mac: Нитка в Dock (Safari)',
+  'guide.macSafariSteps':
+    'Нужна macOS 14 Sonoma или новее. Откройте сайт в Safari: Файл → «Добавить в Dock».\nЗапускайте Нитку из Dock: у этого приложения свои разрешения, отдельные от Safari.\nВ Нитке: Настройки → «Включить уведомления» → «Разрешить».\nСистемные настройки → Уведомления → Нитка: включите «Разрешить уведомления», стиль «Предупреждения» (тогда звонок не исчезает сам), звук и наклейки.\nВ режиме «Фокус» или «Не беспокоить» добавьте Нитку в разрешённые.\nКнопок «Ответить»/«Отклонить» в Safari нет: нажмите на уведомление.',
+  'guide.desktop': 'Компьютер: Chrome, Edge, Яндекс Браузер, Firefox',
+  'guide.desktopSteps':
+    'В Нитке: Настройки → «Включить уведомления» → «Разрешить» (или значок слева от адреса → Уведомления → Разрешить).\nМожно установить Нитку как приложение: значок ⊕ в адресной строке → «Установить».\nmacOS: Системные настройки → Уведомления → ваш браузер: разрешите, стиль «Предупреждения», звук.\nWindows: Параметры → Система → Уведомления → ваш браузер: включите; «Не беспокоить» выключен.\nЗвонок в фоновой вкладке звучит и в ней самой; уведомления приходят, пока браузер запущен, даже без открытого окна (Chrome на Windows: Настройки → Система → «Не отключать работающие в фоновом режиме сервисы»).',
   'settings.app': 'Приложение',
   'settings.install': 'Установить на главный экран',
   'settings.installed': 'Приложение установлено',
@@ -561,7 +578,7 @@ const en: Record<string, Entry> = {
   'list.locked': 'Encrypted message',
   'list.unread': ['{n} unread', '{n} unread'],
   'list.chats': 'Chats',
-  'list.connecting': 'Connecting…',
+  'list.connecting': 'Threading…',
   'list.notifBanner': 'Turn on notifications so you do not miss messages',
   'list.notifAction': 'Turn on',
 
@@ -697,7 +714,7 @@ const en: Record<string, Entry> = {
   'call.calling': 'Calling…',
   'call.incomingAudio': 'Incoming call',
   'call.incomingVideo': 'Incoming video call',
-  'call.connecting': 'Connecting…',
+  'call.connecting': 'Threading…',
   'call.connected': 'Call in progress',
   'call.reconnecting': 'Reconnecting…',
   'call.battery': 'Their battery: {n}%',
@@ -831,6 +848,23 @@ const en: Record<string, Entry> = {
   'settings.notifEnable': 'Turn on notifications',
   'settings.notifDenied': 'Notifications are blocked in the browser or phone settings.',
   'settings.notifUnsupported': 'This browser cannot show notifications.',
+  'settings.notifTest': 'Test notifications',
+  'settings.notifTestSent': 'Sent: a notification should arrive in a few seconds. If it does not, check the steps below.',
+  'settings.notifTestNone': 'This device has not subscribed to notifications. Restart the app and try again.',
+  'settings.notifHelp': 'How to set up notifications',
+  'settings.notifThis': 'this device',
+  'guide.ios': 'iPhone and iPad',
+  'guide.iosSteps':
+    'Open the site in Safari, tap Share → Add to Home Screen.\nOpen Thread only from the Home Screen: Safari itself gets no notifications.\nIn Thread: Settings → Turn on notifications → Allow.\niPhone Settings → Notifications → Thread: allow notifications, sounds and badges, banner style Persistent so a call does not disappear.\nIn a Focus or Do Not Disturb mode, add Thread to the allowed apps.\niPhone does not remove notifications read on another device and shows no Answer/Decline buttons: tap the notification.',
+  'guide.android': 'Android',
+  'guide.androidSteps':
+    'Open the site in Chrome, menu ⋮ → Install app (or Add to Home screen).\nIn Thread: Settings → Turn on notifications → Allow.\nAndroid Settings → Notifications → Thread (or Chrome): turn on all categories, sound and pop-ups.\nTurn off battery saving for Chrome, or calls and messages arrive late.',
+  'guide.macSafari': 'Mac: Thread in the Dock (Safari)',
+  'guide.macSafariSteps':
+    'Needs macOS 14 Sonoma or later. Open the site in Safari: File → Add to Dock.\nOpen Thread from the Dock: this app has its own permissions, separate from Safari.\nIn Thread: Settings → Turn on notifications → Allow.\nSystem Settings → Notifications → Thread: Allow notifications, style Alerts (so a call stays on screen), sound and badges.\nIn a Focus or Do Not Disturb mode, add Thread to the allowed apps.\nSafari shows no Answer/Decline buttons: click the notification.',
+  'guide.desktop': 'Computer: Chrome, Edge, Yandex Browser, Firefox',
+  'guide.desktopSteps':
+    'In Thread: Settings → Turn on notifications → Allow (or the icon left of the address → Notifications → Allow).\nYou can install Thread as an app: the ⊕ icon in the address bar → Install.\nmacOS: System Settings → Notifications → your browser: allow, style Alerts, sound.\nWindows: Settings → System → Notifications → your browser: on; Do Not Disturb off.\nA call in a background tab rings there too; notifications arrive while the browser runs, even with no window open (Chrome on Windows: Settings → System → Continue running background apps when Google Chrome is closed).',
   'settings.app': 'App',
   'settings.install': 'Add to home screen',
   'settings.installed': 'The app is installed',

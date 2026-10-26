@@ -233,6 +233,7 @@ export const api = {
   pushKey: () => call<{ key: string }>('GET', '/push/key'),
   subscribe: (sub: PushSubscriptionJSON) => call('POST', '/push', sub),
   unsubscribe: () => call('DELETE', '/push'),
+  pushTest: () => call<{ sent: number }>('POST', '/push/test', {}),
 
   async upload(chat: number, blob: Bytes): Promise<string> {
     let res: Response;
