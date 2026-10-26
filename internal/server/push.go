@@ -7,6 +7,9 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
+	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -23,14 +26,22 @@ type pusher struct {
 	priv    string
 	sem     chan struct{}
 	live    func(device int64) bool
+	post    func(s sub, body []byte, topic string, ttl int) // webPush; tests record instead
+
+	// notified: devices that got a message push per chat since its last
+	// read, so a read elsewhere can take that notification back.
+	mu       sync.Mutex
+	notified map[[2]int64]bool
 
 	sent, expired, failed atomic.Int64
 }
 
-// live reports devices with an open socket: they get events there, and
-// iOS punishes pushes that end up showing no notification.
+// live reports devices in front, with an open socket and a visible page:
+// they get events there, and iOS punishes pushes that end up showing no
+// notification.
 func newPusher(ctx context.Context, db *sql.DB, subject string, live func(int64) bool, log *slog.Logger) (*pusher, error) {
-	p := &pusher{db: db, log: log, subject: subject, live: live, sem: make(chan struct{}, 8)}
+	p := &pusher{db: db, log: log, subject: subject, live: live, sem: make(chan struct{}, 8), notified: map[[2]int64]bool{}}
+	p.post = p.webPush
 	var err error
 	if p.pub, err = metaGet(ctx, db, "vapid_pub"); err != nil {
 		return nil, err
@@ -99,9 +110,76 @@ func (p *pusher) notifyMessage(ctx context.Context, m *message, from *Auth) {
 	if len(m.Body) <= 2400 {
 		payload["b"] = m.Body
 	}
-	p.send(ctx, `SELECT p.device_id, p.endpoint, p.p256dh, p.auth FROM push_subs p JOIN devices d ON d.id = p.device_id
+	subs := p.send(ctx, `SELECT p.device_id, p.endpoint, p.p256dh, p.auth FROM push_subs p JOIN devices d ON d.id = p.device_id
 		JOIN members mb ON mb.user_id = d.user_id WHERE mb.chat_id = ? AND d.user_id <> ? AND d.status = 'active'`,
 		payload, "c"+fmt.Sprint(m.Chat), 24*3600, m.Chat, from.UserID)
+	p.mu.Lock()
+	for _, s := range subs {
+		p.notified[[2]int64{s.device, m.Chat}] = true
+	}
+	p.mu.Unlock()
+}
+
+// silentOK: the push service lets a push close notifications without
+// showing one. Apple revokes subscriptions that do that, Mozilla runs out
+// of quota; Chromium's services (FCM, WNS) allow it.
+func silentOK(endpoint string) bool {
+	u, err := url.Parse(endpoint)
+	if err != nil {
+		return false
+	}
+	h := u.Hostname()
+	return !strings.HasSuffix(h, "push.apple.com") && !strings.HasSuffix(h, "mozilla.com")
+}
+
+// notifyRead takes back the chat's notifications on the user's other
+// devices that got one: the chat was read somewhere. Same topic as the
+// message push, so one still waiting for an offline phone is replaced.
+func (p *pusher) notifyRead(ctx context.Context, userID, chatID int64) {
+	subs := p.targets(ctx, `SELECT p.device_id, p.endpoint, p.p256dh, p.auth FROM push_subs p JOIN devices d ON d.id = p.device_id
+		WHERE d.user_id = ? AND d.status = 'active'`, userID)
+	body, _ := json.Marshal(map[string]any{"t": "read", "c": chatID})
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for _, s := range subs {
+		key := [2]int64{s.device, chatID}
+		if !p.notified[key] {
+			continue
+		}
+		delete(p.notified, key)
+		if !p.live(s.device) && silentOK(s.endpoint) {
+			go p.deliver(s, body, "c"+fmt.Sprint(chatID), 24*3600)
+		}
+	}
+}
+
+// notifyCallEnd takes back the ring on the callee's other devices: the
+// call was answered or declined somewhere. Topic "call" replaces a ring
+// still waiting for an offline phone.
+func (p *pusher) notifyCallEnd(ctx context.Context, callee int64) {
+	subs := p.targets(ctx, `SELECT p.device_id, p.endpoint, p.p256dh, p.auth FROM push_subs p JOIN devices d ON d.id = p.device_id
+		WHERE d.user_id = ? AND d.status = 'active'`, callee)
+	body, _ := json.Marshal(map[string]any{"t": "callEnd"})
+	for _, s := range subs {
+		if !p.live(s.device) && silentOK(s.endpoint) {
+			go p.deliver(s, body, "call", int(ringFor.Seconds()))
+		}
+	}
+}
+
+// handlePushTest pushes a test notification to this device, in front or
+// not: the settings' check that the whole path works.
+func (s *Server) handlePushTest(w http.ResponseWriter, r *http.Request, a *Auth) {
+	if !s.auth.allow(fmt.Sprintf("pushtest:%d", a.DeviceID)) {
+		fail(w, http.StatusTooManyRequests, "rate_limited")
+		return
+	}
+	subs := s.push.targets(r.Context(), `SELECT device_id, endpoint, p256dh, auth FROM push_subs WHERE device_id = ?`, a.DeviceID)
+	body, _ := json.Marshal(map[string]any{"t": "test"})
+	for _, sb := range subs {
+		go s.push.deliver(sb, body, "test", 300)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"sent": len(subs)})
 }
 
 // notifyCall rings the callee's sleeping devices. A ring is useless after
@@ -118,29 +196,46 @@ func (p *pusher) notifyDevices(ctx context.Context, userID, except int64, payloa
 		WHERE d.user_id = ? AND d.id <> ? AND d.status = 'active'`, payload, "device", 24*3600, userID, except)
 }
 
-func (p *pusher) send(ctx context.Context, q string, payload map[string]any, topic string, ttl int, args ...any) {
-	rows, err := p.db.QueryContext(ctx, q, args...)
-	if err != nil {
-		p.log.Error("push targets", "err", err)
-		return
-	}
+// send pushes to the targets that are not in front and returns them.
+func (p *pusher) send(ctx context.Context, q string, payload map[string]any, topic string, ttl int, args ...any) []sub {
 	subs := []sub{}
-	for rows.Next() {
-		var s sub
-		if err := rows.Scan(&s.device, &s.endpoint, &s.p256dh, &s.auth); err == nil && !p.live(s.device) {
+	for _, s := range p.targets(ctx, q, args...) {
+		if !p.live(s.device) {
 			subs = append(subs, s)
 		}
 	}
-	rows.Close()
 	body, _ := json.Marshal(payload)
 	for _, s := range subs {
 		go p.deliver(s, body, topic, ttl)
 	}
+	return subs
+}
+
+// targets reads push subscriptions (device_id, endpoint, p256dh, auth).
+func (p *pusher) targets(ctx context.Context, q string, args ...any) []sub {
+	rows, err := p.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		p.log.Error("push targets", "err", err)
+		return nil
+	}
+	defer rows.Close()
+	subs := []sub{}
+	for rows.Next() {
+		var s sub
+		if err := rows.Scan(&s.device, &s.endpoint, &s.p256dh, &s.auth); err == nil {
+			subs = append(subs, s)
+		}
+	}
+	return subs
 }
 
 func (p *pusher) deliver(s sub, body []byte, topic string, ttl int) {
 	p.sem <- struct{}{}
 	defer func() { <-p.sem }()
+	p.post(s, body, topic, ttl)
+}
+
+func (p *pusher) webPush(s sub, body []byte, topic string, ttl int) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	resp, err := webpush.SendNotificationWithContext(ctx, body, &webpush.Subscription{

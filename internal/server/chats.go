@@ -359,6 +359,7 @@ func (s *Server) handleSend(w http.ResponseWriter, r *http.Request, a *Auth) {
 		ClientID string   `json:"cid"`
 		ReplyTo  int64    `json:"reply_to"`
 		Media    []string `json:"media"`
+		Quiet    bool     `json:"quiet"` // nothing to tell: an answered or declined call's log
 	}
 	if !readJSON(w, r, &req) {
 		return
@@ -418,7 +419,9 @@ func (s *Server) handleSend(w http.ResponseWriter, r *http.Request, a *Auth) {
 		return
 	}
 	s.messageChanged(r.Context(), m)
-	s.push.notifyMessage(r.Context(), m, a)
+	if !req.Quiet {
+		s.push.notifyMessage(r.Context(), m, a)
+	}
 	writeJSON(w, http.StatusOK, m)
 }
 
@@ -660,6 +663,7 @@ func (s *Server) handleRead(w http.ResponseWriter, r *http.Request, a *Auth) {
 		if ids, err := chatUserIDs(r.Context(), s.db, chatID); err == nil {
 			s.hub.toUsers(ids, event{"t": "read", "c": chatID, "u": a.UserID, "id": req.ID})
 		}
+		s.push.notifyRead(r.Context(), a.UserID, chatID)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{})
 }

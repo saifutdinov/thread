@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/coder/websocket"
@@ -19,6 +20,7 @@ type client struct {
 	active       bool
 	send         chan []byte
 	cancel       context.CancelFunc
+	hidden       atomic.Bool // its page is in the background (computers keep the socket)
 }
 
 // hub fans events out to connected devices and tracks presence.
@@ -85,6 +87,21 @@ func (h *hub) deviceOnline(device int64) bool {
 	for _, set := range h.users {
 		for c := range set {
 			if c.device == device {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// deviceInFront: an open socket whose page is visible. A background tab
+// keeps its socket but still needs pushes for system notifications.
+func (h *hub) deviceInFront(device int64) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for _, set := range h.users {
+		for c := range set {
+			if c.device == device && !c.hidden.Load() {
 				return true
 			}
 		}
@@ -226,6 +243,10 @@ func (s *Server) readWS(ctx context.Context, conn *websocket.Conn, c *client) {
 		}
 		var in callSignal
 		if json.Unmarshal(b, &in) != nil {
+			continue
+		}
+		if in.T == "vis" {
+			c.hidden.Store(in.H)
 			continue
 		}
 		if in.T == "call" {

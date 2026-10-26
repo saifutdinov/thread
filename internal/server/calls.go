@@ -32,6 +32,7 @@ type callSignal struct {
 	V    bool   `json:"v"`    // video offered
 	E    int    `json:"e"`    // key epoch the body is sealed with
 	Body []byte `json:"body"` // sealed SDP or ICE candidate
+	H    bool   `json:"h"`    // "vis": the page went to the background
 }
 
 // ringing keeps the latest offer per callee for ringFor, so a phone that
@@ -137,7 +138,8 @@ func (s *Server) handleCallSignal(ctx context.Context, c *client, in callSignal)
 			return
 		}
 		toPeerDevice()
-		stopRinging(c.user) // the other devices of the one who picked up
+		stopRinging(c.user)               // the other devices of the one who picked up
+		s.push.notifyCallEnd(ctx, c.user) // and their ring notifications
 	case "ice", "reoffer", "reanswer", "restart":
 		// Mid-call: candidates, an ICE restart after a network change (the
 		// caller re-offers; the callee may ask for it), device to device.
@@ -152,6 +154,7 @@ func (s *Server) handleCallSignal(ctx context.Context, c *client, in callSignal)
 		}
 		if in.K == "decline" {
 			stopRinging(c.user)
+			s.push.notifyCallEnd(ctx, c.user)
 		}
 	}
 }
