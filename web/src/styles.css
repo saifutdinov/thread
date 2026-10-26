@@ -239,11 +239,6 @@ textarea,
   }
 }
 
-.btn-spacer {
-  flex: none;
-  width: 2.75rem;
-}
-
 .icon-btn {
   display: inline-flex;
   align-items: center;
@@ -2138,10 +2133,6 @@ img.blur {
   min-width: 12rem;
 }
 
-.circle-recorder .modal-body {
-  align-items: center;
-}
-
 .circle-preview {
   position: relative;
   width: min(18rem, 70vw);
@@ -2164,36 +2155,6 @@ img.blur {
 .circle-preview .ring circle {
   stroke: #e53935;
   stroke-width: 3;
-}
-
-.circle-actions {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 1.5rem;
-}
-
-.rec-btn {
-  width: 4rem;
-  height: 4rem;
-  border-radius: 50%;
-  border: 3px solid var(--text-2);
-  background: none;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.rec-btn span {
-  width: 2.6rem;
-  height: 2.6rem;
-  border-radius: 50%;
-  background: #e53935;
-}
-
-.send-btn.big {
-  width: 4rem;
-  height: 4rem;
 }
 
 .card h4 {

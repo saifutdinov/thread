@@ -1,9 +1,8 @@
 import { useEffect, useRef, useState } from 'preact/hooks';
 import { errText, t } from '../lib/i18n';
-import { cameras, refreshDevices } from '../lib/devices';
-import { fmtDuration, fmtSize, openStream, type Recording, startRecording, VIDEO_MAX_MS } from '../lib/recorder';
-import { type Attachment, mediaUrl, type Outgoing, showToast } from '../lib/store';
-import { Icon, IconButton, Modal } from './ui';
+import { fmtDuration, fmtSize } from '../lib/recorder';
+import { type Attachment, mediaUrl, showToast } from '../lib/store';
+import { Icon } from './ui';
 
 // One sound at a time: starting a player pauses the previous one.
 let active: HTMLMediaElement | null = null;
@@ -230,8 +229,6 @@ export function FileChip(props: { a: Attachment }) {
   );
 }
 
-// CircleRecorder: camera preview first, then record up to 60 s. Reaching
-// the limit sends, like Telegram.
 // circleShot: a circle's size and a tiny blurred-up thumbnail, taken
 // from its live preview before the camera goes.
 export function circleShot(v: HTMLVideoElement | null) {
@@ -242,117 +239,4 @@ export function circleShot(v: HTMLVideoElement | null) {
   c.height = Math.round(v.videoHeight * s);
   c.getContext('2d')!.drawImage(v, 0, 0, c.width, c.height);
   return { w: v.videoWidth, h: v.videoHeight, th: c.toDataURL('image/jpeg', 0.6) };
-}
-
-export function CircleRecorder(props: { onSend: (o: Outgoing) => void; onClose: () => void }) {
-  const preview = useRef<HTMLVideoElement>(null);
-  const [facing, setFacing] = useState<'user' | 'environment'>('user');
-  const [stream, setStream] = useState<MediaStream | null>(null);
-  const [rec, setRec] = useState<Recording | null>(null);
-  const [elapsed, setElapsed] = useState(0);
-  const closing = useRef(false);
-
-  useEffect(() => {
-    let s: MediaStream | null = null;
-    openStream('video', facing).then(
-      (st) => {
-        s = st;
-        setStream(st);
-        void refreshDevices(); // a second camera shows up only after the permission
-        if (preview.current) preview.current.srcObject = st;
-      },
-      (e) => {
-        showToast(e?.name === 'NotAllowedError' || e?.name === 'NotFoundError' ? t('rec.noCamera') : t('rec.failed'));
-        props.onClose();
-      },
-    );
-    return () => {
-      if (!rec) s?.getTracks().forEach((tr) => tr.stop());
-    };
-  }, [facing]);
-
-  useEffect(() => {
-    if (!rec) return;
-    const timer = setInterval(() => {
-      const ms = rec.elapsed();
-      setElapsed(ms);
-      if (ms >= VIDEO_MAX_MS || !rec.alive()) send();
-    }, 100);
-    return () => clearInterval(timer);
-  }, [rec]);
-
-  const cancel = () => {
-    closing.current = true;
-    rec?.cancel();
-    stream?.getTracks().forEach((tr) => tr.stop());
-    props.onClose();
-  };
-
-  async function send() {
-    if (!rec || closing.current) return;
-    closing.current = true;
-    const shot = circleShot(preview.current);
-    try {
-      const r = await rec.stop();
-      props.onSend({ kind: 'video', blob: r.blob, mime: r.mime, d: r.d, ...shot });
-    } catch {
-      showToast(t('rec.failed'));
-    }
-    props.onClose();
-  }
-
-  const R = 48;
-  const C = 2 * Math.PI * R;
-  return (
-    <Modal label={t('att.circle')} onClose={cancel} class="circle-recorder">
-      <div class={'circle-preview' + (facing === 'user' ? ' mirror' : '')}>
-        <video ref={preview} autoPlay muted playsInline />
-        <svg class="ring" viewBox="0 0 100 100" aria-hidden="true">
-          <circle cx="50" cy="50" r={R} stroke-dasharray={C} stroke-dashoffset={C * (1 - elapsed / VIDEO_MAX_MS)} />
-        </svg>
-      </div>
-      <p class="rec-time" aria-live="off">
-        {rec && <span class="rec-dot" />} {fmtDuration(elapsed)} / {fmtDuration(VIDEO_MAX_MS)}
-      </p>
-      <div class="circle-actions">
-        <IconButton icon="trash" label={t('rec.cancel')} onClick={cancel} />
-        {rec ? (
-          <button type="button" class="send-btn big" onClick={send} aria-label={t('rec.stopSend')}>
-            <Icon name="send" />
-          </button>
-        ) : (
-          <button
-            type="button"
-            class="rec-btn"
-            disabled={!stream}
-            onClick={() => {
-              if (!stream) return;
-              try {
-                setRec(startRecording(stream, 'video'));
-              } catch {
-                showToast(t('rec.failed'));
-              }
-            }}
-            aria-label={t('rec.start')}
-          >
-            <span />
-          </button>
-        )}
-        {cameras().length > 1 ? (
-          <IconButton
-            icon="flip"
-            label={t('rec.switch')}
-            disabled={!!rec}
-            onClick={() => {
-              stream?.getTracks().forEach((tr) => tr.stop());
-              setStream(null);
-              setFacing(facing === 'user' ? 'environment' : 'user');
-            }}
-          />
-        ) : (
-          <span class="btn-spacer" aria-hidden="true" /> // keeps the record button centred
-        )}
-      </div>
-    </Modal>
-  );
 }

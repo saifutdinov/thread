@@ -30,7 +30,7 @@ import {
   summary,
 } from '../lib/store';
 import { EmojiPicker } from './EmojiPicker';
-import { circleShot, CircleRecorder } from './Media';
+import { circleShot } from './Media';
 import { Icon, IconButton } from './ui';
 
 const MAX_LEN = 4096;
@@ -75,7 +75,6 @@ export function Composer(props: {
   const [emoji, setEmoji] = useState(false);
   const [hasSel, setHasSel] = useState(false);
   const [menu, setMenu] = useState(false);
-  const [circle, setCircle] = useState(false);
   // Link preview for the first link in the text (opt-in, see prefs).
   const [card, setCard] = useState<{ from: string; lp: LinkCard } | null>(null);
   const [noCard, setNoCard] = useState(''); // a link whose card was closed
@@ -257,11 +256,6 @@ export function Composer(props: {
     props.onCancel();
   }
 
-  const sendCircle = (o: Outgoing) => {
-    props.onSent();
-    sendMessage(chat.id, '', [o], replyTo ?? undefined);
-    props.onCancel();
-  };
   useImperativeHandle(props.handle, () => ({ addFiles, focus: () => ta.current?.focus() }));
 
   useEffect(() => {
@@ -555,6 +549,19 @@ export function Composer(props: {
             // Taken by the system (a swipe from the edge, a call): keep what was recorded.
             onPointerCancel={() => (press.current?.holding ? lockPress() : dropPress())}
             onContextMenu={(e) => e.preventDefault()}
+            // Space works like a finger (tap switches, hold records, release
+            // sends); Enter or a screen reader's click starts a locked one.
+            // Space's own click is cancelled on both ends.
+            onKeyDown={(e) => {
+              if (e.key !== ' ') return;
+              e.preventDefault();
+              if (!e.repeat) pressDown(0, 0);
+            }}
+            onKeyUp={(e) => {
+              if (e.key !== ' ') return;
+              e.preventDefault();
+              pressUp();
+            }}
             onClick={(e) => e.detail === 0 && startLocked()}
           >
             <Icon name={recKind === 'voice' ? 'mic' : 'circle'} />
@@ -575,15 +582,9 @@ export function Composer(props: {
             <button type="button" role="menuitem" onClick={() => (setMenu(false), fileInput.current?.click())}>
               <Icon name="file" /> {t('att.files')}
             </button>
-            {canRecord() && (
-              <button type="button" role="menuitem" onClick={() => (setMenu(false), setCircle(true))}>
-                <Icon name="circle" /> {t('att.circle')}
-              </button>
-            )}
           </div>
         </div>
       )}
-      {circle && <CircleRecorder onSend={sendCircle} onClose={() => setCircle(false)} />}
       {rec && recKind === 'circle' && (
         <div class="circle-live" aria-hidden="true">
           <div class="circle-preview mirror">
