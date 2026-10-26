@@ -131,7 +131,7 @@ func (s *Server) handleCallSignal(ctx context.Context, c *client, in callSignal)
 		if err := s.db.QueryRowContext(ctx, `SELECT name FROM users WHERE id = ?`, c.user).Scan(&name); err != nil {
 			s.log.Warn("caller name", "err", err) // the push still rings, just without a name
 		}
-		s.push.notifyCall(ctx, in.C, peer, name, in.V)
+		s.push.notifyCall(ctx, in.C, peer, name, in.V, in.ID)
 	case "answer":
 		if !s.ring.clear(c.user, in.ID) {
 			s.hub.sendDevice(c.device, taken) // another device of mine was first
@@ -157,6 +157,27 @@ func (s *Server) handleCallSignal(ctx context.Context, c *client, in callSignal)
 			s.push.notifyCallEnd(ctx, c.user)
 		}
 	}
+}
+
+// handleCallDecline declines a ringing call from a notification's button:
+// the service worker has no socket, and a phone may have no page open.
+// Signed as device 0, so every page of the user stops ringing, this
+// device's too. Only a call still ringing for this user counts: a stale
+// notification's button must not end a call answered elsewhere.
+func (s *Server) handleCallDecline(w http.ResponseWriter, r *http.Request, a *Auth) {
+	var req struct {
+		C  int64  `json:"c"`
+		ID string `json:"id"`
+	}
+	if !readJSON(w, r, &req) {
+		return
+	}
+	if !s.ring.clear(a.UserID, req.ID) {
+		writeJSON(w, http.StatusOK, map[string]any{})
+		return
+	}
+	s.handleCallSignal(r.Context(), &client{user: a.UserID, active: true}, callSignal{T: "call", K: "decline", C: req.C, ID: req.ID})
+	writeJSON(w, http.StatusOK, map[string]any{})
 }
 
 // handleTurn issues TURN REST credentials (coturn --use-auth-secret):

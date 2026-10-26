@@ -55,6 +55,16 @@ func (e *env) secondDevice(owner *user) *user {
 	return d
 }
 
+// eventually polls cond until it holds or a second passes.
+func eventually(t *testing.T, what string, cond func() bool) {
+	t.Helper()
+	for end := time.Now().Add(time.Second); !cond(); time.Sleep(10 * time.Millisecond) {
+		if time.Now().After(end) {
+			t.Fatal(what)
+		}
+	}
+}
+
 func kinds(ps []pushed, device int64) []string {
 	var out []string
 	for _, p := range ps {
@@ -110,7 +120,7 @@ func TestHiddenSocketStillGetsPush(t *testing.T) {
 		t.Fatalf("a page in front was pushed: %+v", ps)
 	}
 	emit(t, ws, map[string]any{"t": "vis", "h": true})
-	time.Sleep(50 * time.Millisecond) // the socket's reader takes it in
+	eventually(t, "the hidden flag never arrived", func() bool { return !e.s.hub.deviceInFront(b.id) })
 	msg("hidden")
 	if k := kinds(drain(got), b.id); len(k) != 1 || k[0] != "msg" {
 		t.Fatalf("hidden tab pushes = %v", k)
@@ -145,6 +155,9 @@ func TestReadClearsNotificationsElsewhere(t *testing.T) {
 	ps := drain(got)
 	if k := kinds(ps, phone.id); len(k) != 1 || k[0] != "read" {
 		t.Fatalf("phone pushes = %v", k)
+	}
+	if ps[0].payload["id"] != float64(m.ID) {
+		t.Fatalf("a read must say up to which message: %v", ps[0].payload)
 	}
 	if k := kinds(ps, mac.id); len(k) != 0 {
 		t.Fatalf("an Apple subscription got a silent push: %v", k)
@@ -230,18 +243,95 @@ func TestHiddenTabIsNotOnline(t *testing.T) {
 		return false
 	}
 	ws := b.socket(t)
-	time.Sleep(50 * time.Millisecond)
-	if !online() {
-		t.Fatal("a visible page is online")
-	}
+	eventually(t, "a visible page is online", online)
 	emit(t, ws, map[string]any{"t": "vis", "h": true})
-	time.Sleep(50 * time.Millisecond)
-	if online() {
-		t.Fatal("a background tab shows its owner online")
-	}
+	eventually(t, "a background tab shows its owner online", func() bool { return !online() })
 	emit(t, ws, map[string]any{"t": "vis", "h": false})
-	time.Sleep(50 * time.Millisecond)
-	if !online() {
-		t.Fatal("back in front, still offline")
+	eventually(t, "back in front, still offline", online)
+}
+
+// A partial read (the reader had not loaded the newest message yet) must
+// not take back the newer message's notification.
+func TestPartialReadKeepsNewerNotification(t *testing.T) {
+	e := newEnv(t)
+	got := e.pushes()
+	a := e.register("A")
+	chat, inv := a.createChat("direct", 1)
+	b := e.join(inv, "B")
+	phone := e.secondDevice(b)
+	phone.subscribe("https://fcm.googleapis.com/fcm/send/phone")
+	a.rotate(chat, 2, a.id, b.id, phone.id)
+	ids := []int64{}
+	for _, cid := range []string{"x", "y"} {
+		var m struct {
+			ID int64 `json:"id"`
+		}
+		a.must(200, "POST", fmt.Sprintf("/api/chats/%d/messages", chat), map[string]any{
+			"cid": cid, "epoch": 2, "body": []byte("x"), "sig": randomBytes(64),
+		}, &m)
+		ids = append(ids, m.ID)
+	}
+	drain(got)
+	b.must(200, "POST", fmt.Sprintf("/api/chats/%d/read", chat), map[string]any{"id": ids[0]}, nil)
+	if ps := drain(got); len(ps) != 1 || ps[0].payload["id"] != float64(ids[0]) {
+		t.Fatalf("partial read pushes = %+v", ps)
+	}
+	b.must(200, "POST", fmt.Sprintf("/api/chats/%d/read", chat), map[string]any{"id": ids[1]}, nil)
+	if ps := drain(got); len(ps) != 1 || ps[0].payload["id"] != float64(ids[1]) {
+		t.Fatalf("the full read must still clear the newer one: %+v", ps)
+	}
+}
+
+// Declined from a notification's button: no socket, maybe no page at all.
+// The caller hears it, every page of the callee stops ringing (this
+// device's too) and the sleeping phone's ring goes.
+func TestDeclineFromNotification(t *testing.T) {
+	e := newEnv(t)
+	got := e.pushes()
+	a := e.register("A")
+	chat, inv := a.createChat("direct", 1)
+	b := e.join(inv, "B")
+	phone := e.secondDevice(b)
+	phone.subscribe("https://fcm.googleapis.com/fcm/send/phone")
+	wa, wb := a.socket(t), b.socket(t)
+	emit(t, wa, map[string]any{"t": "call", "k": "offer", "c": chat, "id": "c1", "v": false, "e": 1, "body": []byte("sdp")})
+	expectCall(t, wb, "offer")
+	ps := drain(got)
+	if len(ps) != 1 || ps[0].payload["id"] != "c1" {
+		t.Fatalf("the ring push must carry the call id: %+v", ps)
+	}
+	b.must(200, "POST", "/api/calls/decline", map[string]any{"c": chat, "id": "c1"}, nil)
+	expectCall(t, wa, "decline")
+	expectCall(t, wb, "taken")
+	if k := kinds(drain(got), phone.id); len(k) != 1 || k[0] != "callEnd" {
+		t.Fatalf("phone after the decline = %v", k)
+	}
+	other := e.register("C")
+	if code := other.do("POST", "/api/calls/decline", map[string]any{"c": chat, "id": "c1"}, nil); code != 200 {
+		t.Fatalf("a stranger's decline: %d", code) // ignored, like any foreign call signal
+	}
+	expectCall(t, wa, "")
+
+	// A stale notification's Decline after the call was answered elsewhere
+	// must not end the call.
+	emit(t, wa, map[string]any{"t": "call", "k": "offer", "c": chat, "id": "c2", "v": false, "e": 1, "body": []byte("sdp")})
+	expectCall(t, wb, "offer")
+	emit(t, wb, map[string]any{"t": "call", "k": "answer", "c": chat, "id": "c2", "to": a.id, "e": 1, "body": []byte("sdp")})
+	expectCall(t, wa, "answer")
+	b.must(200, "POST", "/api/calls/decline", map[string]any{"c": chat, "id": "c2"}, nil)
+	expectCall(t, wa, "")
+}
+
+func TestSilentOK(t *testing.T) {
+	for endpoint, want := range map[string]bool{
+		"https://fcm.googleapis.com/fcm/send/x":                true,
+		"https://wns2-par02p.notify.windows.com/w/?token=x":    true,
+		"https://web.push.apple.com/x":                         false,
+		"https://updates.push.services.mozilla.com/wpush/v2/x": false,
+		"not a url\x7f": false,
+	} {
+		if got := silentOK(endpoint); got != want {
+			t.Errorf("silentOK(%q) = %v", endpoint, got)
+		}
 	}
 }

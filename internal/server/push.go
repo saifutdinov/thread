@@ -25,13 +25,19 @@ type pusher struct {
 	pub     string
 	priv    string
 	sem     chan struct{}
-	live    func(device int64) bool
-	post    func(s sub, body []byte, topic string, ttl int) // webPush; tests record instead
+	live    func(device int64) bool // a page in front: no push needed
+	// connected: any socket, even a background tab's. Such a page clears
+	// its own notifications from socket events, so silent pushes, which
+	// Chromium allows only within a budget, skip it.
+	connected func(device int64) bool
+	post      func(s sub, body []byte, topic string, ttl int) // webPush; tests record instead
 
-	// notified: devices that got a message push per chat since its last
-	// read, so a read elsewhere can take that notification back.
+	// notified: the newest message pushed per (device, chat) since the
+	// chat was read, so a read elsewhere can take those notifications back.
+	// ponytail: in memory, lost on restart and pruned only by reads; at
+	// most devices × chats entries, a family's worth.
 	mu       sync.Mutex
-	notified map[[2]int64]bool
+	notified map[[2]int64]int64
 
 	sent, expired, failed atomic.Int64
 }
@@ -39,8 +45,8 @@ type pusher struct {
 // live reports devices in front, with an open socket and a visible page:
 // they get events there, and iOS punishes pushes that end up showing no
 // notification.
-func newPusher(ctx context.Context, db *sql.DB, subject string, live func(int64) bool, log *slog.Logger) (*pusher, error) {
-	p := &pusher{db: db, log: log, subject: subject, live: live, sem: make(chan struct{}, 8), notified: map[[2]int64]bool{}}
+func newPusher(ctx context.Context, db *sql.DB, subject string, live, connected func(int64) bool, log *slog.Logger) (*pusher, error) {
+	p := &pusher{db: db, log: log, subject: subject, live: live, connected: connected, sem: make(chan struct{}, 8), notified: map[[2]int64]int64{}}
 	p.post = p.webPush
 	var err error
 	if p.pub, err = metaGet(ctx, db, "vapid_pub"); err != nil {
@@ -110,14 +116,16 @@ func (p *pusher) notifyMessage(ctx context.Context, m *message, from *Auth) {
 	if len(m.Body) <= 2400 {
 		payload["b"] = m.Body
 	}
-	subs := p.send(ctx, `SELECT p.device_id, p.endpoint, p.p256dh, p.auth FROM push_subs p JOIN devices d ON d.id = p.device_id
+	subs := p.asleep(ctx, `SELECT p.device_id, p.endpoint, p.p256dh, p.auth FROM push_subs p JOIN devices d ON d.id = p.device_id
 		JOIN members mb ON mb.user_id = d.user_id WHERE mb.chat_id = ? AND d.user_id <> ? AND d.status = 'active'`,
-		payload, "c"+fmt.Sprint(m.Chat), 24*3600, m.Chat, from.UserID)
+		m.Chat, from.UserID)
+	// Marked before the pushes leave: a read racing them still finds them.
 	p.mu.Lock()
 	for _, s := range subs {
-		p.notified[[2]int64{s.device, m.Chat}] = true
+		p.notified[[2]int64{s.device, m.Chat}] = max(p.notified[[2]int64{s.device, m.Chat}], m.ID)
 	}
 	p.mu.Unlock()
+	p.push(subs, payload, "c"+fmt.Sprint(m.Chat), 24*3600)
 }
 
 // silentOK: the push service lets a push close notifications without
@@ -132,22 +140,27 @@ func silentOK(endpoint string) bool {
 	return !strings.HasSuffix(h, "push.apple.com") && !strings.HasSuffix(h, "mozilla.com")
 }
 
-// notifyRead takes back the chat's notifications on the user's other
-// devices that got one: the chat was read somewhere. Same topic as the
-// message push, so one still waiting for an offline phone is replaced.
-func (p *pusher) notifyRead(ctx context.Context, userID, chatID int64) {
+// notifyRead takes back the chat's notifications up to message `upTo` on
+// the user's other devices that got one: the chat was read somewhere.
+// Same topic as the message push, so one still waiting for an offline
+// phone is replaced. A read short of the newest pushed message keeps the
+// mark: the full read later still clears that one.
+func (p *pusher) notifyRead(ctx context.Context, userID, chatID, upTo int64) {
 	subs := p.targets(ctx, `SELECT p.device_id, p.endpoint, p.p256dh, p.auth FROM push_subs p JOIN devices d ON d.id = p.device_id
 		WHERE d.user_id = ? AND d.status = 'active'`, userID)
-	body, _ := json.Marshal(map[string]any{"t": "read", "c": chatID})
+	body, _ := json.Marshal(map[string]any{"t": "read", "c": chatID, "id": upTo})
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	for _, s := range subs {
 		key := [2]int64{s.device, chatID}
-		if !p.notified[key] {
+		newest, ok := p.notified[key]
+		if !ok {
 			continue
 		}
-		delete(p.notified, key)
-		if !p.live(s.device) && silentOK(s.endpoint) {
+		if upTo >= newest {
+			delete(p.notified, key)
+		}
+		if !p.connected(s.device) && silentOK(s.endpoint) {
 			go p.deliver(s, body, "c"+fmt.Sprint(chatID), 24*3600)
 		}
 	}
@@ -161,7 +174,7 @@ func (p *pusher) notifyCallEnd(ctx context.Context, callee int64) {
 		WHERE d.user_id = ? AND d.status = 'active'`, callee)
 	body, _ := json.Marshal(map[string]any{"t": "callEnd"})
 	for _, s := range subs {
-		if !p.live(s.device) && silentOK(s.endpoint) {
+		if !p.connected(s.device) && silentOK(s.endpoint) {
 			go p.deliver(s, body, "call", int(ringFor.Seconds()))
 		}
 	}
@@ -184,9 +197,11 @@ func (s *Server) handlePushTest(w http.ResponseWriter, r *http.Request, a *Auth)
 
 // notifyCall rings the callee's sleeping devices. A ring is useless after
 // it stops, hence the short TTL.
-func (p *pusher) notifyCall(ctx context.Context, chatID, callee int64, from string, video bool) {
+// The call id lets the notification's Decline button decline it without
+// a page (handleCallDecline).
+func (p *pusher) notifyCall(ctx context.Context, chatID, callee int64, from string, video bool, id string) {
 	p.send(ctx, `SELECT p.device_id, p.endpoint, p.p256dh, p.auth FROM push_subs p JOIN devices d ON d.id = p.device_id
-		WHERE d.user_id = ? AND d.status = 'active'`, map[string]any{"t": "call", "c": chatID, "n": from, "v": video},
+		WHERE d.user_id = ? AND d.status = 'active'`, map[string]any{"t": "call", "c": chatID, "n": from, "v": video, "id": id},
 		"call", int(ringFor.Seconds()), callee)
 }
 
@@ -196,19 +211,27 @@ func (p *pusher) notifyDevices(ctx context.Context, userID, except int64, payloa
 		WHERE d.user_id = ? AND d.id <> ? AND d.status = 'active'`, payload, "device", 24*3600, userID, except)
 }
 
-// send pushes to the targets that are not in front and returns them.
-func (p *pusher) send(ctx context.Context, q string, payload map[string]any, topic string, ttl int, args ...any) []sub {
+// send pushes to the targets that are not in front.
+func (p *pusher) send(ctx context.Context, q string, payload map[string]any, topic string, ttl int, args ...any) {
+	p.push(p.asleep(ctx, q, args...), payload, topic, ttl)
+}
+
+// asleep: the targets whose page is not in front.
+func (p *pusher) asleep(ctx context.Context, q string, args ...any) []sub {
 	subs := []sub{}
 	for _, s := range p.targets(ctx, q, args...) {
 		if !p.live(s.device) {
 			subs = append(subs, s)
 		}
 	}
+	return subs
+}
+
+func (p *pusher) push(subs []sub, payload map[string]any, topic string, ttl int) {
 	body, _ := json.Marshal(payload)
 	for _, s := range subs {
 		go p.deliver(s, body, topic, ttl)
 	}
-	return subs
 }
 
 // targets reads push subscriptions (device_id, endpoint, p256dh, auth).

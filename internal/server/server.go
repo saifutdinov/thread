@@ -95,7 +95,7 @@ func New(ctx context.Context, cfg Config, log *slog.Logger) (*Server, error) {
 		preview:  newPreviewClient(publicAddr),
 		backupTo: backupTo,
 	}
-	if s.push, err = newPusher(ctx, db, cfg.VAPIDSubject, s.hub.deviceInFront, log); err != nil {
+	if s.push, err = newPusher(ctx, db, cfg.VAPIDSubject, s.hub.deviceInFront, s.hub.deviceOnline, log); err != nil {
 		db.Close()
 		return nil, err
 	}
@@ -170,6 +170,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/push", s.anyDevice(s.handleSubscribe))
 	mux.HandleFunc("DELETE /api/push", s.anyDevice(s.handleUnsubscribe))
 	mux.HandleFunc("POST /api/push/test", s.anyDevice(s.handlePushTest))
+	mux.HandleFunc("POST /api/calls/decline", s.active(s.handleCallDecline))
 
 	mux.HandleFunc("GET /api/ws", s.anyDevice(s.handleWS))
 	mux.HandleFunc("/api/", func(w http.ResponseWriter, _ *http.Request) { fail(w, http.StatusNotFound, "not_found") })

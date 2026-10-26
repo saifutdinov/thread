@@ -663,7 +663,7 @@ func (s *Server) handleRead(w http.ResponseWriter, r *http.Request, a *Auth) {
 		if ids, err := chatUserIDs(r.Context(), s.db, chatID); err == nil {
 			s.hub.toUsers(ids, event{"t": "read", "c": chatID, "u": a.UserID, "id": req.ID})
 		}
-		s.push.notifyRead(r.Context(), a.UserID, chatID)
+		s.push.notifyRead(r.Context(), a.UserID, chatID, req.ID)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{})
 }
