@@ -41,7 +41,7 @@ import { idbClear, idbGet, idbSet } from './idb';
 import { prepareAvatar, prepareImage, prepareVideo, shrink } from './image';
 import { plain } from './markup';
 import { away, clear, notifyHere, notifyMessage } from './notify';
-import { mobile, subscribe, unsubscribe } from './pwa';
+import { checkUpdate, mobile, subscribe, unsubscribe } from './pwa';
 import { go, parse, replace, route } from './route';
 
 // ---------- types ----------
@@ -1102,6 +1102,7 @@ function connect() {
     offline.value = false;
     if (!isVisible()) sendVis();
     if (screen.value === 'app') catchUp();
+    void checkUpdate();
   };
   sock.onmessage = (e) => {
     try {

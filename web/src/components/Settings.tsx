@@ -2,7 +2,7 @@ import { useEffect, useState } from 'preact/hooks';
 import { api, type Device } from '../lib/api';
 import { errText, fmtListTime, lang, t } from '../lib/i18n';
 import { linkPreviews, textSize, theme } from '../lib/prefs';
-import { enablePush, install, installPrompt, isIOS, notifPermission, standalone } from '../lib/pwa';
+import { appVersion, enablePush, install, installPrompt, isIOS, notifPermission, standalone } from '../lib/pwa';
 import { back } from '../lib/route';
 import { chats, devicesTick, loadChats, logout, me, myPicture, pending, setMyAvatar, showToast } from '../lib/store';
 import { SecuritySettings } from './Security';
@@ -211,6 +211,11 @@ export function Settings() {
         <h3>{t('settings.app')}</h3>
         <InstallRow />
         <MicHint />
+        {/* An installed app has no reload button of its own. */}
+        <button class="btn secondary" onClick={() => location.reload()}>
+          <Icon name="refresh" /> {t('settings.reload')}
+        </button>
+        <p class="muted small">{t('settings.version', { v: appVersion })}</p>
       </section>
 
       <section class="card">

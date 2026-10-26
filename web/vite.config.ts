@@ -5,6 +5,6 @@ export default defineConfig({
   plugins: [preact()],
   build: { target: ['es2020', 'safari14'] },
   server: {
-    proxy: { '/api': { target: 'http://localhost:8080', ws: true } },
+    proxy: { '/api': { target: 'http://localhost:8080', ws: true }, '/healthz': 'http://localhost:8080' },
   },
 });

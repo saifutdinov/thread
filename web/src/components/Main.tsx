@@ -3,7 +3,7 @@ import { call } from '../lib/call';
 import { fromB64 } from '../lib/crypto';
 import { deviceCode } from '../lib/crypto';
 import { errText, t } from '../lib/i18n';
-import { enablePush, isIOS, notifPermission, pushSupported, standalone } from '../lib/pwa';
+import { enablePush, isIOS, notifPermission, pushSupported, standalone, updateReady } from '../lib/pwa';
 import { go, route } from '../lib/route';
 import { approveDevice, denyDevice, pending, showToast, toast } from '../lib/store';
 import { DeviceCode } from './Auth';
@@ -128,6 +128,28 @@ function NotifBanner() {
   );
 }
 
+// UpdateBanner: the server runs a newer release than this page (pwa.ts
+// checkUpdate); a reload picks it up. Not during a call, which a reload
+// would end; "Later" hides it until the app starts again.
+function UpdateBanner() {
+  const [later, setLater] = useState(false);
+  if (!updateReady.value || later || call.value) return null;
+  return (
+    <section class="notif-banner" role="region" aria-label={t('update.title')}>
+      <Icon name="refresh" />
+      <p>{t('update.ready')}</p>
+      <div class="row-buttons">
+        <button class="btn" onClick={() => location.reload()}>
+          {t('update.reload')}
+        </button>
+        <button class="btn secondary" onClick={() => setLater(true)}>
+          {t('notify.later')}
+        </button>
+      </div>
+    </section>
+  );
+}
+
 // Onboarding asks once per device, right after sign-in: notifications,
 // then installing to the home screen (the only way to get push on iOS).
 function Onboarding() {
@@ -187,6 +209,7 @@ export function Main() {
   return (
     <div class={'app' + (chatId ? ' in-chat' : '') + (r.name === 'info' ? ' in-info' : '') + (call.value && minimized.value ? ' with-call-bar' : '')}>
       <aside class="sidebar">
+        <UpdateBanner />
         <NotifBanner />
         <ChatList />
         {r.name === 'settings' && <Settings />}
