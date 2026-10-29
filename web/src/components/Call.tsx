@@ -278,7 +278,11 @@ export function CallScreen() {
   }, []);
   useEffect(() => {
     if (!c) minimized.value = false; // the next call opens full screen
+    // Nothing of the last call stays open over the next one's buttons.
     setSwapped(false);
+    setPicker(false);
+    setFxOpen(false);
+    setThumbSize({ w: 3, h: 4 });
   }, [c?.id]);
   // Chrome 142+ opens the floating window by itself when the person
   // switches tabs mid-call (the camera or microphone in use).
@@ -319,6 +323,12 @@ export function CallScreen() {
   const small = swap ? theirs : mine;
   const bigScreen = swap ? !!c.screen : !!c.peerScreen; // a screen is always shown whole
   const mirror = !c.screen && c.local?.getVideoTracks()[0]?.getSettings().facingMode !== 'environment';
+  // Safari floats the big <video> itself: leave that first, or it would
+  // float our own camera once swapped.
+  const toggleSwap = () => {
+    if (document.pictureInPictureElement) void document.exitPictureInPicture().catch(() => {});
+    setSwapped(!swap);
+  };
 
   const expand = () => (minimized.value = false);
   const audio = <audio ref={audioRef} autoPlay />;
@@ -386,25 +396,24 @@ export function CallScreen() {
           />
         )}
         {small && (
-          <div
+          // A button: a double tap or click swaps; a keyboard or screen
+          // reader's click (no pointer, detail 0) swaps at once.
+          <button
+            type="button"
             class={'call-local' + (!swap && mirror ? ' mirror' : '')}
             style={{ aspectRatio: `${thumbSize.w} / ${thumbSize.h}`, width: tileWidth(thumbSize.w, thumbSize.h) }}
-            role={canSwap ? 'button' : undefined}
-            tabIndex={canSwap ? 0 : undefined}
-            aria-label={canSwap ? t('call.swap') : undefined}
+            disabled={!canSwap}
+            aria-label={t('call.swap')}
             title={canSwap ? t('call.swap') : undefined}
-            onPointerUp={
-              canSwap
-                ? (e) => {
-                    const now = { t: e.timeStamp, x: e.clientX, y: e.clientY };
-                    if (isDoubleTap(lastTap.current, now)) {
-                      lastTap.current = null;
-                      setSwapped(!swap);
-                    } else lastTap.current = now;
-                  }
-                : undefined
-            }
-            onKeyDown={canSwap ? (e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), setSwapped(!swap)) : undefined}
+            onPointerUp={(e) => {
+              if (e.button !== 0) return;
+              const now = { t: e.timeStamp, x: e.clientX, y: e.clientY };
+              if (isDoubleTap(lastTap.current, now)) {
+                lastTap.current = null;
+                toggleSwap();
+              } else lastTap.current = now;
+            }}
+            onClick={(e) => e.detail === 0 && toggleSwap()}
           >
             <video
               ref={attach(small)}
@@ -417,7 +426,7 @@ export function CallScreen() {
                 if (v.videoWidth && v.videoHeight) setThumbSize({ w: v.videoWidth, h: v.videoHeight });
               }}
             />
-          </div>
+          </button>
         )}
         {c.phase === 'active' && c.q && <QualityBadge q={c.q} />}
         <div class="call-who">

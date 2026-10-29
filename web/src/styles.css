@@ -2297,7 +2297,8 @@ img.blur {
   position: absolute;
   top: max(1rem, env(safe-area-inset-top));
   right: max(1rem, env(safe-area-inset-right));
-  max-height: 40vh;
+  padding: 0;
+  border: 0;
   border-radius: 0.9rem;
   overflow: hidden;
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
@@ -2306,8 +2307,8 @@ img.blur {
   touch-action: manipulation; /* a double tap swaps, it does not zoom */
 }
 
-.call-local[role='button'] {
-  cursor: pointer;
+.call-local:disabled {
+  opacity: 1; /* nothing to swap with is no reason to dim our own picture */
 }
 
 .call-local video {
@@ -2324,57 +2325,6 @@ img.blur {
   z-index: 2;
   color: #fff;
   background: rgba(0, 0, 0, 0.35);
-}
-
-/* A phone held upright: four buttons a row, so the controls cover two rows
-   of the picture, not three; long captions wrap. */
-@media (max-width: 30rem) {
-  .call-controls {
-    gap: 0.9rem 0.25rem;
-  }
-  .call-btn {
-    width: 5.25rem;
-  }
-  .call-btn .icon {
-    width: 3.4rem;
-    height: 3.4rem;
-    padding: 0.8rem;
-  }
-  .call-btn small {
-    text-align: center;
-    line-height: 1.15;
-  }
-}
-
-/* A phone on its side: little height, so smaller buttons without captions
-   (each keeps its label for screen readers) and no extra spacing. */
-@media (orientation: landscape) and (max-height: 32rem) {
-  .call-screen {
-    padding-top: max(0.75rem, env(safe-area-inset-top));
-    padding-bottom: max(0.75rem, env(safe-area-inset-bottom));
-  }
-  .call-screen .call-who {
-    margin-top: 0;
-    gap: 0.2rem;
-  }
-  .call-who h2 {
-    font-size: 1.1rem;
-  }
-  .call-controls {
-    gap: 0.75rem;
-  }
-  .call-btn .icon {
-    width: 3rem;
-    height: 3rem;
-    padding: 0.7rem;
-  }
-  .call-btn small {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    overflow: hidden;
-    clip: rect(0 0 0 0);
-  }
 }
 
 .call-who {
@@ -2719,6 +2669,59 @@ img.blur {
 .call-btn small {
   font-size: 0.8rem;
   opacity: 0.9;
+}
+
+/* A phone held upright: four buttons a row, so the controls cover two rows
+   of the picture, not three; long captions wrap. */
+@media (max-width: 30rem) {
+  .call-controls {
+    width: 100%;
+    gap: 0.9rem 0;
+  }
+  .call-btn {
+    flex: 0 0 25%;
+    min-width: 0;
+  }
+  .call-btn .icon {
+    width: 3.4rem;
+    height: 3.4rem;
+    padding: 0.8rem;
+  }
+  .call-btn small {
+    text-align: center;
+    line-height: 1.15;
+  }
+}
+
+/* A phone on its side: little height, so smaller buttons without captions
+   (each keeps its label for screen readers) and no extra spacing. */
+@media (orientation: landscape) and (max-height: 32rem) {
+  .call-screen {
+    padding-top: max(0.75rem, env(safe-area-inset-top));
+    padding-bottom: max(0.75rem, env(safe-area-inset-bottom));
+  }
+  .call-screen .call-who {
+    margin-top: 0;
+    gap: 0.2rem;
+  }
+  .call-who h2 {
+    font-size: 1.1rem;
+  }
+  .call-controls {
+    gap: 0.75rem;
+  }
+  .call-btn .icon {
+    width: 3rem;
+    height: 3rem;
+    padding: 0.7rem;
+  }
+  .call-btn small {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+  }
 }
 
 .call-log {

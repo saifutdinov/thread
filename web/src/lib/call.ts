@@ -606,6 +606,8 @@ async function useCamera(): Promise<void> {
   const s = await navigator.mediaDevices.getUserMedia({ video: CAMERA() });
   hint(s);
   const track = s.getVideoTracks()[0];
+  // The call ended, or a screen went in, while the camera was opening.
+  if (call.value?.id !== v.id || call.value.screen) return track.stop();
   const keep = fx?.id; // the effect moves over to the new camera
   try {
     await sender.replaceTrack(track);
@@ -720,7 +722,9 @@ export async function toggleCamera() {
 // selectCamera picks one by name from the devices menu. While the screen
 // is shown, the choice waits for the camera to come back.
 export async function switchCamera() {
-  facing = facing === 'user' ? 'environment' : 'user';
+  // From the camera in use: one picked by name may face either way.
+  const now = call.value?.local?.getVideoTracks()[0]?.getSettings().facingMode;
+  facing = (now === 'environment' || now === 'user' ? now : facing) === 'user' ? 'environment' : 'user';
   camId = '';
   remember('callCam', '');
   try {
@@ -765,14 +769,20 @@ export async function shareScreen() {
   track.contentHint = 'detail'; // text stays sharp: frames drop before resolution
   const now = call.value;
   if (!now || now.id !== v.id) return track.stop(); // the call ended while choosing
+  // Taken off the hidden-page handler first: sharing a tab hides this page,
+  // and the handler would put the camera back over the screen.
+  const effects = fx;
+  fx = null;
   try {
     await sender.replaceTrack(track);
   } catch (e) {
+    fx = effects;
     track.stop();
     return showToast(errText(e));
   }
   camBefore = !now.camOff;
-  dropEffects();
+  effects?.stop();
+  effects?.camera.stop();
   now.local?.getVideoTracks().forEach((tr) => tr.stop());
   track.addEventListener('ended', () => void stopScreen());
   update({ local: new MediaStream([...(now.local?.getAudioTracks() ?? []), track]), screen: true, camOff: false, effect: undefined });
@@ -789,13 +799,15 @@ export async function stopScreen() {
   if (!v?.screen) return;
   v.local?.getVideoTracks().forEach((tr) => tr.stop());
   update({ local: new MediaStream(v.local?.getAudioTracks() ?? []), screen: false, camOff: true });
+  sendState(); // the other side stops showing the last frame at once
   if (camBefore) {
     try {
       await useCamera();
+      if (call.value?.id !== v.id || call.value.screen) return;
       update({ camOff: false });
       return sendState();
     } catch {
-      showToast(t('call.noMedia'));
+      if (call.value?.id === v.id) showToast(t('call.noMedia'));
     }
   }
   await senderOf('video')
