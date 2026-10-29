@@ -115,12 +115,13 @@ const avg = (a: Pt, b: Pt): Pt => ({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 });
 const dist = (a: Pt, b: Pt) => Math.hypot(b.x - a.x, b.y - a.y);
 
 // headFrom reads one face's mesh (normalized coordinates) for a w x h
-// picture. A mirrored picture swaps the sides back, so the head is upright.
+// picture. Camera frames are never mirrored here (only the self view is,
+// in CSS), so the mesh's sides are the picture's; roll follows the eyes
+// all the way round, also for someone lying on their side.
 export function headFrom(lm: { x: number; y: number }[], w: number, h: number): Head | null {
   if (lm.length < 478) return null;
   const P = (i: number): Pt => ({ x: lm[i].x * w, y: lm[i].y * h });
-  let [eyeL, eyeR, mouthL, mouthR, cheekL, cheekR, sideL, sideR] = [LM.eyeL, LM.eyeR, LM.mouthL, LM.mouthR, LM.cheekL, LM.cheekR, LM.sideL, LM.sideR].map(P);
-  if (eyeR.x < eyeL.x) [eyeL, eyeR, mouthL, mouthR, cheekL, cheekR, sideL, sideR] = [eyeR, eyeL, mouthR, mouthL, cheekR, cheekL, sideR, sideL];
+  const [eyeL, eyeR, mouthL, mouthR, cheekL, cheekR, sideL, sideR] = [LM.eyeL, LM.eyeR, LM.mouthL, LM.mouthR, LM.cheekL, LM.cheekR, LM.sideL, LM.sideR].map(P);
   const lip = P(LM.lip);
   return {
     eyeL,
@@ -203,14 +204,13 @@ class Tracker {
   private shown: number[][] = [];
   private target: number[][] = [];
 
+  // A face that comes or goes keeps the others' filters: a second face
+  // flickering at the edge must not shake the first one.
   update(heads: Head[], t: number) {
     heads.sort((a, b) => a.mid.x - b.mid.x);
-    if (heads.length !== this.filters.length) {
-      this.filters = heads.map(() => []);
-      this.shown = [];
-    }
-    this.target = heads.map((h, i) => toVec(h).map((x, j) => (this.filters[i][j] ??= new OneEuro()).filter(x, t)));
-    if (!this.shown.length) this.shown = this.target.map((v) => [...v]);
+    this.filters.length = this.shown.length = Math.min(this.shown.length, heads.length);
+    this.target = heads.map((h, i) => toVec(h).map((x, j) => ((this.filters[i] ??= [])[j] ??= new OneEuro()).filter(x, t)));
+    this.target.forEach((v, i) => (this.shown[i] ??= [...v]));
   }
 
   clear() {
@@ -843,6 +843,7 @@ export async function startEffects(camera: MediaStreamTrack, first: Look, onGive
   const cut = canvas2d(); // the person, cut out by the mask
   const small = canvas2d(); // the mask, at the segmenter's size; and the cheap blur
   const back = canvas2d(); // the background scene, painted once per size
+  const tiny = canvas2d(); // the cheap blur where the canvas has no filter
   let track: MediaStreamTrack | undefined;
   let running = true;
   let handle = 0;
@@ -893,6 +894,8 @@ export async function startEffects(camera: MediaStreamTrack, first: Look, onGive
     if (Math.round(vw * k) !== w || Math.round(vh * k) !== h) {
       canvas.width = cut.c.width = back.c.width = w = Math.round(vw * k);
       canvas.height = cut.c.height = back.c.height = h = Math.round(vh * k);
+      tiny.c.width = Math.max(8, Math.round(w / 24));
+      tiny.c.height = Math.max(8, Math.round(h / 24));
       tracker.clear();
       scenePainted = '';
       kind = null; // particles start over on the new picture
@@ -936,12 +939,9 @@ export async function startEffects(camera: MediaStreamTrack, first: Look, onGive
         ctx.drawImage(video, 0, 0, w, h);
         ctx.filter = 'none';
       } else {
-        const sw = Math.max(8, Math.round(w / 24));
-        const sh = Math.max(8, Math.round(h / 24));
-        const t = canvas2d(sw, sh);
-        t.ctx.drawImage(video, 0, 0, sw, sh);
+        tiny.ctx.drawImage(video, 0, 0, tiny.c.width, tiny.c.height);
         ctx.imageSmoothingQuality = 'high';
-        ctx.drawImage(t.c, 0, 0, w, h);
+        ctx.drawImage(tiny.c, 0, 0, w, h);
       }
       return;
     }
@@ -985,8 +985,13 @@ export async function startEffects(camera: MediaStreamTrack, first: Look, onGive
       } catch {
         if (++errors > 10) return giveUp('failed'); // one bad frame is "no face"
       }
+      // With a background chosen the room never shows: until the first mask
+      // only the background is drawn.
+      if (look.bg) {
+        if (bg) background(bg);
+        else background('blur');
+      }
       if (bg && maskReady) {
-        background(bg);
         cut.ctx.globalCompositeOperation = 'copy';
         cut.ctx.drawImage(video, 0, 0, w, h);
         cut.ctx.globalCompositeOperation = 'destination-in';
@@ -994,7 +999,7 @@ export async function startEffects(camera: MediaStreamTrack, first: Look, onGive
         cut.ctx.drawImage(small.c, 0, 0, w, h);
         cut.ctx.globalCompositeOperation = 'source-over';
         ctx.drawImage(cut.c, 0, 0);
-      } else ctx.drawImage(video, 0, 0, w, h);
+      } else if (!look.bg) ctx.drawImage(video, 0, 0, w, h);
       if (id) filter(ctx, id, w, h);
       if (face)
         for (const hd of tracker.heads(dt)) {
@@ -1034,7 +1039,7 @@ export async function startEffects(camera: MediaStreamTrack, first: Look, onGive
         tracker.clear();
         puffs.length = 0;
       }
-      if (next.bg !== look.bg) maskReady = false;
+      if (!look.bg) maskReady = false; // the mask does not depend on which background
       look = { ...next };
     },
     stop: release,

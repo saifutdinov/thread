@@ -6,6 +6,7 @@
 // cannot be shown is not worth an error.
 import { idbGet } from './idb';
 import { pushOn, pushSupported } from './pwa';
+import { audible, choices } from './sounds';
 
 const allowed = () => pushSupported && Notification.permission === 'granted';
 
@@ -29,17 +30,21 @@ const inOrder = (task: () => Promise<unknown>) => (queue = queue.then(task).catc
 
 type Options = NotificationOptions & { renotify?: boolean; actions?: { action: string; title: string }[] };
 
-// display runs inside the queue only. The page plays its own sounds (the
-// ones chosen in Settings), so its notifications are silent.
+// display runs inside the queue only.
 async function display(title: string, options: Options) {
-  if (allowed()) await (await registration())?.showNotification(title, { icon: '/icon-192.png', silent: true, ...options });
+  if (allowed()) await (await registration())?.showNotification(title, { icon: '/icon-192.png', ...options });
 }
+
+// quiet: the page plays the sound chosen in Settings itself, so the system
+// stays silent; before the first tap the page cannot sound, and the
+// system's sound is better than none. "No sound" stays silent either way.
+const quiet = (kind: 'message' | 'ring') => audible() || choices.value[kind] === 'off';
 
 // A new message: who wrote and what, unless the app lock hides previews.
 export function notifyMessage(chat: number, from: string, text: string, fallback: string) {
   return inOrder(async () => {
     const hide = await idbGet<boolean>('hidePreview');
-    await display(hide || !from ? fallback : from, { body: hide ? '' : text, tag: 'c' + chat, renotify: true, data: { url: '/#/c/' + chat } });
+    await display(hide || !from ? fallback : from, { body: hide ? '' : text, tag: 'c' + chat, renotify: true, silent: quiet('message'), data: { url: '/#/c/' + chat } });
   });
 }
 
@@ -52,6 +57,7 @@ export function notifyCall(chat: number, id: string, from: string, body: string,
       body: hide || !from ? '' : body,
       tag: 'call',
       renotify: true,
+      silent: quiet('ring'),
       requireInteraction: true,
       data: { url: '/#/c/' + chat, call: true, c: chat, id },
       actions: [

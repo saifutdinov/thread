@@ -44,11 +44,10 @@ test('headFrom follows a tilted head', () => {
   near(h.size, 100);
 });
 
-test('a mirrored picture still gives an upright head, left on the left', () => {
-  const flipped = mesh({ 468: [0.6, 0.4], 473: [0.4, 0.4], 61: [0.56, 0.65], 291: [0.44, 0.65], 234: [0.7, 0.45], 454: [0.3, 0.45] });
-  const h = headFrom(flipped, 1000, 1000)!;
-  near(h.roll, 0);
-  assert.ok(h.eyeL.x < h.eyeR.x && h.mouthL.x < h.mouthR.x && h.sideL.x < h.sideR.x);
+test('a head lying on its side rolls on, it does not flip over', () => {
+  // The right eye straight below the left one, and a little past it.
+  near(headFrom(mesh({ 468: [0.5, 0.4], 473: [0.5, 0.6] }), 1000, 1000)!.roll, Math.PI / 2);
+  assert.ok(headFrom(mesh({ 468: [0.5, 0.4], 473: [0.49, 0.6] }), 1000, 1000)!.roll > Math.PI / 2);
 });
 
 test('headFrom needs a whole face mesh', () => {

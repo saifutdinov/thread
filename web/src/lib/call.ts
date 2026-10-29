@@ -541,7 +541,7 @@ async function useCamera(): Promise<void> {
   const track = s.getVideoTracks()[0];
   // The call ended, or a screen went in, while the camera was opening.
   if (call.value?.id !== v.id || call.value.screen) return track.stop();
-  const keep = fx?.look; // the effect and background move over to the new camera
+  const keep = wanted ?? fx?.look; // the look (also one still loading) moves over to the new camera
   try {
     await sender.replaceTrack(track);
   } catch (e) {
@@ -561,8 +561,11 @@ let fx: Effects | null = null;
 
 // A hidden page stops drawing (no frame callbacks), which would freeze the
 // picture the other side sees: send the bare camera until it is back.
+// With a background on, the drawn picture stays (frozen, at worst): the
+// bare camera would show the room the background is there to hide.
+const outgoing = (e: Effects) => (document.hidden && !e.look.bg ? e.camera : e.track);
 document.addEventListener('visibilitychange', () => {
-  if (fx) senderOf('video')?.replaceTrack(document.hidden ? fx.camera : fx.track).catch(() => {}); // a closing call
+  if (fx) senderOf('video')?.replaceTrack(outgoing(fx)).catch(() => {}); // a closing call
 });
 
 // dropEffects stops the effect canvas and the camera under it.
@@ -574,7 +577,15 @@ function dropEffects() {
 
 // setLook changes what the camera wears: an effect, a background, both
 // or neither (null). The engine and its models download on first use.
-async function setLook(patch: Partial<Look>) {
+// Changes run one after another, each from the state the last one left:
+// a camera switch or a give-up while a model loads then lands right.
+let looks: Promise<unknown> = Promise.resolve();
+let wanted: Look | null = null; // the look being put on right now
+function setLook(patch: Partial<Look>) {
+  return (looks = looks.then(() => applyLook(patch)).catch(() => {}));
+}
+
+async function applyLook(patch: Partial<Look>) {
   const v = call.value;
   const sender = senderOf('video');
   if (!v || !sender || v.camOff || v.screen) return;
@@ -590,13 +601,18 @@ async function setLook(patch: Partial<Look>) {
     await sender.replaceTrack(camera).catch(() => {});
     return;
   }
-  if (v.effectLoading || (!fx && !next.effect && !next.bg)) return;
+  if (!fx && !next.effect && !next.bg) return;
   update({ effectLoading: true });
+  wanted = next;
   const camera = fx?.camera ?? v.local?.getVideoTracks()[0];
   try {
     if (fx) {
-      await fx.set(next);
-      if (call.value?.id === v.id) update(shown(next));
+      const cur = fx;
+      await cur.set(next);
+      // The camera switched, the screen went in or the call ended meanwhile.
+      if (fx !== cur || call.value?.id !== v.id) return;
+      await senderOf('video')?.replaceTrack(outgoing(cur)).catch(() => {});
+      update(shown(next));
       return;
     }
     if (!camera) return;
@@ -612,13 +628,14 @@ async function setLook(patch: Partial<Look>) {
     }
     fx = started;
     hint(new MediaStream([fx.track]));
-    // Loaded while the app was in the background: the bare camera until it is back.
-    await sender.replaceTrack(document.hidden ? camera : fx.track);
+    // Loaded while the app was in the background: as the hidden-page rule says.
+    await sender.replaceTrack(outgoing(fx));
     update({ local: new MediaStream([...(now.local?.getAudioTracks() ?? []), fx.track]), ...shown(next) });
   } catch {
     // A camera switched or turned off while loading is not a failure.
     if (camera?.readyState !== 'ended') showToast(t('fx.failed'));
   } finally {
+    wanted = null;
     update({ effectLoading: false });
   }
 }

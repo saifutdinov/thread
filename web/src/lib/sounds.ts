@@ -21,7 +21,7 @@ const key = (kind: SoundKind) => 'sound:' + kind;
 
 function chosen(kind: SoundKind): string {
   const v = remembered(key(kind));
-  return v === 'file' || v in TUNES[kind] ? v : DEFAULT_TUNE[kind];
+  return v === 'file' || Object.hasOwn(TUNES[kind], v) ? v : DEFAULT_TUNE[kind];
 }
 
 // The choice per kind: a tune id from tunes.ts, or 'file'.
@@ -32,7 +32,13 @@ export function choose(kind: SoundKind, id: string) {
   choices.value = { ...choices.value, [kind]: id };
 }
 
-export const ownSoundName = async (kind: SoundKind) => (await idbGet<OwnSound>(key(kind)).catch(() => undefined))?.name ?? null;
+// ownSoundName: the own file's name, if one is kept. One gone (the device
+// was signed out, which clears IndexedDB) puts the default tune back.
+export async function ownSoundName(kind: SoundKind): Promise<string | null> {
+  const name = (await idbGet<OwnSound>(key(kind)).catch(() => undefined))?.name ?? null;
+  if (!name && choices.value[kind] === 'file') choose(kind, DEFAULT_TUNE[kind]);
+  return name;
+}
 
 // setOwnSound keeps a sound file for this kind and picks it. One that the
 // browser cannot decode is refused here, not at the next call.
@@ -40,25 +46,51 @@ export async function setOwnSound(kind: SoundKind, file: File) {
   if (file.size > MAX_SOUND_FILE) throw new Error('too_large');
   await new OfflineAudioContext(1, 1, 44100).decodeAudioData(await file.arrayBuffer());
   await idbSet(key(kind), { name: file.name, blob: file } satisfies OwnSound);
+  decoded.delete(kind);
   choose(kind, 'file');
 }
 
-// One AudioContext for every sound, resumed on each tap: iOS keeps a
-// context silent until a tap has started it, and suspends it again in the
-// background. A ring or a message then sounds although no tap made it.
+// One AudioContext for every sound. iOS keeps a context silent until a tap
+// has started it: each tap starts it, so a ring or a message later sounds
+// although no tap made it. It sleeps a second after the last sound (an
+// idle running context costs battery and may hold the audio session).
 let shared: AudioContext | null = null;
+let playing = 0;
+let unlocked = false; // a tap has started it once: it can sound from now on
+let sleep: ReturnType<typeof setTimeout> | undefined;
 const audio = () => (shared ??= new AudioContext());
+const idle = () => {
+  clearTimeout(sleep);
+  sleep = setTimeout(() => !playing && void shared?.suspend().catch(() => {}), 1000);
+};
+// wake starts the context; without a tap iOS may hold resume() until the
+// next one, so it waits no longer than a moment (a message sound is not
+// worth playing late).
+const wake = () => {
+  clearTimeout(sleep);
+  const ac = audio();
+  const started = ac
+    .resume()
+    .then(() => void (unlocked ||= ac.state === 'running'))
+    .catch(() => {});
+  return Promise.race([started, new Promise((ok) => setTimeout(ok, 300))]);
+};
 for (const type of ['pointerdown', 'keydown'])
-  addEventListener(type, () => void audio().resume().catch(() => {}), { capture: true, passive: true });
+  addEventListener(type, () => void wake().then(() => !playing && idle()), { capture: true, passive: true });
+
+// audible: a sound started now would be heard (the page may not sound on
+// its own before the first tap); notify.ts lets the system sound otherwise.
+export const audible = () => unlocked;
 
 // play repeats a tune every `every` seconds (once when 0) until stopped.
 // Each note fades in and out, so nothing clicks.
 function play(t: Tune): () => void {
   const ac = audio();
-  ac.resume().catch(() => {});
   const out = ac.createGain();
   out.connect(ac.destination);
   let timer: ReturnType<typeof setTimeout> | undefined;
+  let stopped = false;
+  playing++;
   const voice = (n: Note, at: number, f: number, len: number, level: number) => {
     const o = ac.createOscillator();
     const g = ac.createGain();
@@ -77,18 +109,27 @@ function play(t: Tune): () => void {
     o.start(at);
     o.stop(at + len + 0.05);
   };
+  // A round is scheduled only while the context runs: on a stopped clock
+  // the rounds would pile up and all sound at once when it starts.
   const once = () => {
-    const t0 = ac.currentTime + 0.05;
-    for (const n of t.notes) {
-      voice(n, t0 + n.at, n.f, n.len, t.gain);
-      if (n.bell) voice(n, t0 + n.at, n.f * 4, n.len / 4, t.gain / 8);
+    if (stopped) return;
+    if (ac.state === 'running') {
+      const t0 = ac.currentTime + 0.05;
+      for (const n of t.notes) {
+        voice(n, t0 + n.at, n.f, n.len, t.gain);
+        if (n.bell) voice(n, t0 + n.at, n.f * 4, n.len / 4, t.gain / 8);
+      }
     }
     if (t.every) timer = setTimeout(once, t.every * 1000);
   };
-  once();
+  void wake().then(once);
   const stop = () => {
+    if (stopped) return;
+    stopped = true;
     clearTimeout(timer);
     out.disconnect();
+    playing--;
+    idle();
   };
   if (!t.every) setTimeout(stop, (length(t) + 0.3) * 1000);
   return stop;
@@ -96,16 +137,21 @@ function play(t: Tune): () => void {
 
 // playOwn plays this kind's own file, looped for a ring or the line. A file
 // gone missing, or one this browser cannot play, falls back to the default.
+// The decoded own files, so a message or a ring does not read and decode
+// a file of up to 3 MB every time.
+const decoded = new Map<SoundKind, AudioBuffer>();
+
 function playOwn(kind: SoundKind): () => void {
   const ac = audio();
-  ac.resume().catch(() => {});
   const out = ac.createGain();
   out.gain.value = 0.8;
   out.connect(ac.destination);
   let stopped = false;
   let fallback: (() => void) | null = null;
   let src: AudioBufferSourceNode | null = null;
+  playing++;
   const stop = () => {
+    if (stopped) return;
     stopped = true;
     fallback?.();
     try {
@@ -114,13 +160,21 @@ function playOwn(kind: SoundKind): () => void {
       /* not started yet */
     }
     out.disconnect();
+    playing--;
+    idle();
   };
   void (async () => {
     try {
-      const own = await idbGet<OwnSound>(key(kind));
-      if (!own) throw new Error('no file');
-      const buf = await ac.decodeAudioData(await own.blob.arrayBuffer());
-      if (stopped) return;
+      let buf = decoded.get(kind);
+      if (!buf) {
+        const own = await idbGet<OwnSound>(key(kind));
+        if (!own) throw new Error('no file');
+        buf = await ac.decodeAudioData(await own.blob.arrayBuffer());
+        decoded.set(kind, buf);
+      }
+      await wake();
+      // Not heard now (no tap yet): a message is skipped, not saved up.
+      if (stopped || (ac.state !== 'running' && kind === 'message')) return stop();
       src = ac.createBufferSource();
       src.buffer = buf;
       src.loop = kind !== 'message';
@@ -135,7 +189,7 @@ function playOwn(kind: SoundKind): () => void {
 }
 
 function playTune(kind: SoundKind, id: string): () => void {
-  const tune = id in TUNES[kind] ? TUNES[kind][id] : TUNES[kind][DEFAULT_TUNE[kind]];
+  const tune = Object.hasOwn(TUNES[kind], id) ? TUNES[kind][id] : TUNES[kind][DEFAULT_TUNE[kind]];
   return tune ? play(tune) : () => {};
 }
 

@@ -46,6 +46,8 @@ function SoundRow(props: { kind: SoundKind }) {
           value={id}
           onChange={(e) => {
             const v = e.currentTarget.value;
+            stop?.(); // the preview of the old choice ends
+            setStop(null);
             if (v === 'file' && !file) {
               e.currentTarget.value = id; // stays until a file is picked
               input.current?.click();
@@ -61,7 +63,8 @@ function SoundRow(props: { kind: SoundKind }) {
         </select>
       </label>
       <IconButton icon={stop ? 'pause' : 'play'} label={stop ? t('sound.stop') : t('sound.preview')} disabled={id === 'off'} onClick={listen} />
-      {id === 'file' && <IconButton icon="file" label={t('sound.pickFile')} onClick={() => input.current?.click()} />}
+      {/* Always here: a select's change may come without the tap a file picker needs (iOS). */}
+      <IconButton icon="file" label={file ? t('sound.pickFile') : t('sound.chooseFile')} onClick={() => input.current?.click()} />
       <input
         ref={input}
         type="file"
