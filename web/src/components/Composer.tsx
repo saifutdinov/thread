@@ -473,6 +473,7 @@ export function Composer(props: {
               ref={ta}
               rows={1}
               value={text}
+              spellcheck={false}
               placeholder={t('chat.input')}
               aria-label={t('chat.input')}
               maxLength={MAX_LEN + 100}
