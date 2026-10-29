@@ -2269,7 +2269,8 @@ img.blur {
   flex-direction: column;
   justify-content: space-between;
   align-items: center;
-  padding: max(2.5rem, env(safe-area-inset-top)) 1rem max(2rem, env(safe-area-inset-bottom));
+  padding: max(2.5rem, env(safe-area-inset-top)) max(1rem, env(safe-area-inset-right)) max(2rem, env(safe-area-inset-bottom))
+    max(1rem, env(safe-area-inset-left));
   background: linear-gradient(160deg, #1c2a3a, #0c131b);
   color: #fff;
   overflow: hidden;
@@ -2280,22 +2281,100 @@ img.blur {
   inset: 0;
   width: 100%;
   height: 100%;
-  object-fit: contain; /* the whole picture: a phone held upright on a wide screen is not cut */
+  object-fit: contain; /* the whole picture by default (Call.tsx sets fit or fill) */
   background: #000;
 }
 
+/* The self view is mirrored, like a mirror; not the back camera or a screen. */
+.call-remote.mirror,
+.call-local.mirror video {
+  transform: scaleX(-1);
+}
+
+/* The small picture takes its own shape (width and ratio from Call.tsx),
+   so a camera turned sideways is not cut either. */
 .call-local {
   position: absolute;
   top: max(1rem, env(safe-area-inset-top));
-  right: 1rem;
-  width: min(8rem, 28vw);
-  aspect-ratio: 3 / 4;
-  object-fit: cover;
+  right: max(1rem, env(safe-area-inset-right));
+  max-height: 40vh;
   border-radius: 0.9rem;
-  transform: scaleX(-1);
+  overflow: hidden;
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
   z-index: 2;
   background: #000;
+  touch-action: manipulation; /* a double tap swaps, it does not zoom */
+}
+
+.call-local[role='button'] {
+  cursor: pointer;
+}
+
+.call-local video {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.call-screen .call-fit {
+  position: absolute;
+  top: max(0.75rem, env(safe-area-inset-top));
+  left: calc(max(0.75rem, env(safe-area-inset-left)) + 3.25rem);
+  z-index: 2;
+  color: #fff;
+  background: rgba(0, 0, 0, 0.35);
+}
+
+/* A phone held upright: four buttons a row, so the controls cover two rows
+   of the picture, not three; long captions wrap. */
+@media (max-width: 30rem) {
+  .call-controls {
+    gap: 0.9rem 0.25rem;
+  }
+  .call-btn {
+    width: 5.25rem;
+  }
+  .call-btn .icon {
+    width: 3.4rem;
+    height: 3.4rem;
+    padding: 0.8rem;
+  }
+  .call-btn small {
+    text-align: center;
+    line-height: 1.15;
+  }
+}
+
+/* A phone on its side: little height, so smaller buttons without captions
+   (each keeps its label for screen readers) and no extra spacing. */
+@media (orientation: landscape) and (max-height: 32rem) {
+  .call-screen {
+    padding-top: max(0.75rem, env(safe-area-inset-top));
+    padding-bottom: max(0.75rem, env(safe-area-inset-bottom));
+  }
+  .call-screen .call-who {
+    margin-top: 0;
+    gap: 0.2rem;
+  }
+  .call-who h2 {
+    font-size: 1.1rem;
+  }
+  .call-controls {
+    gap: 0.75rem;
+  }
+  .call-btn .icon {
+    width: 3rem;
+    height: 3rem;
+    padding: 0.7rem;
+  }
+  .call-btn small {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+  }
 }
 
 .call-who {
@@ -2455,7 +2534,7 @@ img.blur {
 .call-screen .call-minimize {
   position: absolute;
   top: max(0.75rem, env(safe-area-inset-top));
-  left: 0.75rem;
+  left: max(0.75rem, env(safe-area-inset-left));
   z-index: 2;
   color: #fff;
   background: rgba(0, 0, 0, 0.35);

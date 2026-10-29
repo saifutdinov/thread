@@ -2,6 +2,7 @@ import { signal } from '@preact/signals';
 import { api } from './api';
 import { rand, toB64u } from './crypto';
 import { refreshDevices, remember, remembered } from './devices';
+import { mobile } from './pwa';
 import { type EffectId, type Effects, startEffects } from './effects';
 import { errText, t } from './i18n';
 import { idbGet, idbSet } from './idb';
@@ -57,6 +58,8 @@ export interface CallView {
   peerMuted?: boolean;
   peerBattery?: { level: number; charging: boolean }; // level in %, where their browser knows it
   effect?: EffectId; // drawn over our camera (effects.ts)
+  screen?: boolean; // we show our screen instead of the camera
+  peerScreen?: boolean; // they show theirs: it is always shown whole
   effectLoading?: boolean;
   local?: MediaStream;
   remote?: MediaStream;
@@ -179,8 +182,13 @@ navigator.serviceWorker?.addEventListener('message', (e) => {
   else if (e.data.k === 'decline') decline();
 });
 
-const CAMERA = (facingMode: 'user' | 'environment'): MediaTrackConstraints => ({
-  facingMode,
+// The camera: the one picked in the devices menu (remembered), else the
+// front or back one. "ideal", not "exact": a camera unplugged since then
+// falls back to another instead of failing the call.
+let camId = remembered('callCam');
+let facing: 'user' | 'environment' = 'user';
+const CAMERA = (): MediaTrackConstraints => ({
+  ...(camId ? { deviceId: { ideal: camId } } : { facingMode: facing }),
   width: { ideal: 1280 },
   height: { ideal: 720 },
   frameRate: { ideal: 30, max: 30 },
@@ -195,7 +203,7 @@ async function media(video: boolean): Promise<MediaStream> {
   const mic = remembered('callMic');
   const s = await navigator.mediaDevices.getUserMedia({
     audio: mic ? { ...MIC, deviceId: { ideal: mic } } : MIC,
-    video: video ? CAMERA('user') : false,
+    video: video ? CAMERA() : false,
   });
   hint(s);
   void refreshDevices(); // labels and the full list appear after the permission
@@ -224,7 +232,7 @@ function sendState() {
     battery && !(battery.level === 1 && battery.charging)
       ? { level: Math.round(battery.level * 100), charging: battery.charging }
       : undefined;
-  if (v && state?.readyState === 'open') state.send(JSON.stringify({ camOff: v.camOff, muted: v.muted, battery: b }));
+  if (v && state?.readyState === 'open') state.send(JSON.stringify({ camOff: v.camOff, muted: v.muted, screen: !!v.screen, battery: b }));
 }
 
 // The Battery API exists in Chromium browsers only (not Safari or Firefox):
@@ -335,7 +343,7 @@ async function connect(local: MediaStream): Promise<RTCPeerConnection> {
   state.onmessage = (ev) => {
     try {
       const m = JSON.parse(String(ev.data));
-      update({ peerCamOff: m.camOff === true, peerMuted: m.muted === true, peerBattery: peerBattery(m.battery) });
+      update({ peerCamOff: m.camOff === true, peerMuted: m.muted === true, peerScreen: m.screen === true, peerBattery: peerBattery(m.battery) });
     } catch {
       /* not ours to read */
     }
@@ -574,6 +582,7 @@ function cleanup() {
   outIce = [];
   inIce = [];
   offer = null;
+  camBefore = false;
   socketHold.call = false;
   releaseSocket();
   call.value = null;
@@ -588,15 +597,13 @@ export function toggleMute() {
   sendState();
 }
 
-let facing: 'user' | 'environment' = 'user';
-
-// useCamera puts a fresh camera track (the current facing) into the call and
+// useCamera puts a fresh camera track (the chosen one) into the call and
 // the self view; the previous one is stopped.
 async function useCamera(): Promise<void> {
   const v = call.value;
   const sender = senderOf('video');
   if (!v || !sender) return;
-  const s = await navigator.mediaDevices.getUserMedia({ video: CAMERA(facing) });
+  const s = await navigator.mediaDevices.getUserMedia({ video: CAMERA() });
   hint(s);
   const track = s.getVideoTracks()[0];
   const keep = fx?.id; // the effect moves over to the new camera
@@ -635,7 +642,7 @@ function dropEffects() {
 export async function setEffect(id: EffectId | null) {
   const v = call.value;
   const sender = senderOf('video');
-  if (!v || !sender || v.camOff) return;
+  if (!v || !sender || v.camOff || v.screen) return;
   if (fx && id) {
     fx.set(id);
     update({ effect: id });
@@ -684,7 +691,7 @@ export async function setEffect(id: EffectId | null) {
 export async function toggleCamera() {
   const v = call.value;
   const sender = senderOf('video');
-  if (!v || !sender) return;
+  if (!v || !sender || v.screen) return;
   try {
     if (v.camOff) {
       await useCamera();
@@ -709,13 +716,92 @@ export async function toggleCamera() {
   }
 }
 
+// switchCamera flips between the front and the back camera (phones);
+// selectCamera picks one by name from the devices menu. While the screen
+// is shown, the choice waits for the camera to come back.
 export async function switchCamera() {
   facing = facing === 'user' ? 'environment' : 'user';
+  camId = '';
+  remember('callCam', '');
   try {
     await useCamera();
   } catch (e) {
     showToast(errText(e));
   }
+}
+
+export async function selectCamera(deviceId: string) {
+  camId = deviceId;
+  remember('callCam', deviceId);
+  const v = call.value;
+  if (!v || v.camOff || v.screen) return;
+  try {
+    await useCamera();
+  } catch (e) {
+    showToast(errText(e));
+  }
+}
+
+// Screen sharing (computers): the screen goes out in the camera's slot, so
+// nothing is renegotiated. The camera stops meanwhile (its light goes out)
+// and comes back when sharing ends, by our button or the browser's own
+// "Stop sharing".
+export const canShareScreen = !mobile && typeof navigator.mediaDevices?.getDisplayMedia === 'function';
+let camBefore = false; // the camera was on when sharing began
+
+export async function shareScreen() {
+  const v = call.value;
+  const sender = senderOf('video');
+  if (!v || !sender || v.screen) return;
+  let s: MediaStream;
+  try {
+    s = await navigator.mediaDevices.getDisplayMedia({ video: { frameRate: { ideal: 15, max: 30 } }, audio: false });
+  } catch (e) {
+    // Cancelled in the browser's own picker: nothing to say.
+    if ((e as DOMException)?.name !== 'NotAllowedError') showToast(t('call.screenFailed'));
+    return;
+  }
+  const track = s.getVideoTracks()[0];
+  track.contentHint = 'detail'; // text stays sharp: frames drop before resolution
+  const now = call.value;
+  if (!now || now.id !== v.id) return track.stop(); // the call ended while choosing
+  try {
+    await sender.replaceTrack(track);
+  } catch (e) {
+    track.stop();
+    return showToast(errText(e));
+  }
+  camBefore = !now.camOff;
+  dropEffects();
+  now.local?.getVideoTracks().forEach((tr) => tr.stop());
+  track.addEventListener('ended', () => void stopScreen());
+  update({ local: new MediaStream([...(now.local?.getAudioTracks() ?? []), track]), screen: true, camOff: false, effect: undefined });
+  if (!now.video) {
+    update({ video: true });
+    void keepAwake();
+  }
+  if (pc) void senders(pc);
+  sendState();
+}
+
+export async function stopScreen() {
+  const v = call.value;
+  if (!v?.screen) return;
+  v.local?.getVideoTracks().forEach((tr) => tr.stop());
+  update({ local: new MediaStream(v.local?.getAudioTracks() ?? []), screen: false, camOff: true });
+  if (camBefore) {
+    try {
+      await useCamera();
+      update({ camOff: false });
+      return sendState();
+    } catch {
+      showToast(t('call.noMedia'));
+    }
+  }
+  await senderOf('video')
+    ?.replaceTrack(null)
+    .catch(() => {});
+  sendState();
 }
 
 // selectMic swaps the microphone mid-call. On Android this is also how a

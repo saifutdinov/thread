@@ -26,6 +26,10 @@ export const theme = signal<Theme>(load('theme', ['system', 'light', 'dark'] as 
 // still applies on top.
 export const textSize = signal(Number(load('textSize', ['90', '100', '115', '130'] as const, '100')));
 
+// The call's big picture: the whole of it (black bars where the shapes
+// differ) or cropped to fill the screen.
+export const callFit = signal(load('callFit', ['contain', 'cover'] as const, 'contain'));
+
 // Link previews are opt-in: the server fetches the page, so it learns the link.
 export const linkPreviews = signal(load('linkPreviews', ['on', 'off'] as const, 'off') === 'on');
 
@@ -45,6 +49,7 @@ export function initPrefs() {
     save('textSize', String(textSize.value));
   });
   effect(() => save('linkPreviews', linkPreviews.value ? 'on' : 'off'));
+  effect(() => save('callFit', callFit.value));
   effect(() => {
     document.documentElement.lang = lang.value;
     document.title = t('app.name');

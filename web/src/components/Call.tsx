@@ -5,22 +5,28 @@ import {
   accept,
   call,
   type CallView,
+  canShareScreen,
   decline,
   hangup,
   type Quality,
+  selectCamera,
   selectMic,
   selectSpeaker,
   setEffect,
+  shareScreen,
   speaker,
+  stopScreen,
   switchCamera,
   toggleCamera,
   toggleMute,
 } from '../lib/call';
-import { cameras, canPickOutput, deviceName, microphones, speakers } from '../lib/devices';
+import { cameras, canPickOutput, deviceName, microphones, remembered, speakers } from '../lib/devices';
 import { EFFECTS } from '../lib/effects';
 import { t } from '../lib/i18n';
 import { fmtDuration } from '../lib/recorder';
 import { locked } from '../lib/lock';
+import { callFit } from '../lib/prefs';
+import { isDoubleTap, type Tap, tileWidth } from '../lib/tap';
 import { type CallLog, chatPicture, findChat, showToast } from '../lib/store';
 import { Avatar, Icon, IconButton, type IconName, Modal } from './ui';
 
@@ -34,16 +40,32 @@ const attach = (s?: MediaStream) => (el: HTMLMediaElement | null) => {
   if (el && el.srcObject !== (s ?? null)) el.srcObject = s ?? null;
 };
 
-// AudioPicker: which microphone and which speakers the call uses. On
-// Android the "microphones" include the earpiece and the speakerphone.
-function AudioPicker(props: { onClose: () => void }) {
-  const mic = call.value?.local?.getAudioTracks()[0]?.getSettings().deviceId;
+// DevicePicker: which camera, microphone and speakers the call uses, all
+// listed even when there is one (to see which). On Android the
+// "microphones" include the earpiece and the speakerphone.
+function DevicePicker(props: { onClose: () => void }) {
+  const c = call.value;
+  const mic = c?.local?.getAudioTracks()[0]?.getSettings().deviceId;
+  // The camera in use, or (off, or the screen shown) the one that comes back.
+  const cam = (!c?.camOff && !c?.screen && c?.local?.getVideoTracks()[0]?.getSettings().deviceId) || remembered('callCam');
+  const cams = cameras();
   const ins = microphones();
   const outs = speakers();
   return (
-    <Modal label={t('call.audio.title')} onClose={props.onClose} class="device-picker">
-      <h2>{t('call.audio.title')}</h2>
-      {ins.length > 1 && (
+    <Modal label={t('call.devices')} onClose={props.onClose} class="device-picker">
+      <h2>{t('call.devices')}</h2>
+      {cams.length > 0 && (
+        <fieldset>
+          <legend>{t('call.audio.camera')}</legend>
+          {cams.map((d, i) => (
+            <label key={d.deviceId} class="row">
+              <input type="radio" name="cam" checked={d.deviceId === cam} onChange={() => void selectCamera(d.deviceId)} />
+              <span>{deviceName(d, i)}</span>
+            </label>
+          ))}
+        </fieldset>
+      )}
+      {ins.length > 0 && (
         <fieldset>
           <legend>{t('call.audio.mic')}</legend>
           {ins.map((d, i) => (
@@ -54,7 +76,7 @@ function AudioPicker(props: { onClose: () => void }) {
           ))}
         </fieldset>
       )}
-      {outs.length > 1 && (
+      {outs.length > 0 && (
         <fieldset>
           <legend>{t('call.audio.out')}</legend>
           {outs.map((d, i) => (
@@ -154,7 +176,7 @@ export const canFloat = (c: CallView) => c.phase === 'active' && (!!docPip || (d
 // floatVideo: the other side's video alone in the browser's own floating
 // window (Safari, or when the document window is refused).
 async function floatVideo() {
-  const v = document.querySelector<HTMLVideoElement>('.call-remote, .call-tile video');
+  const v = document.querySelector<HTMLVideoElement>('video[data-remote]');
   if (!v) throw new Error('no video');
   await v.requestPictureInPicture();
 }
@@ -218,7 +240,7 @@ function FloatingCall(props: { win: Window }) {
       {hidden ? (
         <Icon name="lock" size={48} />
       ) : remoteShown(c) ? (
-        <video ref={attach(c.remote)} class="pip-video" autoPlay playsInline muted />
+        <video ref={attach(c.remote)} class="pip-video" data-remote autoPlay playsInline muted />
       ) : (
         <Avatar id={c.peer} name={peerName(c)} size={96} src={chat && chatPicture(chat)} />
       )}
@@ -245,6 +267,10 @@ export function CallScreen() {
   const [picker, setPicker] = useState(false);
   const [tileRatio, setTileRatio] = useState('3 / 4'); // the minimized tile takes the picture's own shape
   const [fxOpen, setFxOpen] = useState(false);
+  // The big picture is theirs; a double tap on the small one swaps them.
+  const [swapped, setSwapped] = useState(false);
+  const [thumbSize, setThumbSize] = useState({ w: 3, h: 4 }); // the small picture's own shape, rotations too
+  const lastTap = useRef<Tap | null>(null);
   const mini = !!c && minimized.value && c.phase !== 'incoming';
   useEffect(() => {
     const i = setInterval(() => tick((n) => n + 1), 1000);
@@ -252,6 +278,7 @@ export function CallScreen() {
   }, []);
   useEffect(() => {
     if (!c) minimized.value = false; // the next call opens full screen
+    setSwapped(false);
   }, [c?.id]);
   // Chrome 142+ opens the floating window by itself when the person
   // switches tabs mid-call (the camera or microphone in use).
@@ -280,8 +307,18 @@ export function CallScreen() {
     attach(c.remote)(el);
     if (el && canPickOutput && el.sinkId !== sink) el.setSinkId(sink).catch(() => {});
   };
-  const canPickAudio = microphones().length > 1 || speakers().length > 1;
   const status = statusOf(c);
+  // The big and the small picture: theirs big unless swapped, which needs
+  // both. The self view is mirrored like a mirror, except for the back
+  // camera and a shared screen (text must read right).
+  const mine = c.video && !c.camOff && c.local?.getVideoTracks().length ? c.local : undefined;
+  const theirs = theirVideo ? c.remote : undefined;
+  const canSwap = !!mine && !!theirs;
+  const swap = swapped && canSwap;
+  const big = swap ? mine : theirs;
+  const small = swap ? theirs : mine;
+  const bigScreen = swap ? !!c.screen : !!c.peerScreen; // a screen is always shown whole
+  const mirror = !c.screen && c.local?.getVideoTracks()[0]?.getSettings().facingMode !== 'environment';
 
   const expand = () => (minimized.value = false);
   const audio = <audio ref={audioRef} autoPlay />;
@@ -303,6 +340,7 @@ export function CallScreen() {
           <button type="button" class="call-tile" style={{ aspectRatio: tileRatio }} onClick={expand} aria-label={t('call.expand')}>
             <video
               ref={attach(c.remote)}
+              data-remote
               autoPlay
               playsInline
               muted
@@ -328,13 +366,69 @@ export function CallScreen() {
         {c.phase !== 'incoming' && (
           <IconButton icon="down" label={t('call.minimize')} class="call-minimize" onClick={() => (minimized.value = true)} />
         )}
-        {theirVideo && <video ref={attach(c.remote)} class="call-remote" autoPlay playsInline muted />}
-        {c.video && c.local && !c.camOff && <video ref={attach(c.local)} class="call-local" autoPlay playsInline muted />}
+        {big && (
+          <video
+            ref={attach(big)}
+            class={'call-remote' + (swap && mirror ? ' mirror' : '')}
+            style={{ objectFit: bigScreen ? 'contain' : callFit.value }}
+            data-remote={!swap || undefined}
+            autoPlay
+            playsInline
+            muted
+          />
+        )}
+        {big && !bigScreen && (
+          <IconButton
+            icon={callFit.value === 'contain' ? 'fill' : 'fit'}
+            label={callFit.value === 'contain' ? t('call.fill') : t('call.fit')}
+            class="call-fit"
+            onClick={() => (callFit.value = callFit.value === 'contain' ? 'cover' : 'contain')}
+          />
+        )}
+        {small && (
+          <div
+            class={'call-local' + (!swap && mirror ? ' mirror' : '')}
+            style={{ aspectRatio: `${thumbSize.w} / ${thumbSize.h}`, width: tileWidth(thumbSize.w, thumbSize.h) }}
+            role={canSwap ? 'button' : undefined}
+            tabIndex={canSwap ? 0 : undefined}
+            aria-label={canSwap ? t('call.swap') : undefined}
+            title={canSwap ? t('call.swap') : undefined}
+            onPointerUp={
+              canSwap
+                ? (e) => {
+                    const now = { t: e.timeStamp, x: e.clientX, y: e.clientY };
+                    if (isDoubleTap(lastTap.current, now)) {
+                      lastTap.current = null;
+                      setSwapped(!swap);
+                    } else lastTap.current = now;
+                  }
+                : undefined
+            }
+            onKeyDown={canSwap ? (e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), setSwapped(!swap)) : undefined}
+          >
+            <video
+              ref={attach(small)}
+              data-remote={swap || undefined}
+              autoPlay
+              playsInline
+              muted
+              onResize={(e) => {
+                const v = e.currentTarget;
+                if (v.videoWidth && v.videoHeight) setThumbSize({ w: v.videoWidth, h: v.videoHeight });
+              }}
+            />
+          </div>
+        )}
         {c.phase === 'active' && c.q && <QualityBadge q={c.q} />}
         <div class="call-who">
           {!theirVideo && <Avatar id={c.peer} name={name} size={120} src={chat && chatPicture(chat)} />}
           <h2>{name}</h2>
           <p>{status}</p>
+          {c.phase === 'active' && c.peerScreen && theirVideo && (
+            <p class="call-note">
+              <Icon name="screen" size={16} /> {t('call.peerScreen')}
+            </p>
+          )}
           {c.phase === 'active' && c.peerMuted && (
             <p class="call-note">
               <Icon name="micOff" size={16} /> {t('call.peerMuted')}
@@ -390,7 +484,7 @@ export function CallScreen() {
           ) : (
             <>
               <Btn icon={c.muted ? 'micOff' : 'mic'} label={c.muted ? t('call.unmute') : t('call.mute')} tone={c.muted ? 'on' : undefined} onClick={toggleMute} />
-              {(c.canVideo ?? c.video) && (
+              {(c.canVideo ?? c.video) && !c.screen && (
                 <Btn
                   icon={c.camOff ? 'videocamOff' : 'videocam'}
                   label={c.camOff ? t('call.camOn') : t('call.camOff')}
@@ -398,8 +492,16 @@ export function CallScreen() {
                   onClick={toggleCamera}
                 />
               )}
-              {c.video && !c.camOff && cameras().length > 1 && <Btn icon="flip" label={t('call.switch')} onClick={switchCamera} />}
-              {c.video && !c.camOff && (
+              {c.video && !c.camOff && !c.screen && cameras().length > 1 && <Btn icon="flip" label={t('call.switch')} onClick={switchCamera} />}
+              {canShareScreen && c.phase === 'active' && (c.canVideo ?? c.video) && (
+                <Btn
+                  icon={c.screen ? 'screenStop' : 'screen'}
+                  label={c.screen ? t('call.screenStop') : t('call.screen')}
+                  tone={c.screen ? 'on' : undefined}
+                  onClick={() => void (c.screen ? stopScreen() : shareScreen())}
+                />
+              )}
+              {c.video && !c.camOff && !c.screen && (
                 <Btn
                   icon="sparkle"
                   label={t('call.effects')}
@@ -408,13 +510,13 @@ export function CallScreen() {
                   onClick={() => setFxOpen(!fxOpen)}
                 />
               )}
-              {canPickAudio && <Btn icon="volume" label={t('call.sound')} onClick={() => setPicker(true)} />}
+              <Btn icon="devices" label={t('call.devices')} expanded={picker} onClick={() => setPicker(true)} />
               {canFloat(c) && <Btn icon="pip" label={t('call.pip')} onClick={() => void floatCall().catch(() => showToast(t('call.pipFailed')))} />}
               <Btn icon="callEnd" label={t('call.hangup')} tone="red" onClick={() => hangup()} />
             </>
           )}
         </div>
-        {picker && <AudioPicker onClose={() => setPicker(false)} />}
+        {picker && <DevicePicker onClose={() => setPicker(false)} />}
       </dialog>
     </>
   );
