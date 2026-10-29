@@ -1,5 +1,5 @@
 import { signal } from '@preact/signals';
-import { render } from 'preact';
+import { type ComponentChildren, render } from 'preact';
 import { useEffect, useRef, useState } from 'preact/hooks';
 import {
   accept,
@@ -12,6 +12,7 @@ import {
   selectCamera,
   selectMic,
   selectSpeaker,
+  setBackground,
   setEffect,
   shareScreen,
   speaker,
@@ -21,7 +22,7 @@ import {
   toggleMute,
 } from '../lib/call';
 import { cameras, canPickOutput, deviceName, microphones, remembered, speakers } from '../lib/devices';
-import { EFFECTS } from '../lib/effects';
+import { BACKGROUNDS, EFFECTS } from '../lib/effects';
 import { t } from '../lib/i18n';
 import { fmtDuration } from '../lib/recorder';
 import { locked } from '../lib/lock';
@@ -96,6 +97,39 @@ function DevicePicker(props: { onClose: () => void }) {
         {t('common.done')}
       </button>
     </Modal>
+  );
+}
+
+// FxRow: one row of the effects tray, "none" first; scrolls sideways
+// when it does not fit.
+function FxRow<T extends string>(props: {
+  label: string;
+  none: string;
+  items: { id: T; icon: string }[];
+  on?: T;
+  names: string;
+  busy?: boolean;
+  pick: (id: T | null) => unknown;
+}) {
+  const one = (id: T | null, label: string, icon: ComponentChildren) => (
+    <button
+      key={id ?? ''}
+      type="button"
+      class="fx"
+      aria-pressed={(props.on ?? null) === id}
+      title={label}
+      aria-label={label}
+      disabled={props.busy}
+      onClick={() => void props.pick(id)}
+    >
+      {icon}
+    </button>
+  );
+  return (
+    <div class="fx-row" role="group" aria-label={props.label}>
+      {one(null, props.none, <Icon name="close" size={22} />)}
+      {props.items.map((e) => one(e.id, t(`${props.names}.${e.id}`), <span aria-hidden="true">{e.icon}</span>))}
+    </div>
   );
 }
 
@@ -449,33 +483,10 @@ export function CallScreen() {
             {c.phase === 'active' ? (c.reconnecting ? t('call.reconnecting') : t('call.connected')) : status}
           </p>
         </div>
-        {fxOpen && c.video && !c.camOff && (
-          <div class="fx-tray" role="group" aria-label={t('call.effects')}>
-            <button
-              type="button"
-              class="fx"
-              aria-pressed={!c.effect}
-              title={t('fx.none')}
-              aria-label={t('fx.none')}
-              disabled={c.effectLoading}
-              onClick={() => void setEffect(null)}
-            >
-              <Icon name="close" size={22} />
-            </button>
-            {EFFECTS.map((e) => (
-              <button
-                key={e.id}
-                type="button"
-                class="fx"
-                aria-pressed={c.effect === e.id}
-                title={t(`fx.${e.id}`)}
-                aria-label={t(`fx.${e.id}`)}
-                disabled={c.effectLoading}
-                onClick={() => void setEffect(e.id)}
-              >
-                <span aria-hidden="true">{e.icon}</span>
-              </button>
-            ))}
+        {fxOpen && c.video && !c.camOff && !c.screen && (
+          <div class="fx-tray">
+            <FxRow label={t('call.effects')} none={t('fx.none')} items={EFFECTS} on={c.effect} names="fx" busy={c.effectLoading} pick={setEffect} />
+            <FxRow label={t('call.background')} none={t('bg.none')} items={BACKGROUNDS} on={c.bg} names="bg" busy={c.effectLoading} pick={setBackground} />
           </div>
         )}
         {c.effectLoading && (

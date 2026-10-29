@@ -33,8 +33,8 @@ web/                   Preact + Vite PWA
   src/lib/image.ts     client-side image, video poster, avatar and link-card picture preparation
   src/lib/notify.ts    system notifications from a page that is visible but behind another window
   src/lib/attention.ts unread count in the tab title and on the app icon, a ringing call in the title
-  src/lib/effects.ts   call effects: head position, particles, drawing, canvas pipeline
-  src/lib/face.ts      lazy MediaPipe face detector (self-hosted WebAssembly and model)
+  src/lib/effects.ts   call effects: face points from the landmarker, smoothing, vector drawings, puffs, particles, background cut-out, canvas pipeline
+  src/lib/face.ts      lazy MediaPipe face landmarker and person segmenter (self-hosted WebAssembly and models)
   scripts/brotli.mjs   brotli copies of the build's WebAssembly (served by static())
   src/lib/emoji.ts     emoji-only messages drawn large
   src/lib/call.ts      WebRTC call state machine, tones, sealed signaling, ICE restart, quality stats
@@ -80,6 +80,7 @@ Dependencies: Go `modernc.org/sqlite` (pure Go, CGO-free static binary), `coder/
 | Numbered schema migrations | `store.go` `migrations` | The base schema (version 0) is frozen; changes are appended and applied once via PRAGMA user_version | Editing CREATE TABLE: never reaches an existing database |
 | Recorder format fallback | `recorder.ts` `begin` | Browsers claim formats they then fail to encode (Chrome AAC with a bitrate); restart with the next one | Trusting isTypeSupported alone |
 | Socket by platform, visibility reported | `store.ts` visibility handler (`holdSocket`, `{t:'vis'}`), `hub.deviceInFront` | Phones drop the socket when hidden (frozen pages, iOS penalizes silent pushes); computers keep it in a background tab so a call rings there, and the server still pushes because the tab said it is hidden. A page visible but not in front shows its own notifications | Socket only while visible everywhere: a background tab neither rang nor got pushes in time; always-on socket without the flag: the server would skip push |
+| One Euro filter on face points | `effects.ts` `OneEuro`, `Tracker` | Landmarks jitter by a pixel or two; the filter smooths hard at rest and barely lags in motion, and the drawn face glides between readings (the model runs ~15 times a second) | A fixed blend towards each reading: either jitter or lag |
 | Hold-to-record state machine | `Composer.tsx` (`Press`, `pressDown`/`pressMove`/`pressUp`), `recorder.ts` `dragAction` | One button does tap (switch voice/circle), hold (record, release sends), drag up (lock), drag left (cancel); the press lives in a ref because opening the microphone is async, the gesture rule is a pure function | Separate buttons per action: not how people expect a messenger to work |
 | Version-keyed lazy pictures | `picture()` in `store.ts`, `avatar_v`/`photo_v` | Chat lists stay small; a picture is fetched once per version | Pictures inline in `/api/chats`: every list reload carries every avatar |
 | Copy-on-lag avatar reconcile | `reconcileAvatar`, `PUT /api/me/avatar` copy with `v` | The server cannot re-encrypt; after each chat list load the owner's client fills chats that lag (joined later, or a direct chat whose key moved on). The copy names the version it carries, so a race with a newer upload is refused (409 `stale`) instead of storing an old picture under the new version | A rotation hook that re-seals: the rotating writer may not be the avatar's owner |

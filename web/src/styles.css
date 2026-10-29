@@ -2578,20 +2578,26 @@ img.blur {
   position: relative;
   z-index: 1;
   display: flex;
-  gap: 0.5rem;
+  flex-direction: column;
+  gap: 0.4rem;
   width: 100%;
   margin: auto 0 0.75rem; /* right above the controls */
+}
+
+.fx-row {
+  display: flex;
+  gap: 0.5rem;
   padding: 0.25rem 0.5rem;
   overflow-x: auto;
   scrollbar-width: none;
 }
 
 /* Centred while they fit, scrollable from the first one when not. */
-.fx-tray .fx:first-child {
+.fx-row .fx:first-child {
   margin-left: auto;
 }
 
-.fx-tray .fx:last-child {
+.fx-row .fx:last-child {
   margin-right: auto;
 }
 

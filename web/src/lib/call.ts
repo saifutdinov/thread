@@ -3,7 +3,7 @@ import { api } from './api';
 import { rand, toB64u } from './crypto';
 import { refreshDevices, remember, remembered } from './devices';
 import { mobile } from './pwa';
-import { type EffectId, type Effects, startEffects } from './effects';
+import { type BgId, type EffectId, type Effects, type Look, startEffects } from './effects';
 import { errText, t } from './i18n';
 import { idbGet, idbSet } from './idb';
 import { clear, notifyCall, notifyHere } from './notify';
@@ -58,6 +58,7 @@ export interface CallView {
   peerMuted?: boolean;
   peerBattery?: { level: number; charging: boolean }; // level in %, where their browser knows it
   effect?: EffectId; // drawn over our camera (effects.ts)
+  bg?: BgId; // behind us: blurred or replaced
   screen?: boolean; // we show our screen instead of the camera
   peerScreen?: boolean; // they show theirs: it is always shown whole
   effectLoading?: boolean;
@@ -608,7 +609,7 @@ async function useCamera(): Promise<void> {
   const track = s.getVideoTracks()[0];
   // The call ended, or a screen went in, while the camera was opening.
   if (call.value?.id !== v.id || call.value.screen) return track.stop();
-  const keep = fx?.id; // the effect moves over to the new camera
+  const keep = fx?.look; // the effect and background move over to the new camera
   try {
     await sender.replaceTrack(track);
   } catch (e) {
@@ -618,8 +619,8 @@ async function useCamera(): Promise<void> {
   dropEffects(); // the old camera and its effect, now that they are not sent
   const now = call.value?.local;
   now?.getVideoTracks().forEach((tr) => tr.stop());
-  update({ local: new MediaStream([...(now?.getAudioTracks() ?? []), track]), effect: undefined });
-  if (keep) void setEffect(keep);
+  update({ local: new MediaStream([...(now?.getAudioTracks() ?? []), track]), effect: undefined, bg: undefined });
+  if (keep) void setLook(keep);
 }
 
 // Effects (effects.ts) put a canvas track in place of the camera, in the
@@ -639,39 +640,41 @@ function dropEffects() {
   fx = null;
 }
 
-// setEffect draws an effect over the camera, or none (null). The engine
-// downloads on first use.
-export async function setEffect(id: EffectId | null) {
+// setLook changes what the camera wears: an effect, a background, both
+// or neither (null). The engine and its models download on first use.
+async function setLook(patch: Partial<Look>) {
   const v = call.value;
   const sender = senderOf('video');
   if (!v || !sender || v.camOff || v.screen) return;
-  if (fx && id) {
-    fx.set(id);
-    update({ effect: id });
-    return;
-  }
-  if (!id) {
-    if (!fx) return;
+  const next: Look = { effect: v.effect ?? null, bg: v.bg ?? null, ...patch };
+  const shown = (l: Look) => ({ effect: l.effect ?? undefined, bg: l.bg ?? undefined });
+  if (fx && !next.effect && !next.bg) {
+    // Nothing left to draw: the bare camera goes back into the call state
+    // first, so a call that ends meanwhile stops it and its light goes out.
     const { camera } = fx;
     fx.stop();
     fx = null;
-    // The camera goes back into the call state first: a call that ends
-    // meanwhile then stops it, and its light goes out.
-    update({ local: new MediaStream([...(call.value?.local?.getAudioTracks() ?? []), camera]), effect: undefined });
+    update({ local: new MediaStream([...(call.value?.local?.getAudioTracks() ?? []), camera]), effect: undefined, bg: undefined });
     await sender.replaceTrack(camera).catch(() => {});
     return;
   }
-  const camera = v.local?.getVideoTracks()[0];
-  if (!camera || v.effectLoading) return;
+  if (v.effectLoading || (!fx && !next.effect && !next.bg)) return;
   update({ effectLoading: true });
+  const camera = fx?.camera ?? v.local?.getVideoTracks()[0];
   try {
-    const started = await startEffects(camera, id, (why) => {
-      void setEffect(null);
+    if (fx) {
+      await fx.set(next);
+      if (call.value?.id === v.id) update(shown(next));
+      return;
+    }
+    if (!camera) return;
+    const started = await startEffects(camera, next, (why) => {
+      void setLook({ effect: null, bg: null });
       showToast(t(why === 'slow' ? 'fx.slow' : 'fx.failed'));
     });
     const now = call.value;
-    // The call ended, or the camera changed, while the engine loaded.
-    if (!now || now.id !== v.id || now.local?.getVideoTracks()[0] !== camera) {
+    // The call ended, the camera changed or a screen went in while loading.
+    if (!now || now.id !== v.id || now.screen || now.local?.getVideoTracks()[0] !== camera) {
       started.stop();
       return;
     }
@@ -679,14 +682,17 @@ export async function setEffect(id: EffectId | null) {
     hint(new MediaStream([fx.track]));
     // Loaded while the app was in the background: the bare camera until it is back.
     await sender.replaceTrack(document.hidden ? camera : fx.track);
-    update({ local: new MediaStream([...(now.local?.getAudioTracks() ?? []), fx.track]), effect: id });
+    update({ local: new MediaStream([...(now.local?.getAudioTracks() ?? []), fx.track]), ...shown(next) });
   } catch {
     // A camera switched or turned off while loading is not a failure.
-    if (camera.readyState !== 'ended') showToast(t('fx.failed'));
+    if (camera?.readyState !== 'ended') showToast(t('fx.failed'));
   } finally {
     update({ effectLoading: false });
   }
 }
+
+export const setEffect = (effect: EffectId | null) => setLook({ effect });
+export const setBackground = (bg: BgId | null) => setLook({ bg });
 
 // toggleCamera really stops the camera when off (its light goes out) and
 // starts it again when on; the other side shows our avatar meanwhile.
@@ -707,7 +713,7 @@ export async function toggleCamera() {
       dropEffects();
       await sender.replaceTrack(null);
       v.local?.getVideoTracks().forEach((tr) => tr.stop());
-      update({ local: new MediaStream(v.local?.getAudioTracks() ?? []), effect: undefined });
+      update({ local: new MediaStream(v.local?.getAudioTracks() ?? []), effect: undefined, bg: undefined });
     }
     update({ camOff: !v.camOff });
     sendState();
@@ -785,7 +791,7 @@ export async function shareScreen() {
   effects?.camera.stop();
   now.local?.getVideoTracks().forEach((tr) => tr.stop());
   track.addEventListener('ended', () => void stopScreen());
-  update({ local: new MediaStream([...(now.local?.getAudioTracks() ?? []), track]), screen: true, camOff: false, effect: undefined });
+  update({ local: new MediaStream([...(now.local?.getAudioTracks() ?? []), track]), screen: true, camOff: false, effect: undefined, bg: undefined });
   if (!now.video) {
     update({ video: true });
     void keepAwake();
