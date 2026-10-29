@@ -41,7 +41,8 @@ import { idbClear, idbGet, idbSet } from './idb';
 import { prepareAvatar, prepareImage, prepareVideo, shrink } from './image';
 import { plain } from './markup';
 import { away, clear, notifyHere, notifyMessage } from './notify';
-import { checkUpdate, mobile, subscribe, unsubscribe } from './pwa';
+import { checkUpdate, mobile, pushOn, subscribe, unsubscribe } from './pwa';
+import { playSound } from './sounds';
 import { go, parse, replace, route } from './route';
 
 // ---------- types ----------
@@ -548,6 +549,9 @@ function onMessage(m: Msg) {
   // the service worker says it.
   const cl = m.p?.cl;
   const missed = cl?.s === 'missed' || cl?.s === 'busy';
+  // The chosen message sound, unless the chat is in front, a call is on, or
+  // the page is hidden and a push brings the system's own sound.
+  if (fresh && !mine && !reading && (!cl || missed) && !socketHold.call && (document.visibilityState === 'visible' || !pushOn)) playSound('message');
   if (fresh && !mine && notifyHere() && (!cl || missed)) {
     const from = nameOf(m.chat, m.user);
     const text = cl ? `📞 ${t('call.missed')}` : summary(m.p);

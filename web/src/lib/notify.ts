@@ -29,9 +29,10 @@ const inOrder = (task: () => Promise<unknown>) => (queue = queue.then(task).catc
 
 type Options = NotificationOptions & { renotify?: boolean; actions?: { action: string; title: string }[] };
 
-// display runs inside the queue only.
+// display runs inside the queue only. The page plays its own sounds (the
+// ones chosen in Settings), so its notifications are silent.
 async function display(title: string, options: Options) {
-  if (allowed()) await (await registration())?.showNotification(title, { icon: '/icon-192.png', ...options });
+  if (allowed()) await (await registration())?.showNotification(title, { icon: '/icon-192.png', silent: true, ...options });
 }
 
 // A new message: who wrote and what, unless the app lock hides previews.

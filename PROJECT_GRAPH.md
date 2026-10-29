@@ -35,6 +35,8 @@ web/                   Preact + Vite PWA
   src/lib/attention.ts unread count in the tab title and on the app icon, a ringing call in the title
   src/lib/effects.ts   call effects: face points from the landmarker, smoothing, vector drawings, puffs, particles, background cut-out, canvas pipeline
   src/lib/face.ts      lazy MediaPipe face landmarker and person segmenter (self-hosted WebAssembly and models)
+  src/lib/tunes.ts     built-in ring, line and message tunes (synthesized notes), pure
+  src/lib/sounds.ts    plays the sound this device chose (a tune or an own file in IndexedDB) through one shared AudioContext
   scripts/brotli.mjs   brotli copies of the build's WebAssembly (served by static())
   src/lib/emoji.ts     emoji-only messages drawn large
   src/lib/call.ts      WebRTC call state machine, tones, sealed signaling, ICE restart, quality stats

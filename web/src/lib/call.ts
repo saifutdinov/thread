@@ -3,6 +3,7 @@ import { api } from './api';
 import { rand, toB64u } from './crypto';
 import { refreshDevices, remember, remembered } from './devices';
 import { mobile } from './pwa';
+import { hangupTone, playSound } from './sounds';
 import { type BgId, type EffectId, type Effects, type Look, startEffects } from './effects';
 import { errText, t } from './i18n';
 import { idbGet, idbSet } from './idb';
@@ -93,79 +94,10 @@ const update = (patch: Partial<CallView>) => {
   if (call.value) call.value = { ...call.value, ...patch };
 };
 
-// Sounds are synthesized: no audio files to ship. A note is a pitch (Hz),
-// a start and a length (s). Bell notes ring out with a soft overtone, like
-// a marimba; the others hold steady, like a phone line's tone.
-interface Note {
-  f: number;
-  at: number;
-  len: number;
-  bell?: boolean;
-}
-
-// play repeats notes every `every` seconds (once when 0) until stopped.
-// Each note fades in and out, so nothing clicks.
-function play(notes: Note[], every: number, gain = 0.07): () => void {
-  const ac = new AudioContext();
-  ac.resume().catch(() => {}); // iOS may start a context suspended outside a tap
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const voice = (f: number, at: number, len: number, level: number, bell: boolean) => {
-    const o = ac.createOscillator();
-    const g = ac.createGain();
-    o.frequency.value = f;
-    g.gain.setValueAtTime(0, at);
-    g.gain.linearRampToValueAtTime(level, at + 0.01);
-    if (bell) g.gain.exponentialRampToValueAtTime(0.0001, at + len);
-    else {
-      g.gain.setValueAtTime(level, at + len - 0.05);
-      g.gain.linearRampToValueAtTime(0, at + len);
-    }
-    o.connect(g).connect(ac.destination);
-    o.start(at);
-    o.stop(at + len + 0.05);
-  };
-  const once = () => {
-    const t0 = ac.currentTime + 0.05;
-    for (const n of notes) {
-      voice(n.f, t0 + n.at, n.len, gain, !!n.bell);
-      if (n.bell) voice(n.f * 4, t0 + n.at, n.len / 4, gain / 8, true);
-    }
-    if (every) timer = setTimeout(once, every * 1000);
-  };
-  once();
-  const stop = () => {
-    clearTimeout(timer);
-    ac.close().catch(() => {});
-  };
-  if (!every) setTimeout(stop, (Math.max(...notes.map((n) => n.at + n.len)) + 0.3) * 1000);
-  return stop;
-}
-
-const E5 = 659.25, GS5 = 830.61, B5 = 987.77, E6 = 1318.51, G5 = 783.99, C5 = 523.25;
-// Waiting for an answer: the familiar 425 Hz line tone, 0.8 s every 4 s.
-const ringback = () => play([{ f: 425, at: 0, len: 0.8 }], 4, 0.05);
-// Incoming: a rising E major arpeggio, answered by a short phrase.
-const ringtone = () =>
-  play(
-    [
-      { f: E5, at: 0, len: 0.7, bell: true },
-      { f: GS5, at: 0.15, len: 0.7, bell: true },
-      { f: B5, at: 0.3, len: 0.7, bell: true },
-      { f: E6, at: 0.45, len: 1.1, bell: true },
-      { f: B5, at: 1.2, len: 0.6, bell: true },
-      { f: E6, at: 1.35, len: 1.2, bell: true },
-    ],
-    3.2,
-  );
-// The call is over: two falling notes.
-const hangupTone = () =>
-  play(
-    [
-      { f: G5, at: 0, len: 0.4, bell: true },
-      { f: C5, at: 0.16, len: 0.7, bell: true },
-    ],
-    0,
-  );
+// The ring, the line while calling and the end tone: sounds.ts plays
+// what this device chose (Settings, Sounds).
+const ringtone = () => playSound('ring');
+const ringback = () => playSound('dial');
 
 function quiet() {
   stopTone?.();

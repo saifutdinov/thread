@@ -1,12 +1,80 @@
-import { useEffect, useState } from 'preact/hooks';
+import { useEffect, useRef, useState } from 'preact/hooks';
 import { api, type Device } from '../lib/api';
 import { errText, fmtListTime, lang, t } from '../lib/i18n';
 import { linkPreviews, textSize, theme } from '../lib/prefs';
 import { appVersion, enablePush, install, installPrompt, isIOS, notifPermission, standalone } from '../lib/pwa';
 import { back } from '../lib/route';
+import { choices, choose, MAX_SOUND_FILE, ownSoundName, playSound, setOwnSound, type SoundKind } from '../lib/sounds';
+import { TUNES } from '../lib/tunes';
 import { chats, devicesTick, loadChats, logout, me, myPicture, pending, setMyAvatar, showToast } from '../lib/store';
 import { SecuritySettings } from './Security';
-import { approving, Avatar, Icon, Panel, PictureButtons, Segmented, Switch } from './ui';
+import { approving, Avatar, Icon, IconButton, Panel, PictureButtons, Segmented, Switch } from './ui';
+
+// SoundRow: which sound this device plays for one kind, a built-in tune or
+// a file of the person's own, and a button to hear it.
+function SoundRow(props: { kind: SoundKind }) {
+  const { kind } = props;
+  const id = choices.value[kind];
+  const [file, setFile] = useState<string | null>(null);
+  const [stop, setStop] = useState<(() => void) | null>(null);
+  const input = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    void ownSoundName(kind).then(setFile);
+  }, [kind]);
+  useEffect(() => () => stop?.(), [stop]); // leaving the page stops the preview
+  const listen = () => {
+    if (stop) return setStop(null);
+    const end = playSound(kind);
+    setStop(() => end);
+    // A ring repeats: a few seconds are enough to hear it.
+    setTimeout(() => setStop((s) => (s === end ? null : s)), kind === 'message' ? 1500 : 6000);
+  };
+  const pickFile = async (f: File | undefined) => {
+    if (!f) return;
+    try {
+      await setOwnSound(kind, f);
+      setFile(f.name);
+    } catch (e) {
+      showToast(t((e as Error).message === 'too_large' ? 'sound.tooBig' : 'sound.bad', { mb: MAX_SOUND_FILE >> 20 }));
+    }
+  };
+  return (
+    <div class="sound-row">
+      <label class="field">
+        <span>{t(`sound.${kind}`)}</span>
+        <select
+          value={id}
+          onChange={(e) => {
+            const v = e.currentTarget.value;
+            if (v === 'file' && !file) {
+              e.currentTarget.value = id; // stays until a file is picked
+              input.current?.click();
+            } else choose(kind, v);
+          }}
+        >
+          {Object.keys(TUNES[kind]).map((k) => (
+            <option key={k} value={k}>
+              {t(`tune.${k}`)}
+            </option>
+          ))}
+          <option value="file">{file ? t('sound.fileNamed', { name: file }) : t('sound.file')}</option>
+        </select>
+      </label>
+      <IconButton icon={stop ? 'pause' : 'play'} label={stop ? t('sound.stop') : t('sound.preview')} disabled={id === 'off'} onClick={listen} />
+      {id === 'file' && <IconButton icon="file" label={t('sound.pickFile')} onClick={() => input.current?.click()} />}
+      <input
+        ref={input}
+        type="file"
+        accept="audio/*"
+        hidden
+        onChange={(e) => {
+          void pickFile(e.currentTarget.files?.[0]);
+          e.currentTarget.value = '';
+        }}
+      />
+    </div>
+  );
+}
 
 export function NotificationsRow() {
   const perm = notifPermission.value;
@@ -205,6 +273,14 @@ export function Settings() {
         <h3>{t('settings.notifications')}</h3>
         <NotificationsRow />
         <NotifGuide />
+      </section>
+
+      <section class="card stack">
+        <h3>{t('settings.sounds')}</h3>
+        <SoundRow kind="ring" />
+        <SoundRow kind="dial" />
+        <SoundRow kind="message" />
+        <p class="muted small">{t('settings.soundsHint')}</p>
       </section>
 
       <section class="card stack">

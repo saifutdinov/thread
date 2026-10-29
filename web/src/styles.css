@@ -277,6 +277,7 @@ textarea,
 }
 
 .field input,
+.field select,
 .search,
 .link-box,
 .password-box {
@@ -289,10 +290,22 @@ textarea,
   color: var(--text);
 }
 
+.field select:focus,
 .field input:focus {
   border-color: var(--accent);
   outline: none;
   box-shadow: 0 0 0 1px var(--accent);
+}
+
+.sound-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 0.25rem;
+}
+
+.sound-row .field {
+  flex: 1;
+  min-width: 0;
 }
 
 .search {
