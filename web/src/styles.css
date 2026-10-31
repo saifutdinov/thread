@@ -1139,6 +1139,7 @@ textarea,
   display: flex;
   flex-direction: column;
   width: 100%;
+  min-width: 9rem;
   text-align: left;
   border: 0;
   border-left: 3px solid var(--accent);
@@ -1160,12 +1161,13 @@ textarea,
   max-width: 20rem;
 }
 
+/* The time, "edited" and the ticks: one line of fixed height whatever the
+   state, so nothing around it moves when a message is sent or read. */
 .meta {
-  float: right;
   display: inline-flex;
   align-items: center;
   gap: 0.25rem;
-  margin: 0.45rem -0.15rem -0.2rem 0.75rem;
+  height: 1rem;
   font-size: 0.75rem;
   line-height: 1;
   white-space: nowrap;
@@ -1180,8 +1182,51 @@ textarea,
   color: var(--theirs-meta);
 }
 
-.has-media .meta {
-  margin: 0.25rem 0.4rem 0.2rem 0.6rem;
+/* A text keeps room for its time at the end of the last line with an
+   invisible copy; the real one sits in the bubble's bottom corner. */
+.meta-ghost {
+  visibility: hidden;
+  margin-left: 0.6rem;
+  vertical-align: -0.1rem;
+  pointer-events: none;
+}
+
+.meta-corner {
+  position: absolute;
+  right: 0.6rem;
+  bottom: 0.4rem;
+}
+
+.has-media .meta-corner {
+  right: 0.8rem;
+  bottom: 0.55rem;
+}
+
+/* After a voice message, a file or a call: on its own line, at the right. */
+.bubble > .meta {
+  display: flex;
+  width: fit-content;
+  margin: 0.2rem 0.1rem 0 auto;
+}
+
+.has-media .bubble > .meta {
+  margin: 0.25rem 0.4rem 0.2rem auto;
+}
+
+/* Reactions and the time share the bubble's bottom row. */
+.msg-foot {
+  display: flex;
+  align-items: flex-end;
+  gap: 0.5rem;
+  margin-top: 0.3rem;
+}
+
+.has-media .msg-foot {
+  margin: 0.3rem 0.4rem 0.2rem;
+}
+
+.msg-foot .meta {
+  margin-left: auto;
 }
 
 /* Photo or video without caption: time sits on the picture. */
@@ -1201,8 +1246,13 @@ textarea,
   color: var(--danger);
 }
 
-.tick.alert {
+.tick-failed {
   color: var(--danger);
+}
+
+/* Read: the double tick, also in the accent colour. */
+.tick-read {
+  color: var(--tick-read, var(--accent));
 }
 
 .gallery {
@@ -1259,7 +1309,7 @@ img.blur {
   display: flex;
   flex-wrap: wrap;
   gap: 0.25rem;
-  margin-top: 0.2rem;
+  min-width: 0;
 }
 
 .chip {
@@ -1270,8 +1320,8 @@ img.blur {
   padding: 0.1rem 0.55rem;
   border: 0;
   border-radius: 1rem;
-  background: var(--bg);
-  box-shadow: var(--shadow);
+  background: var(--accent-soft);
+  color: var(--text);
   font-size: 0.95rem;
 }
 
@@ -1371,6 +1421,9 @@ img.blur {
   gap: 0.6rem;
   padding: 0.25rem 0.25rem 0.25rem 0.75rem;
   color: var(--accent);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .composer-context-text {
@@ -1947,8 +2000,8 @@ img.blur {
 }
 
 .msg.jumbo .meta {
-  float: none;
   display: flex;
+  height: auto;
   width: fit-content;
   margin: 0.15rem 0 0 auto;
   font-size: 0.75rem;
@@ -2251,9 +2304,13 @@ img.blur {
   display: flex;
   align-items: center;
   gap: 0.25rem;
+  min-width: 0;
   font-size: 0.8rem;
   color: var(--accent);
-  margin-bottom: 0.15rem;
+  margin-bottom: 0.2rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .forward-list {

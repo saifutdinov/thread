@@ -466,23 +466,57 @@ function Bubble(props: {
   const statusLabel =
     m.local === 'failed' ? t('chat.failed') : m.local ? t('chat.sending') : status === 'checks' ? t('chat.read') : t('chat.sent');
   const author = mine ? t('list.you') : nameOf(chat.id, m.user);
-  // Inside the text so it floats into the last line, Telegram style.
-  const meta = (
-    <span class="meta">
+  // The time, "edited" and the ticks. Every tick is the same 16 px, and its
+  // class names its state (a bare "check" class once matched the checkbox
+  // rows' 44 px rule and pushed the time onto a line of its own).
+  const tick = { alert: 'failed', clock: 'sending', checks: 'read', check: 'sent' }[status];
+  const metaParts = (
+    <>
       {m.bad && m.p && (
         <span class="bad" title={t('chat.badSig')} aria-label={t('chat.badSig')}>
           <Icon name="alert" size={14} />
         </span>
       )}
-      {m.edited ? <span>{t('chat.edited')}</span> : null}
+      {m.edited ? <span class="edited">{t('chat.edited')}</span> : null}
       <time dateTime={new Date(m.at).toISOString()}>{fmtTime(m.at)}</time>
       {mine && (
-        <span class={'tick ' + status} aria-label={statusLabel} title={statusLabel}>
+        <span class={'tick tick-' + tick} aria-label={statusLabel} title={statusLabel}>
           <Icon name={status} size={16} />
         </span>
       )}
-    </span>
+    </>
   );
+  const meta = <span class="meta">{metaParts}</span>;
+  const reactions =
+    m.rx && m.rx.length > 0 ? (
+      <div class="reactions">
+        {m.rx.map(([emoji, users]) => (
+          <button
+            type="button"
+            class={'chip' + (users.includes(myId()) ? ' on' : '')}
+            aria-pressed={users.includes(myId())}
+            title={users.map((u) => (u === myId() ? t('list.you') : nameOf(chat.id, u))).join(', ')}
+            onClick={(e) => {
+              e.stopPropagation();
+              toggleReaction(m, emoji).catch((err) => showToast(errText(err)));
+            }}
+          >
+            {emoji} {users.length > 1 && <span>{users.length}</span>}
+          </button>
+        ))}
+      </div>
+    ) : null;
+  // Where the time goes: next to the reactions in the bubble's bottom row;
+  // else in the bottom corner of a text, which keeps room for it at the end
+  // of its last line with an invisible copy (it never wraps on its own);
+  // else after the content (on a picture, under a voice message).
+  const foot = reactions ? (
+    <div class="msg-foot">
+      {reactions}
+      {meta}
+    </div>
+  ) : null;
+  const corner = !foot && !big && !!m.p?.t;
 
   return (
     <div
@@ -593,40 +627,25 @@ function Bubble(props: {
           <span class="call-log">
             <Icon name={m.p.cl.v ? 'videocam' : 'phone'} size={18} />
             <span>{callLabel(m.p.cl, mine)}</span>
-            {meta}
+            {!foot && meta}
           </span>
         ) : m.p === null ? (
           <i class="locked">
-            <Icon name="lock" size={16} /> {t('chat.locked')} {meta}
+            <Icon name="lock" size={16} /> {t('chat.locked')} {!foot && meta}
           </i>
         ) : m.p?.t ? (
           <div class="text">
             <Markup text={m.p.t} />
             {m.p.lp && <LinkCardView lp={m.p.lp} />}
-            {meta}
+            {corner && (
+              <span class="meta meta-ghost" aria-hidden="true">
+                {metaParts}
+              </span>
+            )}
           </div>
-        ) : (
-          meta
-        )}
+        ) : null}
+        {foot ?? (corner ? <span class="meta meta-corner">{metaParts}</span> : !m.p?.cl && m.p !== null && meta)}
       </div>
-      {m.rx && m.rx.length > 0 && (
-        <div class="reactions">
-          {m.rx.map(([emoji, users]) => (
-            <button
-              type="button"
-              class={'chip' + (users.includes(myId()) ? ' on' : '')}
-              aria-pressed={users.includes(myId())}
-              title={users.map((u) => (u === myId() ? t('list.you') : nameOf(chat.id, u))).join(', ')}
-              onClick={(e) => {
-                e.stopPropagation();
-                toggleReaction(m, emoji).catch((err) => showToast(errText(err)));
-              }}
-            >
-              {emoji} {users.length > 1 && <span>{users.length}</span>}
-            </button>
-          ))}
-        </div>
-      )}
     </div>
   );
 }
