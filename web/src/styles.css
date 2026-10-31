@@ -27,8 +27,8 @@
   --wall-ocean: radial-gradient(at 50% 0%, rgba(255, 255, 255, 0.6) 0, transparent 60%), linear-gradient(180deg, #d4ebff 0%, #9fcaf2 100%);
   --wall-mint: radial-gradient(circle at 1px 1px, rgba(20, 110, 80, 0.18) 1px, transparent 1.6px) 0 0 / 18px 18px,
     linear-gradient(160deg, #e8fff5, #c8f1de);
-  --wall-doodles: #e7ecf4;
-  --wall-ink: rgba(55, 75, 115, 0.17);
+  --wall-doodles: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='240' height='240' fill='none' stroke='rgb(55,75,115)' stroke-opacity='0.17' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M34 44c-6-9-22-3-15 9l15 13 15-13c7-12-9-18-15-9z'/%3E%3Cpath d='M160 26l5 11 12 2-9 8 2 12-10-6-10 6 2-12-9-8 12-2z'/%3E%3Cpath d='M72 120h42a10 10 0 0 1 10 10v16a10 10 0 0 1-10 10H94l-13 10v-10h-9a10 10 0 0 1-10-10v-16a10 10 0 0 1 10-10z'/%3E%3Ccircle cx='196' cy='122' r='9'/%3E%3Cpath d='M176 190l24 9-24 9 5-9z'/%3E%3Cpath d='M24 196q10-14 20 0t20 0'/%3E%3Cpath d='M108 40h0M214 64h0M140 220h0M60 84h0' stroke-width='5'/%3E%3Cpath d='M20 116l7 7m0-7-7 7'/%3E%3Cpath d='M120 196c0-8 12-8 12 0s-12 8-12 0z'/%3E%3C/svg%3E") 0 0 / 240px 240px repeat, #e7ecf4;
+  --wall-dim: none;
   color-scheme: light;
 }
 
@@ -59,8 +59,8 @@
   --wall-ocean: radial-gradient(at 50% 0%, rgba(80, 160, 255, 0.18) 0, transparent 60%), linear-gradient(180deg, #0b2440 0%, #061120 100%);
   --wall-mint: radial-gradient(circle at 1px 1px, rgba(110, 231, 183, 0.14) 1px, transparent 1.6px) 0 0 / 18px 18px,
     linear-gradient(160deg, #0c211b, #08140f);
-  --wall-doodles: #0e1621;
-  --wall-ink: rgba(165, 195, 235, 0.1);
+  --wall-doodles: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='240' height='240' fill='none' stroke='rgb(165,195,235)' stroke-opacity='0.1' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M34 44c-6-9-22-3-15 9l15 13 15-13c7-12-9-18-15-9z'/%3E%3Cpath d='M160 26l5 11 12 2-9 8 2 12-10-6-10 6 2-12-9-8 12-2z'/%3E%3Cpath d='M72 120h42a10 10 0 0 1 10 10v16a10 10 0 0 1-10 10H94l-13 10v-10h-9a10 10 0 0 1-10-10v-16a10 10 0 0 1 10-10z'/%3E%3Ccircle cx='196' cy='122' r='9'/%3E%3Cpath d='M176 190l24 9-24 9 5-9z'/%3E%3Cpath d='M24 196q10-14 20 0t20 0'/%3E%3Cpath d='M108 40h0M214 64h0M140 220h0M60 84h0' stroke-width='5'/%3E%3Cpath d='M20 116l7 7m0-7-7 7'/%3E%3Cpath d='M120 196c0-8 12-8 12 0s-12 8-12 0z'/%3E%3C/svg%3E") 0 0 / 240px 240px repeat, #0e1621;
+  --wall-dim: linear-gradient(rgba(0, 0, 0, 0.35), rgba(0, 0, 0, 0.35));
   color-scheme: dark;
 }
 
@@ -597,8 +597,6 @@ textarea,
 }
 
 .main {
-  position: relative;
-  isolation: isolate; /* the background's own layer stays behind the chat */
   flex: 1;
   min-width: 0;
   display: flex;
@@ -630,42 +628,16 @@ textarea,
 
 :root[data-wall='doodles'] .main,
 .wall-tile[data-wall='doodles'] {
-  position: relative;
-  isolation: isolate;
   background: var(--wall-doodles);
 }
 
-/* The doodles are a mask over the theme's ink colour: one drawing, both themes. */
-:root[data-wall='doodles'] .main::before,
-.wall-tile[data-wall='doodles']::before {
-  content: '';
-  position: absolute;
-  inset: 0;
-  z-index: -1;
-  background: var(--wall-ink);
-  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='240' height='240' fill='none' stroke='black' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M34 44c-6-9-22-3-15 9l15 13 15-13c7-12-9-18-15-9z'/%3E%3Cpath d='M160 26l5 11 12 2-9 8 2 12-10-6-10 6 2-12-9-8 12-2z'/%3E%3Cpath d='M72 120h42a10 10 0 0 1 10 10v16a10 10 0 0 1-10 10H94l-13 10v-10h-9a10 10 0 0 1-10-10v-16a10 10 0 0 1 10-10z'/%3E%3Ccircle cx='196' cy='122' r='9'/%3E%3Cpath d='M176 190l24 9-24 9 5-9z'/%3E%3Cpath d='M24 196q10-14 20 0t20 0'/%3E%3Cpath d='M108 40h0M214 64h0M140 220h0M60 84h0' stroke-width='5'/%3E%3Cpath d='M20 116l7 7m0-7-7 7'/%3E%3Cpath d='M120 196c0-8 12-8 12 0s-12 8-12 0z'/%3E%3C/svg%3E") 0 0 / 240px 240px repeat;
-  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='240' height='240' fill='none' stroke='black' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M34 44c-6-9-22-3-15 9l15 13 15-13c7-12-9-18-15-9z'/%3E%3Cpath d='M160 26l5 11 12 2-9 8 2 12-10-6-10 6 2-12-9-8 12-2z'/%3E%3Cpath d='M72 120h42a10 10 0 0 1 10 10v16a10 10 0 0 1-10 10H94l-13 10v-10h-9a10 10 0 0 1-10-10v-16a10 10 0 0 1 10-10z'/%3E%3Ccircle cx='196' cy='122' r='9'/%3E%3Cpath d='M176 190l24 9-24 9 5-9z'/%3E%3Cpath d='M24 196q10-14 20 0t20 0'/%3E%3Cpath d='M108 40h0M214 64h0M140 220h0M60 84h0' stroke-width='5'/%3E%3Cpath d='M20 116l7 7m0-7-7 7'/%3E%3Cpath d='M120 196c0-8 12-8 12 0s-12 8-12 0z'/%3E%3C/svg%3E") 0 0 / 240px 240px repeat;
-  pointer-events: none;
-}
-
-.wall-tile[data-wall='doodles']::before {
-  -webkit-mask-size: 120px 120px;
-  mask-size: 120px 120px;
-  border-radius: inherit;
-}
-
-:root[data-wall='photo'] .main {
-  background: var(--wall-photo, none) center / cover no-repeat, var(--chat-bg);
+.wall-tile[data-wall='doodles'] {
+  background-size: 120px 120px, auto;
 }
 
 /* A photo is dimmed a little in the dark theme, so the bubbles stand out. */
-:root[data-theme='dark'][data-wall='photo'] .main::before {
-  content: '';
-  position: absolute;
-  inset: 0;
-  z-index: -1;
-  background: rgba(0, 0, 0, 0.35);
-  pointer-events: none;
+:root[data-wall='photo'] .main {
+  background: var(--wall-dim), var(--wall-photo, none) center / cover no-repeat, var(--chat-bg);
 }
 
 .wall-tile[data-wall='theme'] {
@@ -683,6 +655,7 @@ textarea,
 }
 
 .wall-tile {
+  position: relative;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -707,6 +680,29 @@ textarea,
 .wall-tile[aria-checked='true'] {
   border-color: var(--accent);
   box-shadow: 0 0 0 2px var(--accent);
+}
+
+/* Chosen: a tick too, not only the coloured ring. */
+.wall-tile > .icon {
+  position: absolute;
+  top: 0.35rem;
+  right: 0.35rem;
+  padding: 0.1rem;
+  border-radius: 50%;
+  background: var(--accent);
+  color: var(--on-accent);
+}
+
+.wall-tile[data-wall='photo'][aria-checked='false'] > .icon {
+  position: static;
+  background: none;
+  color: inherit;
+}
+
+/* On a drawn background the day label is frosted in either style. */
+:root:not([data-wall='theme']) .day span {
+  background: var(--glass);
+  color: var(--text);
 }
 
 .main-empty {
@@ -1313,6 +1309,7 @@ textarea,
    invisible copy; the real one sits in the bubble's bottom corner. */
 .meta-ghost {
   visibility: hidden;
+  user-select: none;
   margin-left: 0.6rem;
   vertical-align: -0.1rem;
   pointer-events: none;
@@ -2135,6 +2132,14 @@ img.blur {
   border-radius: 0.6rem;
 }
 
+.msg.circle-only .msg-foot .meta {
+  background: var(--pill);
+  color: #fff;
+  padding: 0.2rem 0.4rem;
+  border-radius: 0.6rem;
+  height: auto;
+}
+
 .msg.circle-only .bubble > .meta {
   position: absolute;
   right: 0.25rem;
@@ -2945,8 +2950,8 @@ img.blur {
   --accent-soft: rgba(91, 91, 214, 0.12);
   --on-accent: #ffffff;
   --chat-bg: linear-gradient(160deg, #eef0ff 0%, #f5ebff 55%, #e8f4ff 100%);
-  --mine: linear-gradient(135deg, #6366f1 0%, #8257e6 100%);
-  --mine-meta: rgba(255, 255, 255, 0.8);
+  --mine: linear-gradient(135deg, #4f52e0 0%, #7451d6 100%);
+  --mine-meta: rgba(255, 255, 255, 0.92);
   --theirs: rgba(255, 255, 255, 0.92);
   --theirs-meta: #6b7280;
   --shadow: 0 1px 3px rgba(30, 27, 75, 0.12), 0 1px 1px rgba(30, 27, 75, 0.05);
@@ -2965,7 +2970,7 @@ img.blur {
   --border: #0d1020;
   --chat-bg: radial-gradient(at 20% 0%, #1b2142 0, transparent 55%), #0d1020;
   --mine: linear-gradient(135deg, #4f46e5 0%, #7046d8 100%);
-  --mine-meta: rgba(255, 255, 255, 0.72);
+  --mine-meta: rgba(255, 255, 255, 0.88);
   --theirs: rgba(31, 35, 59, 0.94);
   --theirs-meta: #98a1b7;
   --glass: rgba(20, 23, 41, 0.74);
@@ -2998,8 +3003,30 @@ img.blur {
 :root[data-design='fresh'] .mine .forwarded,
 :root[data-design='fresh'] .mine .link-card small,
 :root[data-design='fresh'] .mine .text a,
-:root[data-design='fresh'] .mine .voice-meta {
+:root[data-design='fresh'] .mine .voice-meta,
+:root[data-design='fresh'] .mine .file-text small,
+:root[data-design='fresh'] .mine .locked,
+:root[data-design='fresh'] .mine .meta .bad {
   color: #fff;
+}
+
+:root[data-design='fresh'] .mine :focus-visible {
+  outline-color: #fff;
+}
+
+/* A failed send stands out on the gradient: a white mark on red. */
+:root[data-design='fresh'] .mine .tick-failed {
+  color: #fff;
+  background: var(--danger);
+  border-radius: 50%;
+}
+
+/* No bubble behind a big emoji or a circle: the chips and the time need
+   their own background there. */
+:root[data-design='fresh'] .msg.jumbo.mine .chip,
+:root[data-design='fresh'] .msg.circle-only.mine .chip {
+  background: var(--glass);
+  color: var(--text);
 }
 
 :root[data-design='fresh'] .mine .text code {

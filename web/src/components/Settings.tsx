@@ -24,8 +24,8 @@ function WallpaperPicker() {
     try {
       await setWallPhoto(f);
       setPhoto(true);
-    } catch {
-      showToast(t('wall.bad'));
+    } catch (e) {
+      showToast(t((e as Error).message === 'save' ? 'wall.saveFailed' : 'wall.bad'));
     }
   };
   return (
@@ -41,6 +41,7 @@ function WallpaperPicker() {
             data-wall={w}
             onClick={() => (wallpaper.value = w)}
           >
+            {wallpaper.value === w && <Icon name="check" size={18} />}
             <span>{t(`wall.${w}`)}</span>
           </button>
         ))}
@@ -52,7 +53,7 @@ function WallpaperPicker() {
           data-wall="photo"
           onClick={() => (photo ? (wallpaper.value = 'photo') : input.current?.click())}
         >
-          <Icon name="image" />
+          <Icon name={wallpaper.value === 'photo' ? 'check' : 'image'} />
           <span>{t('wall.photo')}</span>
         </button>
       </div>

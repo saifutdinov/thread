@@ -3,6 +3,7 @@ import type { Ref } from 'preact';
 import { errText, t } from '../lib/i18n';
 import { firstLink } from '../lib/markup';
 import { linkPreviews } from '../lib/prefs';
+import { route } from '../lib/route';
 import {
   canRecord,
   dragAction,
@@ -270,7 +271,7 @@ export function Composer(props: {
   // A chat opened on a computer is ready to type in. Not on a phone: the
   // keyboard would cover the messages one came to read.
   useEffect(() => {
-    if (!coarse.matches && !editing) ta.current?.focus({ preventScroll: true });
+    if (!coarse.matches && !editing && route.value.name === 'chat') ta.current?.focus({ preventScroll: true });
   }, []);
 
   useEffect(() => {

@@ -52,7 +52,10 @@ export function initPrefs() {
   effect(() => {
     const mode = theme.value === 'system' ? (systemDark.value ? 'dark' : 'light') : theme.value;
     document.documentElement.dataset.theme = mode;
-    document.querySelector('meta[name="theme-color"]')?.setAttribute('content', mode === 'dark' ? '#17212b' : '#ffffff');
+    // The status bar takes the app's own background, which the style sets.
+    document.documentElement.dataset.design = design.value;
+    const bg = getComputedStyle(document.documentElement).getPropertyValue('--bg').trim();
+    document.querySelector('meta[name="theme-color"]')?.setAttribute('content', bg || (mode === 'dark' ? '#17212b' : '#ffffff'));
     save('theme', theme.value);
   });
   effect(() => {
