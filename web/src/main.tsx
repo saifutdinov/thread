@@ -8,6 +8,7 @@ import { initPrefs } from './lib/prefs';
 import { registerSW } from './lib/pwa';
 import { route } from './lib/route';
 import { screen, start } from './lib/store';
+import { loadWallPhoto } from './lib/wallpaper';
 import './styles.css';
 
 function App() {
@@ -45,6 +46,7 @@ function trackViewport() {
 }
 
 initPrefs();
+void loadWallPhoto();
 trackViewport();
 registerSW();
 render(<App />, document.getElementById('root')!);

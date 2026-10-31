@@ -242,6 +242,7 @@ async function openFloat() {
   for (const s of document.querySelectorAll('style')) w.document.head.append(s.cloneNode(true));
   const root = w.document.documentElement;
   root.dataset.theme = document.documentElement.dataset.theme ?? '';
+  root.dataset.design = document.documentElement.dataset.design ?? '';
   root.style.fontSize = document.documentElement.style.fontSize; // the text size setting
   root.lang = document.documentElement.lang;
   w.document.title = document.title;

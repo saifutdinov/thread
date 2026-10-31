@@ -1,14 +1,79 @@
 import { useEffect, useRef, useState } from 'preact/hooks';
 import { api, type Device } from '../lib/api';
 import { errText, fmtListTime, lang, t } from '../lib/i18n';
-import { linkPreviews, textSize, theme } from '../lib/prefs';
+import { design, linkPreviews, textSize, theme, WALLPAPERS, wallpaper } from '../lib/prefs';
 import { appVersion, enablePush, install, installPrompt, isIOS, notifPermission, standalone } from '../lib/pwa';
 import { back } from '../lib/route';
 import { choices, choose, MAX_SOUND_FILE, ownSoundName, playSound, setOwnSound, type SoundKind } from '../lib/sounds';
 import { TUNES } from '../lib/tunes';
+import { hasWallPhoto, setWallPhoto } from '../lib/wallpaper';
 import { chats, devicesTick, loadChats, logout, me, myPicture, pending, setMyAvatar, showToast } from '../lib/store';
 import { SecuritySettings } from './Security';
 import { approving, Avatar, Icon, IconButton, Panel, PictureButtons, Segmented, Switch } from './ui';
+
+// WallpaperPicker: the chat background on this device: the theme's own,
+// a drawn one, or a photo. Each tile shows its own background.
+function WallpaperPicker() {
+  const input = useRef<HTMLInputElement>(null);
+  const [photo, setPhoto] = useState(false);
+  useEffect(() => {
+    void hasWallPhoto().then(setPhoto);
+  }, []);
+  const pick = async (f: File | undefined) => {
+    if (!f) return;
+    try {
+      await setWallPhoto(f);
+      setPhoto(true);
+    } catch {
+      showToast(t('wall.bad'));
+    }
+  };
+  return (
+    <>
+      <div class="walls" role="radiogroup" aria-label={t('settings.wallpaper')}>
+        {WALLPAPERS.filter((w) => w !== 'photo').map((w) => (
+          <button
+            key={w}
+            type="button"
+            role="radio"
+            aria-checked={wallpaper.value === w}
+            class="wall-tile"
+            data-wall={w}
+            onClick={() => (wallpaper.value = w)}
+          >
+            <span>{t(`wall.${w}`)}</span>
+          </button>
+        ))}
+        <button
+          type="button"
+          role="radio"
+          aria-checked={wallpaper.value === 'photo'}
+          class="wall-tile"
+          data-wall="photo"
+          onClick={() => (photo ? (wallpaper.value = 'photo') : input.current?.click())}
+        >
+          <Icon name="image" />
+          <span>{t('wall.photo')}</span>
+        </button>
+      </div>
+      {photo && (
+        <button type="button" class="link-btn" onClick={() => input.current?.click()}>
+          {t('wall.photoPick')}
+        </button>
+      )}
+      <input
+        ref={input}
+        type="file"
+        accept="image/*"
+        hidden
+        onChange={(e) => {
+          void pick(e.currentTarget.files?.[0]);
+          e.currentTarget.value = '';
+        }}
+      />
+    </>
+  );
+}
 
 // SoundRow: which sound this device plays for one kind, a built-in tune or
 // a file of the person's own, and a button to hear it.
@@ -235,6 +300,18 @@ export function Settings() {
           ]}
           onChange={(v) => (theme.value = v)}
         />
+        <span class="label">{t('settings.design')}</span>
+        <Segmented
+          label={t('settings.design')}
+          value={design.value}
+          options={[
+            ['fresh', t('design.fresh')],
+            ['classic', t('design.classic')],
+          ]}
+          onChange={(v) => (design.value = v)}
+        />
+        <span class="label">{t('settings.wallpaper')}</span>
+        <WallpaperPicker />
         <span class="label">{t('settings.lang')}</span>
         <Segmented
           label={t('settings.lang')}

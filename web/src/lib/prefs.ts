@@ -26,6 +26,17 @@ export const theme = signal<Theme>(load('theme', ['system', 'light', 'dark'] as 
 // still applies on top.
 export const textSize = signal(Number(load('textSize', ['90', '100', '115', '130'] as const, '100')));
 
+// The look of the app (data-design on <html>, styles.css): the new one or
+// the classic Telegram-like one; and the chat background (data-wall). Both
+// per device.
+export const DESIGNS = ['fresh', 'classic'] as const;
+export type Design = (typeof DESIGNS)[number];
+export const DEFAULT_DESIGN: Design = 'classic'; // Thread keeps its look; "New" is a choice in Settings
+export const design = signal<Design>(load('design', DESIGNS, DEFAULT_DESIGN));
+export const WALLPAPERS = ['theme', 'aurora', 'sunset', 'ocean', 'mint', 'doodles', 'photo'] as const;
+export type Wallpaper = (typeof WALLPAPERS)[number];
+export const wallpaper = signal<Wallpaper>(load('wallpaper', WALLPAPERS, 'theme'));
+
 // The call's big picture: the whole of it (black bars where the shapes
 // differ) or cropped to fill the screen.
 export const callFit = signal(load('callFit', ['contain', 'cover'] as const, 'contain'));
@@ -50,6 +61,14 @@ export function initPrefs() {
   });
   effect(() => save('linkPreviews', linkPreviews.value ? 'on' : 'off'));
   effect(() => save('callFit', callFit.value));
+  effect(() => {
+    document.documentElement.dataset.design = design.value;
+    save('design', design.value);
+  });
+  effect(() => {
+    document.documentElement.dataset.wall = wallpaper.value;
+    save('wallpaper', wallpaper.value);
+  });
   effect(() => {
     document.documentElement.lang = lang.value;
     document.title = t('app.name');
