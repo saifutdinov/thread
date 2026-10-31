@@ -267,6 +267,11 @@ export function Composer(props: {
   useEffect(() => {
     if (replyTo) ta.current?.focus();
   }, [replyTo?.id]);
+  // A chat opened on a computer is ready to type in. Not on a phone: the
+  // keyboard would cover the messages one came to read.
+  useEffect(() => {
+    if (!coarse.matches && !editing) ta.current?.focus({ preventScroll: true });
+  }, []);
 
   useEffect(() => {
     const link = linkPreviews.value && !editing ? firstLink(text) : undefined;

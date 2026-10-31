@@ -250,7 +250,12 @@ export function ChatView(props: { id: number }) {
         loading={!loadedList}
         highlight={hits[hit]}
         onMenu={setMenu}
-        onReply={setReplyTo}
+        // Focused inside the swipe or the double click itself: a phone
+        // opens its keyboard only for a focus that comes with a tap.
+        onReply={(m) => {
+          setReplyTo(m);
+          composer.current?.focus();
+        }}
         stick={stick}
       />
 
