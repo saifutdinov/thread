@@ -5,6 +5,7 @@ import {
   accept,
   call,
   type CallView,
+  canShareMusic,
   canShareScreen,
   decline,
   hangup,
@@ -14,14 +15,16 @@ import {
   selectSpeaker,
   setBackground,
   setEffect,
+  shareMusic,
   shareScreen,
   speaker,
+  stopMusic,
   stopScreen,
   switchCamera,
   toggleCamera,
   toggleMute,
 } from '../lib/call';
-import { cameras, canPickOutput, deviceName, microphones, remembered, speakers } from '../lib/devices';
+import { cameras, canPickOutput, deviceName, microphones, remember, remembered, speakers } from '../lib/devices';
 import { BACKGROUNDS, EFFECTS } from '../lib/effects';
 import { t } from '../lib/i18n';
 import { fmtDuration } from '../lib/recorder';
@@ -34,6 +37,16 @@ import { Avatar, Icon, IconButton, type IconName, Modal } from './ui';
 // A minimized call shrinks to a strip at the top (and, with video, a small
 // tile) so the app stays usable; the sound keeps playing.
 export const minimized = signal(false);
+
+// The other side's music plays at its own volume, remembered per device;
+// a bit under the voice at first, so talk stays on top. iPhones and iPads
+// ignore a page's volume (the buttons on the side set it): no slider there.
+const musicVolume = signal(Number(remembered('musicVolume') || 0.7));
+const canSetVolume = (() => {
+  const a = new Audio();
+  a.volume = 0.5;
+  return a.volume === 0.5;
+})();
 
 // attach sets a stream on a media element whenever the element appears:
 // the self view is a new element each time the camera comes back on.
@@ -292,9 +305,10 @@ function FloatingCall(props: { win: Window }) {
 }
 
 // CallScreen covers the app while a call rings or runs, or shrinks to a
-// strip when minimized. Sound plays through one <audio> element, first in
-// both layouts so it stays mounted across them; remote <video> elements are
-// muted (no echo).
+// strip when minimized. Sound plays through two <audio> elements (the call,
+// and the other side's music at its own volume), first in both layouts so
+// they stay mounted across them; remote <video> elements are muted (no
+// echo).
 export function CallScreen() {
   const c = call.value;
   const dialog = useRef<HTMLDialogElement>(null);
@@ -366,7 +380,18 @@ export function CallScreen() {
   };
 
   const expand = () => (minimized.value = false);
-  const audio = <audio ref={audioRef} autoPlay />;
+  const musicRef = (el: HTMLAudioElement | null) => {
+    attach(c.musicIn)(el);
+    if (!el) return;
+    el.volume = musicVolume.value;
+    if (canPickOutput && el.sinkId !== sink) el.setSinkId(sink).catch(() => {});
+  };
+  const audio = (
+    <>
+      <audio ref={audioRef} autoPlay />
+      <audio ref={musicRef} autoPlay />
+    </>
+  );
 
   if (mini)
     return (
@@ -473,6 +498,25 @@ export function CallScreen() {
               <Icon name="screen" size={16} /> {t('call.peerScreen')}
             </p>
           )}
+          {c.phase === 'active' && c.peerMusic && (
+            <label class="call-note call-music">
+              <Icon name="music" size={16} /> {t('call.peerMusic')}
+              {canSetVolume && (
+                <input
+                type="range"
+                min="0"
+                max="1"
+                step="0.05"
+                value={musicVolume.value}
+                aria-label={t('call.musicVolume')}
+                onInput={(e) => {
+                  musicVolume.value = Number(e.currentTarget.value);
+                  remember('musicVolume', e.currentTarget.value);
+                }}
+                />
+              )}
+            </label>
+          )}
           {c.phase === 'active' && c.peerMuted && (
             <p class="call-note">
               <Icon name="micOff" size={16} /> {t('call.peerMuted')}
@@ -520,6 +564,14 @@ export function CallScreen() {
                   label={c.screen ? t('call.screenStop') : t('call.screen')}
                   tone={c.screen ? 'on' : undefined}
                   onClick={() => void (c.screen ? stopScreen() : shareScreen())}
+                />
+              )}
+              {canShareMusic && c.phase === 'active' && c.canMusic && (
+                <Btn
+                  icon="music"
+                  label={c.music ? t('call.musicStop') : t('call.music')}
+                  tone={c.music ? 'on' : undefined}
+                  onClick={() => void (c.music ? stopMusic() : shareMusic())}
                 />
               )}
               {c.video && !c.camOff && !c.screen && (

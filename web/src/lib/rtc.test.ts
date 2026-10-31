@@ -31,6 +31,25 @@ test('tuneOpus adds an fmtp line when there is none, and leaves SDP without Opus
   assert.equal(tuneOpus(noOpus), noOpus);
 });
 
+test('tuneOpus gives the second audio section (music) stereo at 128 kbit/s, the first stays voice', () => {
+  const music = 'm=audio 9 UDP/TLS/RTP/SAVPF 111 63\r\na=mid:2\r\na=rtpmap:111 opus/48000/2\r\na=fmtp:111 minptime=10;useinbandfec=1\r\n';
+  const out = tuneOpus(SDP + music);
+  const sections = out.split(/\r\n(?=m=)/);
+  const params = (sec: string) =>
+    new Map(/a=fmtp:111 ([^\r\n]*)/.exec(sec)![1].split(';').map((p) => p.split('=') as [string, string]));
+  const voice = params(sections[1]);
+  assert.equal(voice.get('stereo'), '0');
+  assert.equal(voice.get('maxaveragebitrate'), '48000');
+  const tune = params(sections[3]);
+  assert.equal(tune.get('stereo'), '1');
+  assert.equal(tune.get('sprop-stereo'), '1');
+  assert.equal(tune.get('maxaveragebitrate'), '128000');
+  assert.equal(tune.get('useinbandfec'), '1');
+  assert.equal(tune.get('usedtx'), '0');
+  assert.equal(tune.get('minptime'), '10');
+  assert.ok(out.endsWith('\r\n'), 'CRLF kept');
+});
+
 test('preferCodecs moves preferred codecs first and keeps the rest in order', () => {
   const caps = ['video/VP8', 'video/rtx', 'video/VP9', 'video/H264', 'video/red'].map((mimeType) => ({ mimeType }));
   assert.deepEqual(

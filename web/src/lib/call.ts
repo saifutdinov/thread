@@ -62,6 +62,10 @@ export interface CallView {
   bg?: BgId; // behind us: blurred or replaced
   screen?: boolean; // we show our screen instead of the camera
   peerScreen?: boolean; // they show theirs: it is always shown whole
+  canMusic?: boolean; // the connection has a music slot (an older app's has not)
+  music?: boolean; // we send music from a tab or the screen
+  peerMusic?: boolean; // they send theirs
+  musicIn?: MediaStream; // their music slot, played by its own <audio>
   effectLoading?: boolean;
   local?: MediaStream;
   remote?: MediaStream;
@@ -72,6 +76,10 @@ export const call = signal<CallView | null>(null);
 const RING_MS = 45_000;
 const LOST_MS = 30_000; // no media for this long ends the call
 const VIDEO_BITRATE = 2_500_000; // 720p30, plenty for a face
+// Music waits this long in the jitter buffer (Chrome, Firefox): the buffer
+// stops stretching and squeezing it (audible in music, not in speech), and
+// the music is a quarter second behind the voice, which no one notices.
+const MUSIC_BUFFER_MS = 300;
 
 let pc: RTCPeerConnection | null = null;
 let peerDevice = 0;
@@ -152,6 +160,10 @@ function audioSession(type: 'play-and-record' | 'auto') {
   if (s) s.type = type;
 }
 
+// The music slot: a second audio transceiver every call opens after the
+// microphone's, so music starts and stops mid-call without renegotiating.
+const musicSlot = (p = pc) => p?.getTransceivers().filter((tr) => tr.receiver.track.kind === 'audio')[1];
+
 const senderOf = (kind: 'audio' | 'video') => pc?.getTransceivers().find((tr) => tr.receiver.track.kind === kind)?.sender;
 
 // sendState tells the other side whether our camera and microphone are on,
@@ -165,7 +177,7 @@ function sendState() {
     battery && !(battery.level === 1 && battery.charging)
       ? { level: Math.round(battery.level * 100), charging: battery.charging }
       : undefined;
-  if (v && state?.readyState === 'open') state.send(JSON.stringify({ camOff: v.camOff, muted: v.muted, screen: !!v.screen, battery: b }));
+  if (v && state?.readyState === 'open') state.send(JSON.stringify({ camOff: v.camOff, muted: v.muted, screen: !!v.screen, music: !!v.music, battery: b }));
 }
 
 // The Battery API exists in Chromium browsers only (not Safari or Firefox):
@@ -221,15 +233,17 @@ async function sendIce(c: RTCIceCandidateInit) {
   wsSend({ t: 'call', k: 'ice', c: v.chat, id: v.id, to: peerDevice, e, body });
 }
 
-// codecs: RED (redundant Opus) first for audio; video in the order this
-// device encodes best. A desktop answerer follows the caller (see videoOrder).
+// codecs: RED (redundant Opus) first for the voice; plain Opus for music
+// (RED would double its 128 kbit/s; in-band FEC covers losses); video in
+// the order this device encodes best. A desktop answerer follows the
+// caller (see videoOrder).
 function codecs(p: RTCPeerConnection, offering: boolean) {
   for (const tr of p.getTransceivers()) {
     const kind = tr.receiver.track.kind;
     const caps = RTCRtpReceiver.getCapabilities(kind)?.codecs;
     if (!caps || !tr.setCodecPreferences) continue;
     try {
-      if (kind === 'audio') tr.setCodecPreferences(preferCodecs(caps, ['audio/red', 'audio/opus']));
+      if (kind === 'audio') tr.setCodecPreferences(preferCodecs(caps, tr === musicSlot(p) ? ['audio/opus'] : ['audio/red', 'audio/opus']));
       else if (offering || device.mobile) tr.setCodecPreferences(preferCodecs(caps, device.order));
     } catch {
       /* the browser's own order still works */
@@ -237,17 +251,18 @@ function codecs(p: RTCPeerConnection, offering: boolean) {
   }
 }
 
-// senders: video capped for 720p30; audio marked high priority, so under
-// congestion the picture degrades first and the voice stays clear.
+// senders: video capped for 720p30; the voice marked high priority and
+// music medium, so under congestion the picture degrades first and the
+// voice stays clear.
 async function senders(p: RTCPeerConnection) {
+  const music = musicSlot(p)?.sender;
   for (const s of p.getSenders()) {
     if (!s.track) continue;
     const params = s.getParameters();
     const enc = params.encodings?.[0];
     if (!enc) continue;
     if (s.track.kind === 'audio') {
-      enc.priority = 'high';
-      enc.networkPriority = 'high';
+      enc.priority = enc.networkPriority = s === music ? 'medium' : 'high';
     } else {
       enc.maxBitrate = VIDEO_BITRATE;
       enc.maxFramerate = 30;
@@ -276,7 +291,13 @@ async function connect(local: MediaStream): Promise<RTCPeerConnection> {
   state.onmessage = (ev) => {
     try {
       const m = JSON.parse(String(ev.data));
-      update({ peerCamOff: m.camOff === true, peerMuted: m.muted === true, peerScreen: m.screen === true, peerBattery: peerBattery(m.battery) });
+      update({
+        peerCamOff: m.camOff === true,
+        peerMuted: m.muted === true,
+        peerScreen: m.screen === true,
+        peerMusic: m.music === true,
+        peerBattery: peerBattery(m.battery),
+      });
     } catch {
       /* not ours to read */
     }
@@ -289,7 +310,12 @@ async function connect(local: MediaStream): Promise<RTCPeerConnection> {
   };
   // One remote stream for the whole call: a voice call's video slot comes
   // without a stream and must not replace the one that carries the sound.
+  // Music plays apart, at its own volume.
   p.ontrack = (ev) => {
+    if (ev.transceiver === musicSlot(p)) {
+      ev.receiver.jitterBufferTarget = MUSIC_BUFFER_MS;
+      return update({ musicIn: new MediaStream([ev.track]) });
+    }
     const tracks = call.value?.remote?.getTracks() ?? [];
     if (!tracks.includes(ev.track)) update({ remote: new MediaStream([...tracks, ev.track]) });
   };
@@ -425,6 +451,7 @@ export async function startCall(chatId: number, peer: number, video: boolean) {
     // A voice call opens a video slot too (no media flows until a camera is
     // on), so either side can turn its camera on later without renegotiating.
     if (!video) p.addTransceiver('video', { direction: 'sendrecv' });
+    p.addTransceiver('audio', { direction: 'sendrecv' }); // the music slot
     update({ canVideo: true });
     codecs(p, true);
     await localDescription(p, await p.createOffer());
@@ -455,7 +482,9 @@ export async function accept(withVideo: boolean) {
     // call, or answered without video), so the camera can come on later.
     const slot = p.getTransceivers().find((tr) => tr.receiver.track.kind === 'video');
     if (slot) slot.direction = 'sendrecv';
-    update({ canVideo: !!slot });
+    const music = musicSlot(p); // none from an older app
+    if (music) music.direction = 'sendrecv';
+    update({ canVideo: !!slot, canMusic: !!music });
     codecs(p, false);
     await localDescription(p, await p.createAnswer());
     const { e, body } = await sealSignal(v.chat, v.id, 'answer', JSON.stringify(p.localDescription));
@@ -509,6 +538,8 @@ function cleanup() {
   audioSession('auto');
   dropEffects();
   call.value?.local?.getTracks().forEach((tr) => tr.stop());
+  musicTrack?.stop();
+  musicTrack = null;
   pc?.close();
   pc = null;
   peerDevice = 0;
@@ -771,6 +802,74 @@ export async function stopScreen() {
   sendState();
 }
 
+// Music for both (Chrome and Edge on computers: other browsers capture no
+// sound). The person picks a tab (YouTube, Spotify in the browser), a
+// window or the whole screen and ticks its sound; the picker insists on a
+// picture too, which is dropped at once. The sound goes into the music
+// slot as is: no echo cancelling, noise suppression or gain control, which
+// are made for speech and spoil music. The browser's own "Stop sharing"
+// ends it too.
+export const canShareMusic = canShareScreen && 'suppressLocalAudioPlayback' in (navigator.mediaDevices.getSupportedConstraints?.() ?? {});
+let musicTrack: MediaStreamTrack | null = null;
+let choosingMusic = false; // the browser's picker is open
+
+export async function shareMusic() {
+  const v = call.value;
+  const slot = musicSlot();
+  if (!v || !slot || v.music || choosingMusic) return;
+  choosingMusic = true;
+  let s: MediaStream;
+  try {
+    s = await navigator.mediaDevices.getDisplayMedia({
+      video: { displaySurface: 'browser' }, // the picker opens on tabs
+      // restrictOwnAudio: the whole screen's sound without this page's own,
+      // or the other side would hear themselves.
+      audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false, channelCount: 2, restrictOwnAudio: true },
+      systemAudio: 'include',
+      selfBrowserSurface: 'exclude', // this tab would send the call back
+    } as DisplayMediaStreamOptions);
+  } catch (e) {
+    // Cancelled in the browser's own picker: nothing to say.
+    if ((e as DOMException)?.name !== 'NotAllowedError' && call.value?.id === v.id) showToast(t('call.musicFailed'));
+    return;
+  } finally {
+    choosingMusic = false;
+  }
+  s.getVideoTracks().forEach((tr) => tr.stop());
+  const track = s.getAudioTracks()[0];
+  if (call.value?.id !== v.id) return track?.stop(); // the call ended while choosing
+  if (!track) return showToast(t('call.musicNoSound')); // the sound left unticked
+  track.contentHint = 'music';
+  // Ours before the swap: a hang-up or the browser's "Stop sharing"
+  // meanwhile stops it like any other time.
+  musicTrack = track;
+  track.addEventListener('ended', () => void stopMusic());
+  try {
+    await slot.sender.replaceTrack(track);
+  } catch (e) {
+    if (musicTrack === track) musicTrack = null;
+    track.stop();
+    if (call.value?.id === v.id) showToast(errText(e));
+    return;
+  }
+  if (musicTrack !== track || call.value?.id !== v.id) return; // stopped or over meanwhile
+  update({ music: true });
+  if (pc) void senders(pc);
+  sendState();
+  showToast(t('call.musicHeadphones'));
+}
+
+export async function stopMusic() {
+  if (!musicTrack) return;
+  musicTrack.stop();
+  musicTrack = null;
+  update({ music: false });
+  sendState();
+  await musicSlot()
+    ?.sender.replaceTrack(null)
+    .catch(() => {});
+}
+
 // selectMic swaps the microphone mid-call. On Android this is also how a
 // call moves between the earpiece and the speakerphone: Chrome lists them
 // as microphones, and picking one routes the whole call there.
@@ -858,6 +957,9 @@ async function onSignal(ev: Record<string, unknown>) {
         peerDevice = ev.dev as number;
         update({ phase: 'connecting' });
         await pc.setRemoteDescription(JSON.parse(await openSignal(v.chat, ev.e as number, id, 'answer', ev.body as string)));
+        // An older app answers the music slot receive-only and would mix
+        // the music into the voice: no music button then.
+        update({ canMusic: musicSlot()?.currentDirection === 'sendrecv' });
         await flushIce();
         return;
       case 'ice': {

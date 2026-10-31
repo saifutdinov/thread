@@ -3,21 +3,31 @@
 // tuneOpus asks the other side for better Opus than the browser default
 // (~32 kbit/s): in-band FEC against packet loss, no DTX (it clips the start
 // of words), up to 48 kbit/s mono (transparent for speech; with RED redundancy
-// that is ~96 kbit/s on the wire). It edits our own SDP: each side states
-// what it wants to receive.
+// that is ~96 kbit/s on the wire). The second audio section is the music
+// slot (call.ts): stereo at 128 kbit/s, near transparent for music. It edits
+// our own SDP: each side states what it wants to receive.
 const OPUS: Record<string, string> = { useinbandfec: '1', usedtx: '0', stereo: '0', maxaveragebitrate: '48000' };
+const MUSIC: Record<string, string> = { useinbandfec: '1', usedtx: '0', stereo: '1', 'sprop-stereo': '1', maxaveragebitrate: '128000' };
 
 export function tuneOpus(sdp: string): string {
-  const pt = /^a=rtpmap:(\d+) opus\/48000/im.exec(sdp)?.[1];
-  if (!pt) return sdp;
+  let audio = 0;
+  return sdp
+    .split(/\r\n(?=m=)/)
+    .map((sec) => (sec.startsWith('m=audio') ? tuneSection(sec, audio++ ? MUSIC : OPUS) : sec))
+    .join('\r\n');
+}
+
+function tuneSection(sec: string, want: Record<string, string>): string {
+  const pt = /^a=rtpmap:(\d+) opus\/48000/im.exec(sec)?.[1];
+  if (!pt) return sec;
   const fmtp = new RegExp(`^a=fmtp:${pt} ([^\\r\\n]*)`, 'm');
   const merge = (cur: string) => {
     const params = new Map(cur ? cur.split(';').map((p) => p.trim().split('=') as [string, string]) : []);
-    for (const [k, v] of Object.entries(OPUS)) params.set(k, v);
+    for (const [k, v] of Object.entries(want)) params.set(k, v);
     return [...params].map(([k, v]) => `${k}=${v}`).join(';');
   };
-  if (fmtp.test(sdp)) return sdp.replace(fmtp, (_, cur: string) => `a=fmtp:${pt} ${merge(cur)}`);
-  return sdp.replace(new RegExp(`^(a=rtpmap:${pt} [^\\r\\n]*)`, 'm'), `$1\r\na=fmtp:${pt} ${merge('')}`);
+  if (fmtp.test(sec)) return sec.replace(fmtp, (_, cur: string) => `a=fmtp:${pt} ${merge(cur)}`);
+  return sec.replace(new RegExp(`^(a=rtpmap:${pt} [^\\r\\n]*)`, 'm'), `$1\r\na=fmtp:${pt} ${merge('')}`);
 }
 
 // preferCodecs moves the listed codecs (lower-case MIME types) to the

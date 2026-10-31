@@ -2700,6 +2700,12 @@ img.blur {
   color: #ffb74d;
 }
 
+.call-who .call-music input {
+  width: 8rem;
+  min-height: 2.75rem; /* a touch target, though the bar is thin */
+  accent-color: #fff;
+}
+
 .device-picker fieldset {
   border: 0;
   margin: 0 0 1rem;
