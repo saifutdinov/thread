@@ -801,6 +801,9 @@ export function wsSend(obj: unknown): boolean {
 // The call module registers here (avoids an import cycle).
 let callHandler: ((e: Record<string, unknown>) => void) | null = null;
 export const setCallHandler = (fn: (e: Record<string, unknown>) => void) => (callHandler = fn);
+// Group calls (group.ts): their events, and { t: 'open' } on each new socket.
+let groupHandler: ((e: Record<string, unknown>) => void) | null = null;
+export const setGroupHandler = (fn: (e: Record<string, unknown>) => void) => (groupHandler = fn);
 // During a call the socket stays open even when the page is hidden.
 export const socketHold = { call: false };
 
@@ -1107,6 +1110,7 @@ function connect() {
     if (!isVisible()) sendVis();
     if (screen.value === 'app') catchUp();
     void checkUpdate();
+    groupHandler?.({ t: 'open' });
   };
   sock.onmessage = (e) => {
     try {
@@ -1263,6 +1267,9 @@ async function handleEvent(e: ServerEvent) {
       break;
     case 'call':
       callHandler?.(e as unknown as Record<string, unknown>);
+      break;
+    case 'gcall':
+      groupHandler?.(e as unknown as Record<string, unknown>);
       break;
     case 'approved': {
       // Reconnect: the socket was opened as a pending device.

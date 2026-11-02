@@ -8,6 +8,7 @@ import { go, route } from '../lib/route';
 import { approveDevice, denyDevice, pending, showToast, toast } from '../lib/store';
 import { DeviceCode } from './Auth';
 import { CallScreen, minimized } from './Call';
+import { GroupCallScreen } from './GroupCall';
 import { ChatInfo } from './ChatInfo';
 import { ChatList } from './ChatList';
 import { ChatView } from './ChatView';
@@ -224,6 +225,7 @@ export function Main() {
       </main>
       {r.name === 'info' && chatId && <ChatInfo id={chatId} />}
       <CallScreen />
+      <GroupCallScreen />
       <ApproveDialog />
       <Lightbox />
       <Onboarding />

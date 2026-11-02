@@ -166,6 +166,14 @@ export interface NewInvite {
   max_uses: number;
 }
 
+// A group call running in a chat: who is in it (user ids).
+export interface RunningCall {
+  c: number;
+  id: string;
+  v: boolean;
+  users: number[];
+}
+
 export interface Sealed {
   epoch: number;
   body: string;
@@ -230,6 +238,10 @@ export const api = {
   revoke: (id: number) => call('POST', `/devices/${id}/revoke`, {}),
 
   turn: () => call<{ ice_servers: RTCIceServer[] }>('GET', '/turn'),
+  groupCalls: () => call<{ on: boolean; calls: RunningCall[] }>('GET', '/calls/group'),
+  joinGroupCall: (chat: number, p: { id?: string; v?: boolean; e?: number; key?: string; rejoin?: boolean }) =>
+    call<{ id: string; url: string; token: string; e: number; key: string; v: boolean }>('POST', `/chats/${chat}/call`, p),
+  leaveGroupCall: (chat: number) => call('DELETE', `/chats/${chat}/call`),
   pushKey: () => call<{ key: string }>('GET', '/push/key'),
   subscribe: (sub: PushSubscriptionJSON) => call('POST', '/push', sub),
   unsubscribe: () => call('DELETE', '/push'),

@@ -35,7 +35,8 @@ import {
   typingIn,
 } from '../lib/store';
 import { ChatAvatar, chatName, readByOthers } from './ChatList';
-import { startCall } from '../lib/call';
+import { call, startCall } from '../lib/call';
+import { groupCall, groupCallsOn, runningCalls, startGroupCall } from '../lib/group';
 import { callLabel } from './Call';
 import { Composer, type ComposerHandle } from './Composer';
 import { FileChip, VideoClip, VideoNote, VoicePlayer } from './Media';
@@ -135,6 +136,7 @@ export function ChatView(props: { id: number }) {
   const status = statusLine(c);
   const recovery = pending.value.filter((p) => !p.own && c.needs_key?.includes(p.id));
   const alone = c.kind === 'direct' && c.members.length < 2;
+  const running = c.kind === 'group' ? runningCalls.value.get(c.id) : undefined;
 
   const editLast = () => {
     const mine = [...list].reverse().find((m) => m.user === myId() && !m.local && m.p);
@@ -201,8 +203,28 @@ export function ChatView(props: { id: number }) {
             <IconButton icon="videocam" label={t('call.video')} onClick={() => startCall(c.id, partner(c)!.id, true)} />
           </>
         )}
+        {search === null && c.kind === 'group' && groupCallsOn.value && !running && (
+          <>
+            <IconButton icon="phone" label={t('gcall.audio')} onClick={() => void startGroupCall(c.id, false)} />
+            <IconButton icon="videocam" label={t('gcall.video')} onClick={() => void startGroupCall(c.id, true)} />
+          </>
+        )}
         {search === null && <IconButton icon="search" label={t('search.open')} onClick={openSearch} />}
       </header>
+      {running && search === null && groupCall.value?.chat !== c.id && (
+        <div class="pin-bar gcall-bar">
+          <span class="pin-bar-main">
+            <Icon name="phone" />
+            <span>
+              <b>{t('gcall.running')}</b>
+              <small>{running.users.map((u) => nameOf(c.id, u)).join(', ')}</small>
+            </span>
+          </span>
+          <button type="button" class="btn" disabled={!!call.value || !!groupCall.value} onClick={() => void startGroupCall(c.id, false)}>
+            {t('gcall.join')}
+          </button>
+        </div>
+      )}
       {c.pinnedMsg && search === null && (
         <div class="pin-bar">
           <button type="button" class="pin-bar-main" onClick={() => jumpTo(c.id, c.pinnedMsg!.id)}>

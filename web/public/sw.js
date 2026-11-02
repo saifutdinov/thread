@@ -97,8 +97,8 @@ function fromB64(s) {
 }
 
 const TEXT = {
-  ru: { app: 'Нитка', call: 'Входящий звонок', callVideo: 'Входящий видеозвонок', answer: 'Ответить', decline: 'Отклонить', test: 'Уведомления работают', testBody: 'Так будут выглядеть сообщения и звонки.', msg: 'Новое сообщение', photo: '📷 Фото', voice: '🎤 Голосовое сообщение', video: '📹 Видеосообщение', clip: '🎬 Видео', callLog: '📞 Звонок', missed: '📞 Пропущенный звонок', file: '📎 Файл', login: 'Новый вход в аккаунт: {label}. Откройте Нитку, чтобы разрешить или запретить.' },
-  en: { app: 'Thread', call: 'Incoming call', callVideo: 'Incoming video call', answer: 'Answer', decline: 'Decline', test: 'Notifications work', testBody: 'This is how messages and calls will look.', msg: 'New message', photo: '📷 Photo', voice: '🎤 Voice message', video: '📹 Video message', clip: '🎬 Video', callLog: '📞 Call', missed: '📞 Missed call', file: '📎 File', login: 'New sign-in to your account: {label}. Open Thread to allow or deny it.' },
+  ru: { app: 'Нитка', call: 'Входящий звонок', callVideo: 'Входящий видеозвонок', groupCall: 'Зовёт в групповой звонок', groupCallVideo: 'Зовёт в групповой видеозвонок', answer: 'Ответить', decline: 'Отклонить', test: 'Уведомления работают', testBody: 'Так будут выглядеть сообщения и звонки.', msg: 'Новое сообщение', photo: '📷 Фото', voice: '🎤 Голосовое сообщение', video: '📹 Видеосообщение', clip: '🎬 Видео', callLog: '📞 Звонок', missed: '📞 Пропущенный звонок', file: '📎 Файл', login: 'Новый вход в аккаунт: {label}. Откройте Нитку, чтобы разрешить или запретить.' },
+  en: { app: 'Thread', call: 'Incoming call', callVideo: 'Incoming video call', groupCall: 'Invites you to a group call', groupCallVideo: 'Invites you to a group video call', answer: 'Answer', decline: 'Decline', test: 'Notifications work', testBody: 'This is how messages and calls will look.', msg: 'New message', photo: '📷 Photo', voice: '🎤 Voice message', video: '📹 Video message', clip: '🎬 Video', callLog: '📞 Call', missed: '📞 Missed call', file: '📎 File', login: 'New sign-in to your account: {label}. Open Thread to allow or deny it.' },
 };
 
 async function decryptText(d) {
@@ -129,7 +129,7 @@ async function onPush(d) {
   // Silent pushes (never through Apple or Mozilla, see push.go): the chat
   // was read on another device, the call answered or declined there.
   if (d.t === 'read') return close('c' + d.c, d.id);
-  if (d.t === 'callEnd') return close('call');
+  if (d.t === 'callEnd') return close(d.g ? 'gcall' : 'call');
   if (d.t === 'test') {
     return self.registration.showNotification(L.test, { body: L.testBody, tag: 'test', icon: '/icon-192.png', data: { url: '/#/settings' } });
   }
@@ -139,6 +139,18 @@ async function onPush(d) {
       tag: 'device',
       icon: '/icon-192.png',
       data: { url: '/#/settings' },
+    });
+  }
+  if (d.t === 'call' && d.g) {
+    // A group call: it opens the chat, whose banner joins it.
+    const hide = await idbGet('hidePreview');
+    return self.registration.showNotification(hide ? L.app : `📞 ${d.n || L.app}`, {
+      body: d.v ? L.groupCallVideo : L.groupCall,
+      tag: 'gcall',
+      renotify: true,
+      vibrate: [400, 200, 400],
+      icon: '/icon-192.png',
+      data: { url: '/#/c/' + d.c },
     });
   }
   if (d.t === 'call') {

@@ -7,6 +7,7 @@ import { hangupTone, playSound } from './sounds';
 import { type BgId, type EffectId, type Effects, type Look, startEffects } from './effects';
 import { errText, t } from './i18n';
 import { idbGet, idbSet } from './idb';
+import { decline as declineGroup, groupCall } from './group';
 import { clear, notifyCall, notifyHere } from './notify';
 import { type Level, preferCodecs, rate, tuneOpus, videoOrder } from './rtc';
 import {
@@ -436,7 +437,7 @@ function fail(e: unknown) {
 }
 
 export async function startCall(chatId: number, peer: number, video: boolean) {
-  if (call.value) return;
+  if (call.value || groupCall.value) return;
   const id = toB64u(rand(9));
   caller = true;
   outcome = 'missed';
@@ -927,10 +928,12 @@ async function onSignal(ev: Record<string, unknown>) {
           if (!findChat(ev.c as number) || ended.has(id)) return;
           v = call.value;
         }
-        if (v) {
-          if (v.id !== id) wsSend({ t: 'call', k: 'busy', c: ev.c, id, to: ev.dev });
+        if (v || (groupCall.value && groupCall.value.phase !== 'incoming')) {
+          if (v?.id !== id) wsSend({ t: 'call', k: 'busy', c: ev.c, id, to: ev.dev });
           return;
         }
+        // Someone calls me directly while a group call rings: the one who waits on me wins.
+        if (groupCall.value?.phase === 'incoming') declineGroup();
         offer = { body: ev.body as string, e: ev.e as number, dev: ev.dev as number };
         caller = false;
         socketHold.call = true;
