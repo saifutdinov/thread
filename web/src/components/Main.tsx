@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'preact/hooks';
 import { call } from '../lib/call';
+import { groupCall } from '../lib/group';
 import { fromB64 } from '../lib/crypto';
 import { deviceCode } from '../lib/crypto';
 import { errText, t } from '../lib/i18n';
@@ -8,7 +9,7 @@ import { go, route } from '../lib/route';
 import { approveDevice, denyDevice, pending, showToast, toast } from '../lib/store';
 import { DeviceCode } from './Auth';
 import { CallScreen, minimized } from './Call';
-import { GroupCallScreen } from './GroupCall';
+import { GroupCallScreen, minimized as groupMinimized } from './GroupCall';
 import { ChatInfo } from './ChatInfo';
 import { ChatList } from './ChatList';
 import { ChatView } from './ChatView';
@@ -212,7 +213,7 @@ export function Main() {
   }, [pending.value]);
 
   return (
-    <div class={'app' + (chatId ? ' in-chat' : '') + (r.name === 'info' ? ' in-info' : '') + (call.value && minimized.value ? ' with-call-bar' : '')}>
+    <div class={'app' + (chatId ? ' in-chat' : '') + (r.name === 'info' ? ' in-info' : '') + ((call.value && minimized.value) || (groupCall.value && groupMinimized.value) ? ' with-call-bar' : '')}>
       <aside class="sidebar">
         <UpdateBanner />
         <NotifBanner />

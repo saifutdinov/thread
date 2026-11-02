@@ -19,7 +19,7 @@ import { chatName } from './ChatList';
 import { Avatar, Icon, IconButton, type IconName } from './ui';
 
 // A minimized group call shrinks to a strip, like a 1:1 call (Call.tsx).
-const minimized = signal(false);
+export const minimized = signal(false);
 
 function Btn(props: { icon: IconName; label: string; onClick: () => void; tone?: 'red' | 'green' | 'on' }) {
   return (
