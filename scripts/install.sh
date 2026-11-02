@@ -77,6 +77,7 @@ PUBLIC_IP=$ip
 RELAY_IP=$relay
 PASSWORD_PEPPER=$(openssl rand -base64 32)
 TURN_SECRET=$(openssl rand -hex 32)
+LIVEKIT_SECRET=$(openssl rand -hex 32)
 
 # Optional, see README:
 # BACKUP_RECIPIENT=age1...

@@ -16,6 +16,20 @@ need_docker
 load_env
 cd "$ROOT"
 
+# Group calls came later: a server installed before them has no LiveKit
+# secret yet, and its firewall lacks the two ports.
+if ! grep -q '^LIVEKIT_SECRET=' "$ENV_FILE"; then
+	printf '\n# Group calls (LiveKit), added by scripts/update.sh\nLIVEKIT_SECRET=%s\n' "$(openssl rand -hex 32)" >>"$ENV_FILE"
+	ok "В .env добавлен LIVEKIT_SECRET для групповых звонков" "Added LIVEKIT_SECRET to .env for group calls"
+	if [ "$(id -u)" -eq 0 ] && command -v ufw >/dev/null 2>&1; then
+		ufw allow 7881/tcp comment 'group calls, sfu' >/dev/null
+		ufw allow 7882/udp comment 'group calls, sfu' >/dev/null
+		ok "В ufw открыты 7881/tcp и 7882/udp" "Opened 7881/tcp and 7882/udp in ufw"
+	fi
+	warn "Если у хостера есть свой файрвол в панели, откройте там 7881/tcp и 7882/udp." "If your hosting panel has its own firewall, open 7881/tcp and 7882/udp there."
+	load_env
+fi
+
 mode="${1:-auto}"
 case "$mode" in
 auto | release | main) ;;

@@ -4,6 +4,8 @@
 #   app    the chat (Go + SQLite), built from this repository
 #   caddy  HTTPS with an automatic Let's Encrypt certificate for DOMAIN
 #   turn   coturn, relays calls when two devices cannot reach each other
+#   sfu    LiveKit, forwards group calls (up to 10 people, end-to-end
+#          encrypted frames: it forwards ciphertext)
 #
 # Data lives in the named volumes below; the secrets in ../.env.
 
@@ -25,6 +27,10 @@ services:
       VAPID_SUBJECT: ${VAPID_SUBJECT:-}
       TURN_SECRET: ${TURN_SECRET:?set TURN_SECRET in .env}
       TURN_URLS: turn:${DOMAIN}:3478?transport=udp,turn:${DOMAIN}:3478?transport=tcp
+      # Group calls: the SFU below; the app proxies its signaling under /lk.
+      LIVEKIT_URL: http://sfu:7880
+      LIVEKIT_KEY: thread
+      LIVEKIT_SECRET: ${LIVEKIT_SECRET:?set LIVEKIT_SECRET in .env}
       # Optional, see README: Prometheus metrics and encrypted backups.
       METRICS_ADDR: ${METRICS_ADDR:-}
       BACKUP_RECIPIENT: ${BACKUP_RECIPIENT:-}
@@ -107,6 +113,34 @@ services:
       - --denied-peer-ip=2002::-2002:ffff:ffff:ffff:ffff:ffff:ffff:ffff
       - --denied-peer-ip=fc00::-fdff:ffff:ffff:ffff:ffff:ffff:ffff:ffff
       - --denied-peer-ip=fe80::-febf:ffff:ffff:ffff:ffff:ffff:ffff:ffff
+
+  # SFU for group calls (docs/adr/0002-group-calls.md): forwards each
+  # device's sound and picture to the others. Frames are end-to-end
+  # encrypted in the browsers, so it forwards ciphertext. Signaling (7880)
+  # stays inside, behind the app's /lk proxy. Media: one UDP port for every
+  # call (no port range to block or open) and ICE over TCP where UDP does
+  # not get through.
+  sfu:
+    image: livekit/livekit-server:v1.13.10@sha256:89ca9ce0791e18d6e03bf6e2c49ceb27e1c754eae8bd50c989386c1a5963791a
+    restart: unless-stopped
+    ports:
+      - "7881:7881/tcp"
+      - "7882:7882/udp"
+    environment:
+      LIVEKIT_KEYS: "thread: ${LIVEKIT_SECRET:?set LIVEKIT_SECRET in .env}"
+      LIVEKIT_CONFIG: |
+        port: 7880
+        rtc:
+          tcp_port: 7881
+          udp_port: 7882
+          use_external_ip: false
+          node_ip: ${PUBLIC_IP:?set PUBLIC_IP in .env}
+        room:
+          max_participants: 10
+          empty_timeout: 30
+          departure_timeout: 20
+        logging:
+          level: info
 
 volumes:
   data:

@@ -45,6 +45,6 @@ jobs:
       - name: Shell scripts
         run: shellcheck -x scripts/*.sh
       - name: Compose file
-        run: DOMAIN=chat.example.org PUBLIC_IP=203.0.113.10 PASSWORD_PEPPER=x TURN_SECRET=y docker compose -f deploy/docker-compose.yml config -q
+        run: DOMAIN=chat.example.org PUBLIC_IP=203.0.113.10 PASSWORD_PEPPER=x TURN_SECRET=y LIVEKIT_SECRET=z docker compose -f deploy/docker-compose.yml config -q
       - name: Image builds
         run: docker build -t thread:ci .

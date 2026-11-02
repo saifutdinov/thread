@@ -64,8 +64,10 @@ ufw allow 443/udp comment 'https, http/3' >/dev/null
 ufw allow 3478/tcp comment 'calls, turn' >/dev/null
 ufw allow 3478/udp comment 'calls, turn' >/dev/null
 ufw allow 49160:49200/udp comment 'calls, turn relay' >/dev/null
+ufw allow 7881/tcp comment 'group calls, sfu' >/dev/null
+ufw allow 7882/udp comment 'group calls, sfu' >/dev/null
 ufw --force enable >/dev/null
-ok "Открыты: SSH ($ssh_port), 80, 443, 3478, 49160-49200/udp" "Open: SSH ($ssh_port), 80, 443, 3478, 49160-49200/udp"
+ok "Открыты: SSH ($ssh_port), 80, 443, 3478, 49160-49200/udp, 7881/tcp, 7882/udp" "Open: SSH ($ssh_port), 80, 443, 3478, 49160-49200/udp, 7881/tcp, 7882/udp"
 warn "Если у хостера есть свой файрвол в панели, откройте там те же порты." "If your hosting panel has its own firewall, open the same ports there."
 
 step "Подкачка (swap)" "Swap"

@@ -71,12 +71,13 @@ docker compose -f deploy/docker-compose.yml --env-file .env down            # st
 | 443/tcp, 443/udp | The chat itself (HTTPS, HTTP/3) |
 | 3478/tcp, 3478/udp | Calls: the relay for devices that cannot reach each other directly |
 | 49160-49200/udp | Calls: audio and video going through the relay |
+| 7882/udp, 7881/tcp | Group calls: audio and video through the SFU (TCP as a fallback where UDP does not get through) |
 
 Without the call ports the chat works, and calls only connect where both devices see each other directly (rarely the case on mobile networks).
 
 ## Where things are
 
-- **`.env`** next to this folder: the domain, the server's public and local IPs and two secrets. `PASSWORD_PEPPER` is part of every password: if it is lost or changed, no one can sign in, even with a database backup. **Keep a copy of `.env` offline**, for example in a password manager.
+- **`.env`** next to this folder: the domain, the server's public and local IPs and three secrets. `PASSWORD_PEPPER` is part of every password: if it is lost or changed, no one can sign in, even with a database backup. **Keep a copy of `.env` offline**, for example in a password manager.
 - **Docker volumes:** `thread_data` (the database and encrypted files), `thread_caddy_data` (the certificate).
 
 Messages, photos and files are encrypted on the devices; the server only stores ciphertext. Names, who talks to whom and when are not encrypted, so treat the server and its backups with care.
