@@ -723,13 +723,14 @@ export async function sendCallLog(chatId: number, cl: CallLog) {
 // Call signaling is sealed with the chat key so the server, which relays
 // it, cannot change the DTLS fingerprints inside the SDP.
 // Call signaling is sealed per kind (offer, answer, ice), so the server
-// cannot replay one as another.
+// cannot replay one as another. Like a message it rotates a pending key
+// first: a newcomer or a new device may not hold the current one.
 export async function sealSignal(chatId: number, id: string, kind: string, text: string) {
-  const c = findChat(chatId);
-  const key = c && (await chatKey(chatId, c.epoch));
-  if (!c || !key) throw new ApiError(409, 'rotate');
-  const body = await seal(key, `call:${chatId}:${id}:${kind}:${c.epoch}`, utf8(text));
-  return { e: c.epoch, body: toB64(body) };
+  const epoch = await ensureEpoch(chatId);
+  const key = await chatKey(chatId, epoch);
+  if (!key) throw new ApiError(409, 'rotate');
+  const body = await seal(key, `call:${chatId}:${id}:${kind}:${epoch}`, utf8(text));
+  return { e: epoch, body: toB64(body) };
 }
 
 export async function openSignal(chatId: number, epoch: number, id: string, kind: string, body: string): Promise<string> {
