@@ -1012,7 +1012,18 @@ export async function redeemRecovery(p: Recovery) {
 
 // openDirect opens my direct chat with a member of group `via`, making it
 // first when there is none: its key is wrapped for every device of us both.
-export async function openDirect(userId: number, via: number) {
+// A second tap while the first is still making it waits for that one.
+const directs = new Map<number, Promise<void>>();
+export function openDirect(userId: number, via: number): Promise<void> {
+  let p = directs.get(userId);
+  if (!p) {
+    p = makeDirect(userId, via).finally(() => directs.delete(userId));
+    directs.set(userId, p);
+  }
+  return p;
+}
+
+async function makeDirect(userId: number, via: number) {
   const have = chats.value.find((c) => c.kind === 'direct' && c.members.length === 2 && c.members.some((m) => m.id === userId));
   if (have) return goChat(have.id);
   for (let attempt = 0; ; attempt++) {

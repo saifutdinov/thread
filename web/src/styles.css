@@ -1187,10 +1187,28 @@ textarea,
   margin: 0.2rem 0.4rem;
 }
 
+/* A group member's name over their messages: a tap opens the direct chat
+   with them. The touch area reaches past the name without moving it. */
 .author {
+  position: relative;
   display: block;
+  max-width: 100%;
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  font-weight: 700;
   font-size: 0.875rem;
+  text-align: left;
   margin-bottom: 0.1rem;
+  cursor: pointer;
+}
+
+.author::after {
+  content: '';
+  position: absolute;
+  inset: -0.4rem -0.75rem -0.6rem; /* within the bubble: the text and links below stay tappable */
+  min-width: 2.75rem;
 }
 
 .text {
@@ -2779,6 +2797,27 @@ img.blur {
   outline: 3px solid transparent;
   outline-offset: -3px;
   transition: outline-color 0.15s;
+}
+
+/* A shared screen spans the grid and takes most of its height, shown whole. */
+.gtiles.has-screen {
+  grid-auto-rows: minmax(4.5rem, 1fr);
+}
+
+.gtile.screen:not(.mine) {
+  grid-column: 1 / -1;
+  grid-row: span 3;
+}
+
+.gtile.screen video {
+  object-fit: contain;
+}
+
+.gtile-note {
+  margin: 0;
+  padding: 1rem;
+  text-align: center;
+  color: rgba(255, 255, 255, 0.8);
 }
 
 /* Who speaks: a ring around the tile (and a word for screen readers). */

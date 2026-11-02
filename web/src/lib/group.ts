@@ -22,6 +22,7 @@ export interface Person {
   speaking: boolean;
   muted: boolean;
   video?: VideoTrack; // a camera that is on and reaches us
+  screen?: VideoTrack; // their shared screen
 }
 
 export interface GroupView {
@@ -36,6 +37,7 @@ export interface GroupView {
   since?: number;
   reconnecting?: boolean;
   needsTap?: boolean; // the browser holds the sound back until a tap
+  sharing?: boolean; // my screen is shared
 }
 
 export const groupCall = signal<GroupView | null>(null);
@@ -177,13 +179,22 @@ async function enter(path: string, token: string, key: string, video: boolean, s
     encryption: { keyProvider, worker: w },
   });
   room = r;
-  const refresh = () => room === r && update({ people: people(r), muted: !r.localParticipant.isMicrophoneEnabled, camOff: !r.localParticipant.isCameraEnabled });
+  const refresh = () =>
+    room === r &&
+    update({
+      people: people(r),
+      muted: !r.localParticipant.isMicrophoneEnabled,
+      camOff: !r.localParticipant.isCameraEnabled,
+      sharing: r.localParticipant.isScreenShareEnabled,
+    });
   const E = lk.RoomEvent;
   for (const ev of [
     E.ParticipantConnected,
     E.ParticipantDisconnected,
     E.TrackSubscribed,
     E.TrackUnsubscribed,
+    E.TrackPublished,
+    E.TrackUnpublished, // after the publication is gone: a stopped screen leaves no empty tile
     E.TrackMuted,
     E.TrackUnmuted,
     E.ActiveSpeakersChanged,
@@ -229,10 +240,11 @@ async function enter(path: string, token: string, key: string, video: boolean, s
 
 function people(r: Room): Person[] {
   const all: Participant[] = [r.localParticipant, ...r.remoteParticipants.values()];
-  const { Camera, Microphone } = lk!.Track.Source;
+  const { Camera, Microphone, ScreenShare } = lk!.Track.Source;
   return all.map((p) => {
     const cam = p.getTrackPublication(Camera);
     const mic = p.getTrackPublication(Microphone);
+    const scr = p.getTrackPublication(ScreenShare);
     const on = cam && !cam.isMuted && cam.videoTrack;
     return {
       id: p.identity,
@@ -241,6 +253,7 @@ function people(r: Room): Person[] {
       speaking: p.isSpeaking,
       muted: !mic || mic.isMuted,
       video: on ? cam.videoTrack : undefined,
+      screen: (scr && !scr.isMuted && scr.videoTrack) || undefined,
     };
   });
 }
@@ -292,6 +305,20 @@ export const reopenGroupMic = latest(async () => {
     showToast(errText(e));
   }
 });
+
+// toggleGroupScreen shares the screen as a track of its own, frame-encrypted
+// like the camera (computers only: canShareScreen). Closing the browser's
+// own "Stop sharing" ends it too; LiveKit unpublishes it then.
+export async function toggleGroupScreen() {
+  const p = room?.localParticipant;
+  if (!p) return;
+  await p
+    .setScreenShareEnabled(!p.isScreenShareEnabled, { audio: false, selfBrowserSurface: 'exclude', surfaceSwitching: 'include' })
+    // Closing the picker is NotAllowedError "Permission denied"; macOS without
+    // the system's screen recording permission is one too, "by system".
+    .catch((e: DOMException) => (e?.name !== 'NotAllowedError' || /system/i.test(e.message)) && showToast(t('call.screenFailed')));
+  update({ sharing: p.isScreenShareEnabled, people: room ? people(room) : [] });
+}
 
 export async function toggleGroupMute() {
   const p = room?.localParticipant;

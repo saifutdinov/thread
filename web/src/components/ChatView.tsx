@@ -28,6 +28,7 @@ import {
   myId,
   nameOf,
   openChat,
+  openDirect,
   partner,
   pending,
   showToast,
@@ -582,6 +583,7 @@ function Bubble(props: {
       onPointerCancel={() => release(false)}
       onDblClick={() => !m.local && props.onReply(m)}
       onKeyDown={(e) => {
+        if (e.target !== e.currentTarget) return; // Enter on a button inside (the name, a reaction) is that button's
         if (e.key === 'Enter' || e.key === 'ContextMenu' || (e.shiftKey && e.key === 'F10')) {
           e.preventDefault();
           const r = e.currentTarget.getBoundingClientRect();
@@ -592,9 +594,20 @@ function Bubble(props: {
     >
       <div class="bubble">
         {chat.kind === 'group' && !mine && props.showName && (
-          <b class="author" style={{ color: colorOf(m.user) }}>
+          <button
+            type="button"
+            class="author"
+            style={{ color: colorOf(m.user) }}
+            aria-label={t('info.writeTo', { name: author })}
+            onDblClick={(e) => e.stopPropagation()}
+            onClick={(e) => {
+              e.stopPropagation();
+              if (opened.current) return; // a long press opened the menu instead
+              openDirect(m.user, chat.id).catch((err) => showToast(errText(err)));
+            }}
+          >
             {author}
-          </b>
+          </button>
         )}
         {m.p?.fw && (
           <span class="forwarded">
@@ -751,6 +764,11 @@ function MessageMenu(props: {
             {!m.local && (
               <button type="button" role="menuitem" onClick={act(props.onReply)}>
                 <Icon name="reply" /> {t('chat.reply')}
+              </button>
+            )}
+            {chat.kind === 'group' && !mine && (
+              <button type="button" role="menuitem" onClick={act(() => openDirect(m.user, chat.id))}>
+                <Icon name="send" /> {t('info.writeTo', { name: nameOf(chat.id, m.user) })}
               </button>
             )}
             {!m.local && m.p && (

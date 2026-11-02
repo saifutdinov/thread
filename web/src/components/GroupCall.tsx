@@ -12,8 +12,10 @@ import {
   startGroupCall,
   toggleGroupCamera,
   toggleGroupMute,
+  toggleGroupScreen,
 } from '../lib/group';
 import { t } from '../lib/i18n';
+import { canShareScreen } from '../lib/call';
 import { canTune } from '../lib/mic';
 import { fmtDuration } from '../lib/recorder';
 import { chatPicture, findChat, nameOf, picture } from '../lib/store';
@@ -60,6 +62,30 @@ function Tile(props: { p: Person; chat: number }) {
         <span>{name}</span>
         {p.speaking && <span class="sr-only">{t('gcall.speaking')}</span>}
         {p.muted && <span class="sr-only">{t('gcall.muted')}</span>}
+      </span>
+    </li>
+  );
+}
+
+// ScreenTile: someone's shared screen, whole (never cropped), across the
+// grid. Our own shows a note instead: the call inside itself is no use.
+function ScreenTile(props: { p: Person; chat: number }) {
+  const { p } = props;
+  const ref = useRef<HTMLVideoElement>(null);
+  useEffect(() => {
+    const el = ref.current;
+    const v = p.screen;
+    if (!el || !v || p.me) return;
+    v.attach(el);
+    return () => void v.detach(el);
+  }, [p.screen, p.me]);
+  const name = p.me ? t('gcall.you') : nameOf(props.chat, p.user);
+  return (
+    <li class={'gtile screen' + (p.me ? ' mine' : '')}>
+      {p.me ? <p class="gtile-note">{t('gcall.youShare')}</p> : <video ref={ref} autoPlay playsInline muted />}
+      <span class="gtile-name">
+        <Icon name="screen" size={14} />
+        <span>{t('gcall.screenOf', { name })}</span>
       </span>
     </li>
   );
@@ -136,7 +162,12 @@ export function GroupCallScreen() {
           {g.phase === 'active' ? t('gcall.people', { n: g.people.length }) : status}
         </p>
       </header>
-      <ul class={'gtiles n' + Math.min(g.people.length, 10)} aria-label={t('gcall.participants')}>
+      <ul class={'gtiles n' + Math.min(g.people.length, 10) + (g.people.some((p) => p.screen && !p.me) ? ' has-screen' : '')} aria-label={t('gcall.participants')}>
+        {g.people
+          .filter((p) => p.screen)
+          .map((p) => (
+            <ScreenTile key={p.id + '-screen'} p={p} chat={g.chat} />
+          ))}
         {g.people.map((p) => (
           <Tile key={p.id} p={p} chat={g.chat} />
         ))}
@@ -156,6 +187,14 @@ export function GroupCallScreen() {
           onClick={() => void toggleGroupCamera()}
         />
         {!g.camOff && cameras().length > 1 && <Btn icon="flip" label={t('call.switch')} onClick={() => void flipGroupCamera()} />}
+        {canShareScreen && g.phase === 'active' && (
+          <Btn
+            icon={g.sharing ? 'screenStop' : 'screen'}
+            label={g.sharing ? t('call.screenStop') : t('call.screen')}
+            tone={g.sharing ? 'on' : undefined}
+            onClick={() => void toggleGroupScreen()}
+          />
+        )}
         {canTune && <Btn icon="tune" label={t('mic.button')} onClick={() => setTuning(true)} />}
         <Btn icon="callEnd" label={t('gcall.leave')} tone="red" onClick={() => void leave()} />
       </div>
