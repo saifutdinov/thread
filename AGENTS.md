@@ -7,6 +7,7 @@ Thread is an end-to-end encrypted chat for close people that anyone can run on t
 Read before changing anything:
 - `docs/adr/0001-e2ee-webcrypto.md`: the encryption protocol. Any change to key handling, AAD strings, payload format or invite derivation is a protocol change: messages and keys already stored on people's servers and devices must stay readable.
 - `docs/adr/0002-group-calls.md`: group calls through the LiveKit SFU, frame encryption with a sealed call key, what the server sees.
+- `docs/adr/0003-mic-processing.md`: RNNoise and the voice gate on computers, the call's own microphone chain.
 - `PROJECT_GRAPH.md`: modules, flows, patterns.
 - `SECURITY.md`: what the design promises and what it does not.
 
