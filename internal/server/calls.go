@@ -131,15 +131,15 @@ func (s *Server) handleCallSignal(ctx context.Context, c *client, in callSignal)
 		if err := s.db.QueryRowContext(ctx, `SELECT name FROM users WHERE id = ?`, c.user).Scan(&name); err != nil {
 			s.log.Warn("caller name", "err", err) // the push still rings, just without a name
 		}
-		s.push.notifyCall(ctx, in.C, peer, name, in.V, in.ID)
+		s.push.notifyCall(ctx, in.C, peer, name, in.V, in.ID, false)
 	case "answer":
 		if !s.ring.clear(c.user, in.ID) {
 			s.hub.sendDevice(c.device, taken) // another device of mine was first
 			return
 		}
 		toPeerDevice()
-		stopRinging(c.user)               // the other devices of the one who picked up
-		s.push.notifyCallEnd(ctx, c.user) // and their ring notifications
+		stopRinging(c.user)                      // the other devices of the one who picked up
+		s.push.notifyCallEnd(ctx, c.user, false) // and their ring notifications
 	case "ice", "reoffer", "reanswer", "restart":
 		// Mid-call: candidates, an ICE restart after a network change (the
 		// caller re-offers; the callee may ask for it), device to device.
@@ -154,7 +154,7 @@ func (s *Server) handleCallSignal(ctx context.Context, c *client, in callSignal)
 		}
 		if in.K == "decline" {
 			stopRinging(c.user)
-			s.push.notifyCallEnd(ctx, c.user)
+			s.push.notifyCallEnd(ctx, c.user, false)
 		}
 	}
 }

@@ -169,15 +169,24 @@ func (p *pusher) notifyRead(ctx context.Context, userID, chatID, upTo int64) {
 // notifyCallEnd takes back the ring on the callee's other devices: the
 // call was answered or declined somewhere. Topic "call" replaces a ring
 // still waiting for an offline phone.
-func (p *pusher) notifyCallEnd(ctx context.Context, callee int64) {
+func (p *pusher) notifyCallEnd(ctx context.Context, callee int64, group bool) {
 	subs := p.targets(ctx, `SELECT p.device_id, p.endpoint, p.p256dh, p.auth FROM push_subs p JOIN devices d ON d.id = p.device_id
 		WHERE d.user_id = ? AND d.status = 'active'`, callee)
-	body, _ := json.Marshal(map[string]any{"t": "callEnd"})
+	body, _ := json.Marshal(map[string]any{"t": "callEnd", "g": group})
 	for _, s := range subs {
 		if !p.connected(s.device) && silentOK(s.endpoint) {
-			go p.deliver(s, body, "call", int(ringFor.Seconds()))
+			go p.deliver(s, body, callTopic(group), int(ringFor.Seconds()))
 		}
 	}
+}
+
+// callTopic: a group ring and a 1:1 ring are separate notifications; a
+// pending push replaces only one of its own kind.
+func callTopic(group bool) string {
+	if group {
+		return "gcall"
+	}
+	return "call"
 }
 
 // handlePushTest pushes a test notification to this device, in front or
@@ -198,11 +207,11 @@ func (s *Server) handlePushTest(w http.ResponseWriter, r *http.Request, a *Auth)
 // notifyCall rings the callee's sleeping devices. A ring is useless after
 // it stops, hence the short TTL.
 // The call id lets the notification's Decline button decline it without
-// a page (handleCallDecline).
-func (p *pusher) notifyCall(ctx context.Context, chatID, callee int64, from string, video bool, id string) {
+// a page (handleCallDecline). A group call ("g") opens its chat instead.
+func (p *pusher) notifyCall(ctx context.Context, chatID, callee int64, from string, video bool, id string, group bool) {
 	p.send(ctx, `SELECT p.device_id, p.endpoint, p.p256dh, p.auth FROM push_subs p JOIN devices d ON d.id = p.device_id
-		WHERE d.user_id = ? AND d.status = 'active'`, map[string]any{"t": "call", "c": chatID, "n": from, "v": video, "id": id},
-		"call", int(ringFor.Seconds()), callee)
+		WHERE d.user_id = ? AND d.status = 'active'`, map[string]any{"t": "call", "c": chatID, "n": from, "v": video, "id": id, "g": group},
+		callTopic(group), int(ringFor.Seconds()), callee)
 }
 
 // notifyDevices alerts a user's other devices, e.g. about a new login.

@@ -212,6 +212,11 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request, a *Auth) {
 		if s.hub.remove(c) {
 			s.presenceChanged(context.Background(), a.UserID, false)
 		}
+		// The app closed or lost its connection: out of its group calls
+		// (it joins again when the socket is back).
+		if !s.hub.deviceOnline(c.device) {
+			s.groupCallsLeft(context.Background(), s.groups.leave(0, c.device))
+		}
 		conn.CloseNow()
 	}()
 

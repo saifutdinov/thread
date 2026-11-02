@@ -15,8 +15,9 @@ import (
 	"github.com/coder/websocket"
 )
 
-// sock is a test WebSocket: a background reader forwards call events, so
-// waiting for "nothing" never cancels a Read (which would close the conn).
+// sock is a test WebSocket: a background reader forwards call events (1:1
+// and group), so waiting for "nothing" never cancels a Read (which would
+// close the conn).
 type sock struct {
 	conn *websocket.Conn
 	ch   chan map[string]any
@@ -48,7 +49,7 @@ func (c *user) socket(t *testing.T) *sock {
 				return
 			}
 			var ev map[string]any
-			if json.Unmarshal(b, &ev) != nil || ev["t"] != "call" {
+			if json.Unmarshal(b, &ev) != nil || (ev["t"] != "call" && ev["t"] != "gcall") {
 				continue
 			}
 			if ev["k"] == "offer" {

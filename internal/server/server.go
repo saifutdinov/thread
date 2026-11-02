@@ -38,24 +38,30 @@ type Config struct {
 	VAPIDSubject string
 	TurnURLs     []string
 	TurnSecret   string
-	BackupTo     string // age recipients, comma-separated; empty disables backups
-	BackupKeep   int    // local snapshots kept
-	MetricsAddr  string // internal Prometheus listener; empty disables it
-	S3           S3Config
-	Version      string // the release tag, set at build time; empty is "dev"
+	// LiveKit SFU for group calls (all three, or group calls are off):
+	// its internal address for the signaling proxy, and the API key pair.
+	LiveKitURL    string
+	LiveKitKey    string
+	LiveKitSecret string
+	BackupTo      string // age recipients, comma-separated; empty disables backups
+	BackupKeep    int    // local snapshots kept
+	MetricsAddr   string // internal Prometheus listener; empty disables it
+	S3            S3Config
+	Version       string // the release tag, set at build time; empty is "dev"
 }
 
 type Server struct {
-	cfg   Config
-	db    *sql.DB
-	log   *slog.Logger
-	hub   *hub
-	push  *pusher
-	auth  *limiters
-	argon chan struct{}
-	nonce *nonces
-	ring  *ringing
-	m     metrics
+	cfg    Config
+	db     *sql.DB
+	log    *slog.Logger
+	hub    *hub
+	push   *pusher
+	auth   *limiters
+	argon  chan struct{}
+	nonce  *nonces
+	ring   *ringing
+	groups *groupCalls
+	m      metrics
 
 	preview *http.Client // link previews; tests swap the address check
 
@@ -84,14 +90,15 @@ func New(ctx context.Context, cfg Config, log *slog.Logger) (*Server, error) {
 		return nil, err
 	}
 	s := &Server{
-		cfg:   cfg,
-		db:    db,
-		log:   log,
-		hub:   newHub(),
-		auth:  newLimiters(),
-		argon: make(chan struct{}, 4), // Limit: 4 parallel argon2 hashes = 256 MiB peak
-		nonce: newNonces(),
-		ring:  newRinging(),
+		cfg:    cfg,
+		db:     db,
+		log:    log,
+		hub:    newHub(),
+		auth:   newLimiters(),
+		argon:  make(chan struct{}, 4), // Limit: 4 parallel argon2 hashes = 256 MiB peak
+		nonce:  newNonces(),
+		ring:   newRinging(),
+		groups: newGroupCalls(),
 
 		preview:  newPreviewClient(publicAddr),
 		backupTo: backupTo,
@@ -172,6 +179,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /api/push", s.anyDevice(s.handleUnsubscribe))
 	mux.HandleFunc("POST /api/push/test", s.anyDevice(s.handlePushTest))
 	mux.HandleFunc("POST /api/calls/decline", s.active(s.handleCallDecline))
+	mux.HandleFunc("GET /api/calls/group", s.active(s.handleGroupCalls))
+	mux.HandleFunc("POST /api/chats/{id}/call", s.active(s.handleGroupCall))
+	mux.HandleFunc("DELETE /api/chats/{id}/call", s.active(s.handleLeaveGroupCall))
+	mux.HandleFunc("/lk/", s.active(s.handleLiveKit))
 
 	mux.HandleFunc("GET /api/ws", s.anyDevice(s.handleWS))
 	mux.HandleFunc("/api/", func(w http.ResponseWriter, _ *http.Request) { fail(w, http.StatusNotFound, "not_found") })
