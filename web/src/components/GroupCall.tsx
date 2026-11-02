@@ -7,16 +7,19 @@ import {
   groupCall,
   leave,
   type Person,
+  reopenGroupMic,
   startGroupAudio,
   startGroupCall,
   toggleGroupCamera,
   toggleGroupMute,
 } from '../lib/group';
 import { t } from '../lib/i18n';
+import { canTune } from '../lib/mic';
 import { fmtDuration } from '../lib/recorder';
 import { chatPicture, findChat, nameOf, picture } from '../lib/store';
 import { chatName } from './ChatList';
-import { Avatar, Icon, IconButton, type IconName } from './ui';
+import { MicTuning } from './MicTuning';
+import { Avatar, Icon, IconButton, type IconName, Modal } from './ui';
 
 // A minimized group call shrinks to a strip, like a 1:1 call (Call.tsx).
 export const minimized = signal(false);
@@ -68,6 +71,7 @@ export function GroupCallScreen() {
   const g = groupCall.value;
   const dialog = useRef<HTMLDialogElement>(null);
   const [, tick] = useState(0);
+  const [tuning, setTuning] = useState(false);
   const mini = !!g && minimized.value && g.phase !== 'incoming';
   useEffect(() => {
     const i = setInterval(() => tick((n) => n + 1), 1000);
@@ -152,8 +156,18 @@ export function GroupCallScreen() {
           onClick={() => void toggleGroupCamera()}
         />
         {!g.camOff && cameras().length > 1 && <Btn icon="flip" label={t('call.switch')} onClick={() => void flipGroupCamera()} />}
+        {canTune && <Btn icon="tune" label={t('mic.button')} onClick={() => setTuning(true)} />}
         <Btn icon="callEnd" label={t('gcall.leave')} tone="red" onClick={() => void leave()} />
       </div>
+      {tuning && (
+        <Modal label={t('mic.settings')} onClose={() => setTuning(false)} class="device-picker">
+          <h2>{t('mic.settings')}</h2>
+          <MicTuning reopen={reopenGroupMic} />
+          <button type="button" class="btn secondary" onClick={() => setTuning(false)}>
+            {t('common.done')}
+          </button>
+        </Modal>
+      )}
     </dialog>
   );
 }

@@ -12,6 +12,7 @@ import {
   mediaMessages,
   type Msg,
   myId,
+  openDirect,
   picture,
   setGroupPhoto,
   showToast,
@@ -30,6 +31,7 @@ export function ChatInfo(props: { id: number }) {
   const [media, setMedia] = useState<Msg[]>([]);
   const [moreMedia, setMoreMedia] = useState(false);
   const [invites, setInvites] = useState<Invite[]>([]);
+  const [writing, setWriting] = useState(0); // the member whose direct chat is opening
   const [link, setLink] = useState('');
   const [rescue, setRescue] = useState<{ name: string; link: string } | null>(null);
   const [busy, setBusy] = useState(false);
@@ -181,9 +183,24 @@ export function ChatInfo(props: { id: number }) {
                   </small>
                 </span>
                 {m.id !== myId() && (
-                  <button class="btn small secondary" onClick={() => setCodeFor({ id: m.id, name: m.name })}>
-                    {t('safety.code')}
-                  </button>
+                  <>
+                    <button
+                      class="btn small secondary"
+                      aria-label={t('info.writeTo', { name: m.name })}
+                      disabled={writing === m.id}
+                      onClick={() => {
+                        setWriting(m.id);
+                        openDirect(m.id, c.id)
+                          .catch((e) => showToast(errText(e)))
+                          .finally(() => setWriting(0));
+                      }}
+                    >
+                      {t('info.write')}
+                    </button>
+                    <button class="btn small secondary" onClick={() => setCodeFor({ id: m.id, name: m.name })}>
+                      {t('safety.code')}
+                    </button>
+                  </>
                 )}
               </li>
             ))}

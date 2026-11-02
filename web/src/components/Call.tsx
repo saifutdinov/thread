@@ -10,6 +10,7 @@ import {
   decline,
   hangup,
   type Quality,
+  reopenMic,
   selectCamera,
   selectMic,
   selectSpeaker,
@@ -29,9 +30,11 @@ import { BACKGROUNDS, EFFECTS } from '../lib/effects';
 import { t } from '../lib/i18n';
 import { fmtDuration } from '../lib/recorder';
 import { locked } from '../lib/lock';
+import { canTune } from '../lib/mic';
 import { callFit } from '../lib/prefs';
 import { isDoubleTap, type Tap, tileWidth } from '../lib/tap';
 import { type CallLog, chatPicture, findChat, showToast } from '../lib/store';
+import { MicTuning } from './MicTuning';
 import { Avatar, Icon, IconButton, type IconName, Modal } from './ui';
 
 // A minimized call shrinks to a strip at the top (and, with video, a small
@@ -90,6 +93,7 @@ function DevicePicker(props: { onClose: () => void }) {
           ))}
         </fieldset>
       )}
+      {canTune && <MicTuning reopen={reopenMic} />}
       {outs.length > 0 && (
         <fieldset>
           <legend>{t('call.audio.out')}</legend>

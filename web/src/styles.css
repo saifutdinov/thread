@@ -2858,6 +2858,43 @@ img.blur {
   cursor: pointer;
 }
 
+/* Noise suppression and the voice gate (MicTuning): the meter sits right
+   above the slider, on the same scale. */
+.mic-gate {
+  display: grid;
+  gap: 0.35rem;
+  margin-top: 0.5rem;
+}
+
+.mic-meter {
+  display: block;
+  height: 0.5rem;
+  border-radius: 0.25rem;
+  background: rgba(127, 127, 127, 0.25);
+  overflow: hidden;
+}
+
+.mic-meter span {
+  display: block;
+  height: 100%;
+  background: var(--text-2);
+  transition: width 60ms linear;
+}
+
+.mic-meter span.open {
+  background: #2f9e5b;
+}
+
+.mic-gate input[type='range'] {
+  width: 100%;
+  min-height: 2.75rem;
+  margin: 0;
+}
+
+.mic-tuning .muted {
+  margin: 0.25rem 0 0;
+}
+
 /* The floating call window (Document Picture-in-Picture). */
 .pip-call {
   position: fixed;

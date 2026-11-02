@@ -4,6 +4,7 @@ import { api, ApiError, type RunningCall } from './api';
 import { rand, toB64u } from './crypto';
 import { remembered } from './devices';
 import { errText, t } from './i18n';
+import { latest, micConstraints, type Mic, openMic, wantsProcessing } from './mic';
 import { hangupTone, playSound } from './sounds';
 import { me, openSignal, releaseSocket, sealSignal, setGroupHandler, showToast, socketHold } from './store';
 
@@ -45,6 +46,7 @@ const RING_MS = 45_000;
 let lk: typeof import('livekit-client') | null = null; // loaded on the first group call
 let room: Room | null = null;
 let worker: Worker | null = null; // LiveKit's E2EE worker holds the call key: ours to stop
+let gmic: Mic | null = null; // the microphone we publish, perhaps processed
 // Every join and every end bumps it: a join that sees another number by
 // the time its await returns was cancelled (a hang-up while connecting).
 let attempt = 0;
@@ -167,7 +169,7 @@ async function enter(path: string, token: string, key: string, video: boolean, s
   const r = new lk.Room({
     adaptiveStream: true, // pictures off screen or small are fetched small, or not at all
     dynacast: true, // nobody watches a layer: it is not sent
-    audioCaptureDefaults: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1, deviceId: mic || undefined },
+    audioCaptureDefaults: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1, deviceId: mic || undefined }, // only if ours below failed
     videoCaptureDefaults: { resolution: lk.VideoPresets.h540.resolution, facingMode: 'user', deviceId: cam || undefined },
     // DTX: most people are silent most of the time. No RED: it doubles the
     // sound for every listener and does not pass the frame encryption.
@@ -213,8 +215,11 @@ async function enter(path: string, token: string, key: string, video: boolean, s
   if (stale()) return drop();
   update({ phase: 'active', since: Date.now(), needsTap: !r.canPlaybackAudio });
   try {
-    await r.localParticipant.setMicrophoneEnabled(true);
-    if (video) await r.localParticipant.setCameraEnabled(true);
+    const own = await processedMic(mic || undefined);
+    if (stale()) own?.close();
+    else if (own) await publishMic(r, own);
+    else await r.localParticipant.setMicrophoneEnabled(true);
+    if (video && !stale()) await r.localParticipant.setCameraEnabled(true);
   } catch {
     if (!stale()) showToast(t('call.noMedia')); // in the call anyway: listening works without a microphone
   }
@@ -243,6 +248,50 @@ function people(r: Room): Person[] {
 export function decline() {
   end();
 }
+
+// processedMic opens the microphone through mic.ts when this device
+// processes it (noise suppression, the voice gate). Null: LiveKit opens it
+// itself, as without processing, and so reopens it when it ends (a phone
+// call, an unplugged headset); a track of ours it would only mute.
+async function processedMic(deviceId?: string): Promise<Mic | null> {
+  if (!wantsProcessing()) return null;
+  const s = await navigator.mediaDevices.getUserMedia({ audio: micConstraints(deviceId ? { ideal: deviceId } : undefined) });
+  const m = await openMic(s.getAudioTracks()[0]);
+  if (m.track !== m.raw) return m;
+  m.close(); // processing failed to start
+  return null;
+}
+
+async function publishMic(r: Room, m: Mic) {
+  gmic = m;
+  m.raw.addEventListener('ended', () => void reopenGroupMic()); // the device is gone: the default one
+  await r.localParticipant.publishTrack(m.track, { source: lk!.Track.Source.Microphone });
+}
+
+// reopenGroupMic opens the microphone again with the processing as now
+// chosen: a new publication, ours or LiveKit's, muted as before.
+export const reopenGroupMic = latest(async () => {
+  const r = room;
+  const p = r?.localParticipant;
+  if (!p || !lk) return;
+  const pub = p.getTrackPublication(lk.Track.Source.Microphone);
+  const muted = !p.isMicrophoneEnabled;
+  try {
+    const own = await processedMic((gmic?.raw ?? pub?.track?.mediaStreamTrack)?.getSettings().deviceId);
+    if (room !== r) return own?.close();
+    if (!own && !gmic) return; // LiveKit's microphone already, and it stays
+    if (pub?.track) await p.unpublishTrack(pub.track);
+    gmic?.close();
+    gmic = null;
+    if (room !== r) return own?.close();
+    if (own) {
+      await publishMic(r, own);
+      if (muted) await p.setMicrophoneEnabled(false);
+    } else if (!muted) await p.setMicrophoneEnabled(true);
+  } catch (e) {
+    showToast(errText(e));
+  }
+});
 
 export async function toggleGroupMute() {
   const p = room?.localParticipant;
@@ -289,6 +338,8 @@ export async function leave() {
 function end() {
   attempt++;
   quiet();
+  gmic?.close();
+  gmic = null;
   audioBox.replaceChildren();
   const was = !!groupCall.value && groupCall.value.phase !== 'incoming';
   groupCall.value = null;

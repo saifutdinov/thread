@@ -204,6 +204,7 @@ export const api = {
   chats: () => call<RawChat[]>('GET', '/chats'),
   createChat: (p: { kind: 'direct' | 'group'; title?: string; keys: WrappedKey[]; invite: NewInvite }) =>
     call<{ chat_id: number }>('POST', '/chats', p),
+  directChat: (user: number, keys: WrappedKey[]) => call<{ chat_id: number; existing: boolean }>('POST', '/chats/direct', { user, keys }),
   leaveChat: (chat: number) => call('DELETE', `/chats/${chat}`),
   messages: (chat: number, before = 0, media = false) =>
     call<RawMessage[]>('GET', `/chats/${chat}/messages?before=${before}&limit=50${media ? '&media=1' : ''}`),

@@ -7,6 +7,7 @@ import { hangupTone, playSound } from './sounds';
 import { type BgId, type EffectId, type Effects, type Look, startEffects } from './effects';
 import { errText, t } from './i18n';
 import { idbGet, idbSet } from './idb';
+import { latest, micConstraints, type Mic, openMic } from './mic';
 import { decline as declineGroup, groupCall } from './group';
 import { clear, notifyCall, notifyHere } from './notify';
 import { type Level, preferCodecs, rate, tuneOpus, videoOrder } from './rtc';
@@ -96,6 +97,7 @@ let statsTimer: ReturnType<typeof setInterval> | undefined;
 let stopTone: (() => void) | null = null;
 let wake: WakeLockSentinel | null = null;
 let state: RTCDataChannel | null = null; // camera and microphone state, device to device
+let mic: Mic | null = null; // what the call sends: the microphone, perhaps processed
 const ended = new Set<string>(); // calls that ended before they rang here
 const device = videoOrder(navigator.userAgent);
 
@@ -136,15 +138,13 @@ const CAMERA = (): MediaTrackConstraints => ({
   frameRate: { ideal: 30, max: 30 },
 });
 
-const MIC: MediaTrackConstraints = { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1, sampleRate: 48000 };
-
 // The speaker chosen in the call's sound menu; '' is the system default.
 export const speaker = signal(remembered('callSpeaker'));
 
 async function media(video: boolean): Promise<MediaStream> {
-  const mic = remembered('callMic');
+  const id = remembered('callMic');
   const s = await navigator.mediaDevices.getUserMedia({
-    audio: mic ? { ...MIC, deviceId: { ideal: mic } } : MIC,
+    audio: micConstraints(id ? { ideal: id } : undefined),
     video: video ? CAMERA() : false,
   });
   hint(s);
@@ -277,13 +277,21 @@ async function localDescription(p: RTCPeerConnection, d: RTCSessionDescriptionIn
 }
 
 async function connect(local: MediaStream): Promise<RTCPeerConnection> {
+  const id = call.value?.id;
   const iceServers = await api.turn().then((r) => r.ice_servers, () => []);
   // One transport for audio and video: one relay allocation, not two. No
   // iceCandidatePoolSize: with pre-gathered candidates the next call after
   // a hang-up hung in "connecting" (the callee could not resolve the
   // caller's reused mDNS host name), seen in Chrome 152.
   const p = new RTCPeerConnection({ iceServers, bundlePolicy: 'max-bundle' });
-  local.getTracks().forEach((tr) => p.addTrack(tr, local));
+  const sent = await openMic(local.getAudioTracks()[0]);
+  if (call.value?.id !== id) sent.close(); // hung up meanwhile: the cleanup has run
+  else {
+    mic = sent;
+    // Processing that failed may have opened the microphone again: mute follows the new one.
+    if (sent.raw !== local.getAudioTracks()[0]) update({ local: new MediaStream([sent.raw, ...local.getVideoTracks()]) });
+  }
+  for (const tr of local.getTracks()) p.addTrack(tr.kind === 'audio' ? sent.track : tr, local);
   // Negotiated on both sides with the same id: no signaling, and it rides
   // the call's DTLS transport, so it is end-to-end encrypted like the media.
   state = p.createDataChannel('state', { negotiated: true, id: 0 });
@@ -539,6 +547,8 @@ function cleanup() {
   audioSession('auto');
   dropEffects();
   call.value?.local?.getTracks().forEach((tr) => tr.stop());
+  mic?.close();
+  mic = null;
   musicTrack?.stop();
   musicTrack = null;
   pc?.close();
@@ -874,24 +884,35 @@ export async function stopMusic() {
 // selectMic swaps the microphone mid-call. On Android this is also how a
 // call moves between the earpiece and the speakerphone: Chrome lists them
 // as microphones, and picking one routes the whole call there.
-export async function selectMic(deviceId: string) {
+export async function selectMic(deviceId?: string) {
   const v = call.value;
   const sender = senderOf('audio');
   if (!v || !sender) return;
+  let next: Mic | null = null;
   try {
-    const s = await navigator.mediaDevices.getUserMedia({ audio: { ...MIC, deviceId: { exact: deviceId } } });
+    const s = await navigator.mediaDevices.getUserMedia({ audio: micConstraints(deviceId ? { exact: deviceId } : undefined) });
     hint(s);
     const track = s.getAudioTracks()[0];
     track.enabled = !v.muted;
-    await sender.replaceTrack(track);
-    const now = call.value?.local;
+    next = await openMic(track);
+    if (call.value?.id === v.id) await sender.replaceTrack(next.track);
+    if (call.value?.id !== v.id) return next.close(); // the call ended meanwhile: so does this microphone
+    const now = call.value.local;
     now?.getAudioTracks().forEach((tr) => tr.stop());
-    update({ local: new MediaStream([track, ...(now?.getVideoTracks() ?? [])]) });
-    remember('callMic', deviceId);
+    mic?.close();
+    mic = next;
+    next = null;
+    update({ local: new MediaStream([mic.raw, ...(now?.getVideoTracks() ?? [])]) });
+    if (deviceId) remember('callMic', deviceId);
   } catch (e) {
+    next?.close();
     showToast(errText(e));
   }
 }
+
+// reopenMic opens the same microphone again with the processing as now
+// chosen (mic.ts): RNNoise or the browser's suppression, the voice gate.
+export const reopenMic = latest(() => selectMic(call.value?.local?.getAudioTracks()[0]?.getSettings().deviceId));
 
 export function selectSpeaker(deviceId: string) {
   speaker.value = deviceId;

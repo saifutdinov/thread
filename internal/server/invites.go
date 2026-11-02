@@ -330,6 +330,65 @@ func (s *Server) handleCreateChat(w http.ResponseWriter, r *http.Request, a *Aut
 	writeJSON(w, http.StatusOK, map[string]any{"chat_id": chatID})
 }
 
+// handleDirectChat opens a direct chat with someone the caller shares a
+// chat with (a group member), no invite link needed. Its first key comes
+// wrapped for every device of both, as for any new chat. A direct chat the
+// two are already in is returned instead of a second one.
+func (s *Server) handleDirectChat(w http.ResponseWriter, r *http.Request, a *Auth) {
+	var req struct {
+		User int64        `json:"user"`
+		Keys []wrappedKey `json:"keys"`
+	}
+	if !readJSON(w, r, &req) {
+		return
+	}
+	if req.User == a.UserID {
+		fail(w, http.StatusBadRequest, "bad_request")
+		return
+	}
+	ctx := r.Context()
+	var chatID int64
+	existing := false
+	err := inTx(ctx, s.db, func(tx *sql.Tx) error {
+		var shared int
+		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM members m JOIN members o ON o.chat_id = m.chat_id
+			WHERE m.user_id = ? AND o.user_id = ?`, a.UserID, req.User).Scan(&shared); err != nil {
+			return err
+		}
+		if shared == 0 {
+			return errNotMember
+		}
+		err := tx.QueryRowContext(ctx, `SELECT c.id FROM chats c
+			JOIN members m ON m.chat_id = c.id AND m.user_id = ? JOIN members o ON o.chat_id = c.id AND o.user_id = ?
+			WHERE c.kind = 'direct' ORDER BY c.id LIMIT 1`, a.UserID, req.User).Scan(&chatID)
+		if err == nil {
+			existing = true
+			return nil
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+		res, err := tx.ExecContext(ctx, `INSERT INTO chats (kind, created_by, created_at, epoch_at) VALUES ('direct', ?, ?, ?)`, a.UserID, now(), now())
+		if err != nil {
+			return err
+		}
+		chatID, _ = res.LastInsertId()
+		for _, u := range []int64{a.UserID, req.User} {
+			if _, err := tx.ExecContext(ctx, `INSERT INTO members (chat_id, user_id, joined_at) VALUES (?, ?, ?)`, chatID, u, now()); err != nil {
+				return err
+			}
+		}
+		return s.storeEpochKeys(ctx, tx, chatID, 1, req.Keys)
+	})
+	if s.writeErr(w, err) {
+		return
+	}
+	if !existing {
+		s.chatChanged(ctx, chatID)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"chat_id": chatID, "existing": existing})
+}
+
 var errDevices = errors.New("device set mismatch")
 
 // keyHoldersSQL selects the devices (id, user_id, enc_pub, sig_pub) a new

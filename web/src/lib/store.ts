@@ -1010,6 +1010,27 @@ export async function redeemRecovery(p: Recovery) {
   screen.value = 'password';
 }
 
+// openDirect opens my direct chat with a member of group `via`, making it
+// first when there is none: its key is wrapped for every device of us both.
+export async function openDirect(userId: number, via: number) {
+  const have = chats.value.find((c) => c.kind === 'direct' && c.members.length === 2 && c.members.some((m) => m.id === userId));
+  if (have) return goChat(have.id);
+  for (let attempt = 0; ; attempt++) {
+    const raw = rand(32);
+    const theirs = (await api.chatDevices(via, true)).filter((d) => d.user === userId);
+    const keys = await wrapFor([...(await myActiveDevices(false)), ...theirs], 0, new Map([[1, raw]]));
+    try {
+      const r = await api.directChat(userId, keys);
+      if (!r.existing) await idbSet(`k:${r.chat_id}:1`, raw);
+      await loadChats();
+      return goChat(r.chat_id);
+    } catch (e) {
+      // A device appeared or left meanwhile: once more with the new set.
+      if (attempt > 0 || !(e instanceof ApiError) || e.code !== 'devices_changed') throw e;
+    }
+  }
+}
+
 export async function leaveChat(chatId: number) {
   await api.leaveChat(chatId);
   replace('');
