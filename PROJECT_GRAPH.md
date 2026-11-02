@@ -16,6 +16,7 @@ internal/server        the whole backend, one package
   hub.go               WebSocket fan-out, presence, typing, call signaling relay
   push.go              Web Push (VAPID) with ciphertext payloads, silent read/call-end clears, test push, delivery counters
   calls.go             1:1 call signaling (sealed SDP/ICE), ringing state, TURN REST credentials
+  group.go             group calls: LiveKit tokens (HS256), who is in which call, ringing the chat, /lk signaling proxy
   profiles.go          sealed avatars (per chat) and group photos, versioned
   preview.go           opt-in link preview fetcher with a dialer-level SSRF guard
   backup.go            daily VACUUM INTO snapshot, age encryption, retention, S3 upload (SigV4)
@@ -41,6 +42,7 @@ web/                   Preact + Vite PWA
   scripts/brotli.mjs   brotli copies of the build's WebAssembly (served by static())
   src/lib/emoji.ts     emoji-only messages drawn large
   src/lib/call.ts      WebRTC call state machine, tones, sealed signaling, ICE restart, quality stats
+  src/lib/group.ts     group calls through LiveKit (lazy chunk): sealed call key, frame encryption, people, ringing, banners
   src/lib/rtc.ts       call tuning without the DOM: Opus SDP params (voice, music slot), codec order per device, quality level
   src/lib/devices.ts   cameras, microphones, speakers; names for Android audio routes; remembered choices
   src/lib/markup.tsx   **bold** __italic__ ~~strike~~ `code` > quote, links
@@ -49,13 +51,14 @@ web/                   Preact + Vite PWA
   src/components/*     screens: Auth, Main (layout, approval, onboarding), ChatList, ChatView, Composer,
                        EmojiPicker, ChatInfo, NewChat, Settings, Media (voice, circles, files),
                        Security (lock screen, lock settings, safety codes), Call (call screen),
+                       GroupCall (group call: ring, tiles, strip),
                        ui (icons, Modal, Avatar, PictureButtons)
   public/sw.js         app-shell cache, push decrypt + notification, click-to-open (asks an open app to route, else navigates)
-deploy/                docker compose: app, Caddy (automatic HTTPS), coturn (host network)
+deploy/                docker compose: app, Caddy (automatic HTTPS), coturn (host network), LiveKit SFU (one UDP port)
 scripts/               server setup, install, update, status (see scripts/README.md)
 ```
 
-Dependencies: Go `modernc.org/sqlite` (pure Go, CGO-free static binary), `coder/websocket`, `golang.org/x/crypto/argon2`, `golang.org/x/time/rate`, `SherClockHolmes/webpush-go`, `filippo.io/age` (backup encryption; restore with the stock age CLI). Web: `preact`, `@preact/signals`, `unicode-emoji-json` (lazy chunk).
+Dependencies: Go `modernc.org/sqlite` (pure Go, CGO-free static binary), `coder/websocket`, `golang.org/x/crypto/argon2`, `golang.org/x/time/rate`, `SherClockHolmes/webpush-go`, `filippo.io/age` (backup encryption; restore with the stock age CLI). Web: `preact`, `@preact/signals`, `unicode-emoji-json` (lazy chunk), `livekit-client` (lazy chunk, group calls only). Container: `livekit/livekit-server` (pinned by digest).
 
 ## Flows
 
@@ -64,6 +67,7 @@ Dependencies: Go `modernc.org/sqlite` (pure Go, CGO-free static binary), `coder/
 - **Login:** password → `argon2id(pepper)` lookup. Known device signs a server nonce. Unknown device becomes `pending` (or `active` if the user has no chats) → own device or chat partner approves by wrapping chat keys for it.
 - **Send:** ensure epoch (rotate if flagged) → upload encrypted images → seal payload + sign → `POST` with client id → server stores, bumps `seq`, fans out over WebSocket, pushes to devices without a visible page (no socket, or a socket that reported `vis` hidden) unless the send is `quiet` (an answered or declined call's log).
 - **Read elsewhere:** `POST /read` → `read` event to sockets → a silent `read` push (Chromium push services only) to the reader's other devices that got a push for that chat → the service worker closes the chat's notifications.
+- **Group call:** the first member seals a random call key with the chat key (`call:<chat>:<id>:gkey:<epoch>`) → `POST /api/chats/{id}/call` stores the ciphertext and who is in, rings the other members (socket `gcall ring` and push) and returns a LiveKit token for the chat's own room → the browser opens the key, turns on frame encryption and connects to LiveKit through `/lk` (signaling) and `7882/udp` or `7881/tcp` (media). Later members get the same sealed key. `gcall state` tells the chat who is in; a device joins only with an open socket, leaves by `DELETE` or when its last socket closes, and joins again with a new one (`rejoin` puts back a call the server forgot after a restart, without ringing). An app that opens asks `GET /api/calls/group` for the "Join" banners.
 - **Catch-up:** socket open → `/api/sync?since=<seq>` (messages changed since) → reload chat list and pending approvals.
 - **New release:** the checkout's `git describe` reaches the image as `VERSION` (`scripts/common.sh` → compose build argument; server `-X main.version`, web `VITE_VERSION`) → every socket open (a deploy restarts the server, so every page reconnects) fetches `/healthz` → a version other than the page's own shows the reload banner (not during a call). Settings show the version and a reload button.
 - **Call:** caller seals an SDP offer with the chat key → WS `call` (offers rate-limited per user) → server relays to the partner's active sockets and pushes sleeping phones, keeps the offer 45 s → a phone opened from the push gets it on connect and rings once its chat list has loaded → the first device to answer wins (the server drops later answers, others get `taken`, sleeping ones a silent `callEnd` push that closes the ring) → ICE over the same channel → media peer-to-peer or via coturn. Every call has a video slot, so the camera, another camera (devices menu, remembered) or a shared screen (`getDisplayMedia`, computers only) goes in with `replaceTrack`, no renegotiation; the call's data channel tells the other side whether it is a screen (always shown whole). Every call also has a music slot, a second audio transceiver: music from a tab or the screen (`getDisplayMedia` with sound, Chrome and Edge on computers) goes in with `replaceTrack` too, as stereo Opus at 128 kbit/s with no voice processing, and the other side plays it through its own `<audio>` at its own volume. Mid-call, when media stops or the network changes, the caller re-offers with an ICE restart (`reoffer`/`reanswer`, the callee can ask with `restart`) every 5 s until it reconnects or 30 s pass; signals are handled strictly in order.
@@ -91,5 +95,6 @@ Dependencies: Go `modernc.org/sqlite` (pure Go, CGO-free static binary), `coder/
 | Copy-on-lag avatar reconcile | `reconcileAvatar`, `PUT /api/me/avatar` copy with `v` | The server cannot re-encrypt; after each chat list load the owner's client fills chats that lag (joined later, or a direct chat whose key moved on). The copy names the version it carries, so a race with a newer upload is refused (409 `stale`) instead of storing an old picture under the new version | A rotation hook that re-seals: the rotating writer may not be the avatar's owner |
 | SSRF check in the dialer | `newPreviewClient` `Dialer.Control` | Runs on the resolved IP of every connection, redirects included, so DNS rebinding cannot slip past | Resolving and checking the host before the request: time-of-check gap |
 | Music as a second audio track | `musicSlot`, `shareMusic` in `call.ts`, `tuneOpus` in `rtc.ts` | The person plays YouTube or Spotify in their own tab and the call carries only the sound: in sync by construction (one stream), end-to-end encrypted, nothing fetched by the app or the server; its own slot keeps it stereo at 128 kbit/s with a deeper jitter buffer while the voice stays mono with RED | Each side playing the same link in sync: YouTube forbids a hidden or audio-only player and shows each side its own ads; Spotify needs Premium for every listener and forbids one source for several listeners; a server fetching the audio (Jockie-style bots) breaks both services' terms and the end-to-end design |
+| SFU with frame encryption for groups | `group.go`, `group.ts`, `deploy/docker-compose.yml` `sfu` | Ten people cannot send to each other directly (9 uploads each, phones overheat); LiveKit forwards each stream once with layers per viewer, and the frames are encrypted in the browsers with a key only members can open, so the SFU forwards ciphertext | Full mesh: tops out at 3-4 with video; an own Pion SFU: months of layer switching and bandwidth estimation |
 | Caller-only ICE restart | `renegotiate` in `call.ts` | Only one side ever offers, so a restart cannot collide with one from the other side; the callee just asks | "Perfect negotiation" with polite/impolite roles: more code for a 1:1 call |
 | Hand-written Prometheus text and SigV4 | `metrics.go`, `backup.go` | A few counters and a single-object PUT; verified against the AWS test vector and a real S3 server | `client_golang`, `aws-sdk-go-v2`: large dependency trees for two small needs |

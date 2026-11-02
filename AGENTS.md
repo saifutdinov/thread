@@ -6,12 +6,13 @@ Thread is an end-to-end encrypted chat for close people that anyone can run on t
 
 Read before changing anything:
 - `docs/adr/0001-e2ee-webcrypto.md`: the encryption protocol. Any change to key handling, AAD strings, payload format or invite derivation is a protocol change: messages and keys already stored on people's servers and devices must stay readable.
+- `docs/adr/0002-group-calls.md`: group calls through the LiveKit SFU, frame encryption with a sealed call key, what the server sees.
 - `PROJECT_GRAPH.md`: modules, flows, patterns.
 - `SECURITY.md`: what the design promises and what it does not.
 
 ## Rules
 
-- The server must never receive plaintext: message text, reactions, group titles, avatars, group photos, call signaling, file contents and file keys are encrypted in the browser. New content fields go inside the encrypted payload, not into new plaintext columns.
+- The server must never receive plaintext: message text, reactions, group titles, avatars, group photos, call signaling, file contents and file keys are encrypted in the browser. New content fields go inside the encrypted payload, not into new plaintext columns. Group calls (`docs/adr/0002-group-calls.md`) run through the LiveKit SFU: their media must stay frame-encrypted with the sealed call key (never join without encryption); LiveKit's own signaling is visible to our server by design, so no names or content go into LiveKit metadata.
 - Device private keys stay `extractable: false`. Never add code that exports them.
 - AAD strings (`m:`, `r:`, `t:`, `k:`, `f`, `invite`, `recovery`, `call:`, `a:`, `p:`), HKDF info strings and signature prefixes are frozen. They keep the project's earlier name (`connect/wrap/v1`, `connect/invite/*`, `connect/recovery/*`, `connect-login:`) on purpose: they are protocol labels, not branding. `web/public/sw.js` duplicates the message AAD and the IndexedDB layout from `web/src/lib/idb.ts`: change both together.
 - Schema changes are appended to `migrations` in `internal/server/store.go`; the base schema is frozen.
