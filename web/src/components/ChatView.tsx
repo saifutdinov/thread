@@ -38,9 +38,10 @@ import {
 import { ChatAvatar, chatName, readByOthers } from './ChatList';
 import { call, startCall } from '../lib/call';
 import { groupCall, groupCallsOn, runningCalls, startGroupCall } from '../lib/group';
+import { isTrack } from '../lib/track';
 import { callLabel } from './Call';
 import { Composer, type ComposerHandle } from './Composer';
-import { FileChip, VideoClip, VideoNote, VoicePlayer } from './Media';
+import { FileChip, TrackRow, VideoClip, VideoNote, VoicePlayer } from './Media';
 import { EmojiPicker } from './EmojiPicker';
 import { approving, colorOf, EncImage, Icon, IconButton, lightbox, Modal } from './ui';
 
@@ -638,6 +639,8 @@ function Bubble(props: {
             <VideoNote key={a.id} a={a} />
           ) : a.t === 'clip' ? (
             <VideoClip key={a.id} a={a} />
+          ) : isTrack(a) ? (
+            <TrackRow key={a.id} a={a} chat={chat.id} />
           ) : (
             <FileChip key={a.id} a={a} />
           ),

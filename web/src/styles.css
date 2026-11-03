@@ -2753,6 +2753,97 @@ img.blur {
   font-variant-numeric: tabular-nums;
 }
 
+/* The music player (Player.tsx): a strip on top like a minimized call,
+   under it when both are there. */
+.app.with-player {
+  padding-top: 3rem;
+}
+
+.app.with-player.with-call-bar {
+  padding-top: 6rem;
+}
+
+.player-bar {
+  position: fixed;
+  top: var(--app-top, 0);
+  left: 0;
+  right: 0;
+  z-index: 49;
+  display: flex;
+  align-items: center;
+  gap: 0.125rem;
+  height: 3rem;
+  padding: 0 0.25rem;
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+  color: var(--text);
+}
+
+.with-call-bar .player-bar {
+  top: calc(var(--app-top, 0px) + 3rem);
+}
+
+.player-bar .icon-btn.on {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.player-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  padding: 0 0.25rem;
+}
+
+.player-title {
+  display: flex;
+  gap: 0.4rem;
+  align-items: baseline;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  font-size: 0.875rem;
+  text-align: left;
+  cursor: pointer;
+}
+
+.player-title b,
+.player-title span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.player-title span {
+  color: var(--text-2);
+}
+
+.player-seek {
+  width: 100%;
+  height: 1rem;
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+/* A track in a message: play, title and artist, download. */
+.track {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  min-width: min(15rem, 60vw);
+  max-width: 100%;
+  padding: 0.15rem 0;
+}
+
+.track .file-text {
+  flex: 1;
+}
+
 .call-tile {
   position: fixed;
   right: 0.75rem;

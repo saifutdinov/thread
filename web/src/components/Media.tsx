@@ -1,15 +1,10 @@
 import { useEffect, useRef, useState } from 'preact/hooks';
 import { errText, t } from '../lib/i18n';
 import { fmtDuration, fmtSize } from '../lib/recorder';
+import { claim, player, playTrack } from '../lib/player';
 import { type Attachment, mediaUrl, showToast } from '../lib/store';
-import { Icon } from './ui';
-
-// One sound at a time: starting a player pauses the previous one.
-let active: HTMLMediaElement | null = null;
-function claim(el: HTMLMediaElement) {
-  if (active && active !== el) active.pause();
-  active = el;
-}
+import { trackInfo } from '../lib/track';
+import { Icon, IconButton } from './ui';
 
 // useDecrypted fetches and decrypts an attachment once it scrolls near
 // the viewport, so a long chat does not download every recording.
@@ -200,16 +195,43 @@ export function VideoClip(props: { a: Attachment }) {
   );
 }
 
+// saveFile hands an attachment to the browser's downloads.
+async function saveFile(a: Attachment) {
+  const link = document.createElement('a');
+  link.href = await mediaUrl(a);
+  link.download = (a.n ?? 'file').replace(/[\\/:*?"<>|]/g, '_');
+  link.click();
+}
+
+// TrackRow: a music file in a message, played by the app's player
+// (player.ts), which goes on to the chat's next track.
+export function TrackRow(props: { a: Attachment; chat: number }) {
+  const { a, chat } = props;
+  const p = player.value;
+  const on = p?.t.a.id === a.id && p.playing;
+  const { title, artist } = trackInfo(a);
+  const name = title || t('music.unknown');
+  return (
+    <div class="track">
+      <button type="button" class="voice-play" onClick={() => void playTrack({ a, chat })} aria-label={on ? t('play.pause') : t('music.play', { title: name })}>
+        <Icon name={on ? 'pause' : 'play'} />
+      </button>
+      <span class="file-text">
+        <b>{name}</b>
+        <small>{[artist, a.d ? fmtDuration(a.d) : fmtSize(a.s)].filter(Boolean).join(' · ')}</small>
+      </span>
+      <IconButton icon="download" label={`${t('chat.download')}: ${name}`} onClick={() => void saveFile(a).catch((e) => showToast(errText(e)))} />
+    </div>
+  );
+}
+
 export function FileChip(props: { a: Attachment }) {
   const { a } = props;
   const [busy, setBusy] = useState(false);
   const download = async () => {
     setBusy(true);
     try {
-      const link = document.createElement('a');
-      link.href = await mediaUrl(a);
-      link.download = (a.n ?? 'file').replace(/[\\/:*?"<>|]/g, '_');
-      link.click();
+      await saveFile(a);
     } catch (e) {
       showToast(errText(e));
     } finally {

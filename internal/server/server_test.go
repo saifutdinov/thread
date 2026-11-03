@@ -28,12 +28,14 @@ type env struct {
 	ts *httptest.Server
 }
 
-func newEnv(t *testing.T) *env {
+func newEnv(t *testing.T, opts ...func(*Config)) *env {
 	t.Helper()
 	dir := t.TempDir()
-	s, err := New(context.Background(), Config{
-		DataDir: dir, StaticDir: dir, BaseURL: "http://test", Pepper: make([]byte, 32), VAPIDSubject: "mailto:t@example.com",
-	}, slog.New(slog.DiscardHandler))
+	cfg := Config{DataDir: dir, StaticDir: dir, BaseURL: "http://test", Pepper: make([]byte, 32), VAPIDSubject: "mailto:t@example.com"}
+	for _, o := range opts {
+		o(&cfg)
+	}
+	s, err := New(context.Background(), cfg, slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatal(err)
 	}

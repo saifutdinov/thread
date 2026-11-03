@@ -66,6 +66,7 @@ export interface CallView {
   screen?: boolean; // we show our screen instead of the camera
   peerScreen?: boolean; // they show theirs: it is always shown whole
   music?: boolean; // we send music from a tab or the screen
+  playerMusic?: boolean; // that music is the app's own player (player.ts)
   peerMusic?: boolean; // they send theirs
   musicIn?: MediaStream; // their music slot, played by its own <audio>
   effectLoading?: boolean;
@@ -809,30 +810,47 @@ export async function shareScreen() {
   sendState();
 }
 
-async function shareSound(sound: MediaStreamTrack) {
+async function shareSound(sound: MediaStreamTrack, fromPlayer = false) {
   // None, or receive-only, in a call with an older app (it would mix the
   // sound into the voice): the picture goes alone then.
   const slot = musicSlot();
-  if (slot?.currentDirection !== 'sendrecv') return sound.stop();
+  if (slot?.currentDirection !== 'sendrecv') {
+    if (fromPlayer) showToast(t('music.callOld'));
+    return sound.stop();
+  }
   sound.contentHint = 'music';
+  screenSound?.stop(); // the player's music gives way to a screen's sound, and back
   screenSound = sound;
   sound.addEventListener('ended', () => void stopSound());
   try {
     await slot.sender.replaceTrack(sound);
   } catch {
-    if (screenSound === sound) screenSound = null;
-    return sound.stop();
+    if (screenSound !== sound) return sound.stop();
+    screenSound = null;
+    sound.stop();
+    // What was in the slot before is stopped already: nothing is sent now.
+    if (call.value?.music) {
+      update({ music: false, playerMusic: false });
+      sendState();
+    }
+    return;
   }
-  if (screenSound !== sound || !call.value?.screen) return; // stopped meanwhile
-  update({ music: true });
-  showToast(t('call.soundHeadphones'));
+  if (screenSound !== sound || !(fromPlayer || call.value?.screen)) return; // stopped meanwhile
+  update({ music: true, playerMusic: fromPlayer });
+  if (fromPlayer) sendState();
+  showToast(t(fromPlayer ? 'music.headphones' : 'call.soundHeadphones'));
 }
+
+// shareMusic sends the app's player (player.ts musicTrack) in the sound
+// slot, like a screen's sound; stopMusic takes it out again.
+export const shareMusic = (track: MediaStreamTrack) => (call.value?.phase === 'active' ? shareSound(track, true) : track.stop());
+export const stopMusic = () => (call.value?.playerMusic ? stopSound() : undefined);
 
 async function stopSound() {
   if (!screenSound) return;
   screenSound.stop();
   screenSound = null;
-  update({ music: false });
+  update({ music: false, playerMusic: false });
   sendState();
   await musicSlot()
     ?.sender.replaceTrack(null)
@@ -842,7 +860,7 @@ async function stopSound() {
 export async function stopScreen() {
   const v = call.value;
   if (!v?.screen) return;
-  void stopSound();
+  if (!v.playerMusic) void stopSound(); // the player's music plays on
   v.local?.getVideoTracks().forEach((tr) => tr.stop());
   update({ local: new MediaStream(v.local?.getAudioTracks() ?? []), screen: false, camOff: true });
   sendState(); // the other side stops showing the last frame at once

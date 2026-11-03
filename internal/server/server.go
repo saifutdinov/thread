@@ -43,6 +43,7 @@ type Config struct {
 	LiveKitURL    string
 	LiveKitKey    string
 	LiveKitSecret string
+	MusicURL      string // the music sidecar (deploy/music); empty: no music by link
 	BackupTo      string // age recipients, comma-separated; empty disables backups
 	BackupKeep    int    // local snapshots kept
 	MetricsAddr   string // internal Prometheus listener; empty disables it
@@ -61,6 +62,7 @@ type Server struct {
 	nonce  *nonces
 	ring   *ringing
 	groups *groupCalls
+	music  *musicJobs
 	m      metrics
 
 	preview *http.Client // link previews; tests swap the address check
@@ -100,6 +102,7 @@ func New(ctx context.Context, cfg Config, log *slog.Logger) (*Server, error) {
 		nonce:  newNonces(),
 		ring:   newRinging(),
 		groups: newGroupCalls(),
+		music:  newMusicJobs(),
 
 		preview:  newPreviewClient(publicAddr),
 		sfu:      &http.Client{Timeout: 10 * time.Second},
@@ -166,6 +169,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/vault", s.active(s.handleVault))
 	mux.HandleFunc("PUT /api/vault", s.active(s.handlePutVault))
 	mux.HandleFunc("POST /api/vault/keys", s.active(s.handleVaultKeys))
+	mux.HandleFunc("POST /api/music", s.active(s.handleMusic))
+	mux.HandleFunc("GET /api/music/{id}", s.active(s.handleMusicJob))
 	mux.HandleFunc("POST /api/keys", s.active(s.handleShareKeys))
 	mux.HandleFunc("GET /api/devices", s.anyDevice(s.handleDevices))
 	mux.HandleFunc("GET /api/devices/pub", s.active(s.handleDevicePubs))

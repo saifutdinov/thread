@@ -2,6 +2,7 @@ import { signal } from '@preact/signals';
 import { useEffect, useState } from 'preact/hooks';
 import { call } from '../lib/call';
 import { groupCall } from '../lib/group';
+import { player } from '../lib/player';
 import { fromB64 } from '../lib/crypto';
 import { remember, remembered } from '../lib/devices';
 import { deviceCode } from '../lib/crypto';
@@ -16,6 +17,7 @@ import { ChatInfo } from './ChatInfo';
 import { ChatList } from './ChatList';
 import { ChatView } from './ChatView';
 import { NewChat } from './NewChat';
+import { PlayerBar } from './Player';
 import { InstallRow, NotificationsRow, Settings } from './Settings';
 import { approving, Icon, Lightbox, Modal } from './ui';
 
@@ -262,7 +264,7 @@ export function Main() {
   }, [pending.value]);
 
   return (
-    <div class={'app' + (chatId ? ' in-chat' : '') + (r.name === 'info' ? ' in-info' : '') + ((call.value && minimized.value) || (groupCall.value && groupMinimized.value) ? ' with-call-bar' : '')}>
+    <div class={'app' + (chatId ? ' in-chat' : '') + (r.name === 'info' ? ' in-info' : '') + ((call.value && minimized.value) || (groupCall.value && groupMinimized.value) ? ' with-call-bar' : '') + (player.value ? ' with-player' : '')}>
       <aside class="sidebar">
         <UpdateBanner />
         <NotifBanner />
@@ -275,6 +277,7 @@ export function Main() {
         {chatId ? <ChatView id={chatId} /> : <EmptyPane />}
       </main>
       {r.name === 'info' && chatId && <ChatInfo id={chatId} />}
+      <PlayerBar />
       <CallScreen />
       <GroupCallScreen />
       <ApproveDialog />

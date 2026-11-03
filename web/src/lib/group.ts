@@ -40,6 +40,7 @@ export interface GroupView {
   reconnecting?: boolean;
   needsTap?: boolean; // the browser holds the sound back until a tap
   sharing?: boolean; // my screen is shared
+  playerMusic?: boolean; // the app's player plays into the call (shareGroupMusic)
 }
 
 export const groupCall = signal<GroupView | null>(null);
@@ -390,6 +391,44 @@ export async function toggleGroupScreen() {
   update({ sharing: p.isScreenShareEnabled, people: room ? people(room) : [] });
 }
 
+// shareGroupMusic publishes the app's player (player.ts musicTrack) as a
+// track of its own, frame-encrypted like the others, stereo and
+// unprocessed like a screen's sound; every app plays each audio track it
+// gets, so older ones hear it too.
+let music: MediaStreamTrack | null = null;
+export async function shareGroupMusic(track: MediaStreamTrack) {
+  const p = room?.localParticipant;
+  if (!p || !lk || groupCall.value?.phase !== 'active') return track.stop();
+  await stopGroupMusic();
+  music = track;
+  try {
+    await p.publishTrack(track, {
+      name: 'music',
+      source: lk.Track.Source.Unknown,
+      audioPreset: lk.AudioPresets.musicHighQualityStereo,
+      dtx: false,
+      red: false,
+      forceStereo: true,
+    });
+  } catch (e) {
+    if (music === track) music = null;
+    track.stop();
+    return showToast(errText(e));
+  }
+  if (music !== track) return; // stopped meanwhile
+  update({ playerMusic: true });
+  showToast(t('music.headphones'));
+}
+
+export async function stopGroupMusic() {
+  const tr = music;
+  if (!tr) return;
+  music = null;
+  await room?.localParticipant.unpublishTrack(tr, true).catch(() => {});
+  tr.stop();
+  update({ playerMusic: false });
+}
+
 export async function toggleGroupMute() {
   const p = room?.localParticipant;
   if (!p) return;
@@ -437,6 +476,8 @@ function end() {
   quiet();
   gmic?.close();
   gmic = null;
+  music?.stop();
+  music = null;
   audioBox.replaceChildren();
   const was = !!groupCall.value && groupCall.value.phase !== 'incoming';
   groupCall.value = null;
