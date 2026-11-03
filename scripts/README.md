@@ -97,9 +97,28 @@ The app can back itself up once a day, encrypted for your key, so that even the 
    sudo scripts/install.sh
    ```
    Snapshots appear in the `thread_data` volume under `backups/`; the last 7 are kept (`BACKUP_KEEP`).
-3. **Off the server:** add an S3-compatible bucket (`BACKUP_S3_ENDPOINT`, `BACKUP_S3_REGION`, `BACKUP_S3_BUCKET`, `BACKUP_S3_ACCESS_KEY`, `BACKUP_S3_SECRET_KEY` in `.env`), and every hour new snapshots and files are uploaded there. Set a lifecycle rule on the `db/` prefix (for example, delete after 30 days); leave `media/` alone.
+3. **Off the server:** add an S3-compatible bucket (`BACKUP_S3_ENDPOINT`, `BACKUP_S3_REGION`, `BACKUP_S3_BUCKET`, `BACKUP_S3_ACCESS_KEY`, `BACKUP_S3_SECRET_KEY` in `.env`), and every hour new snapshots and files are uploaded there: first the snapshot's files, then `db/<name>.db.age`, last `db/<name>.db.age.manifest.json`. A snapshot with a manifest is complete; a failed upload is retried an hour later. Set a lifecycle rule on the `db/` prefix (for example, delete after 30 days) that covers both `.age` and `.manifest.json`. Leave `media/` alone: the live database and the stored snapshots both need its files, so never rebuild it from the live database only.
 
-**Restore:** stop the app, decrypt a snapshot with `age -d -i thread-backup.key -o thread.db thread-<time>.db.age`, put `thread.db` and the `media/` folder into the `thread_data` volume (owner `65532:65532`, remove old `thread.db-wal` and `thread.db-shm`), bring back your `.env` with the same `PASSWORD_PEPPER`, start again. Devices keep their own keys, so conversations open again on the same phones and computers.
+Next to each snapshot is a folder `<name>.db.age.media/`: a manifest and a hard link to every attached file of that database version, so a message deleted after the snapshot keeps its file in the backup. Hard links copy nothing, but they hold the space until their snapshot is pruned, and the volume's file system must support them. A snapshot from an older version has no such folder and does not count as complete: after an update the server makes a new one right away. Files already gone from older snapshots cannot be brought back this way.
+
+**Restore:**
+
+```bash
+# 1. Pick a snapshot that has a manifest, download both
+rclone copyto <remote>:<bucket>/db/thread-<time>.db.age snapshot.db.age
+rclone copyto <remote>:<bucket>/db/thread-<time>.db.age.manifest.json manifest.json
+# 2. Decrypt with your key
+age -d -i thread-backup.key -o thread.db snapshot.db.age
+# 3. Download exactly this snapshot's files (jq and rclone are installed separately)
+jq -r '.files[]?' manifest.json > media-files.txt
+rclone copy <remote>:<bucket>/media ./media --files-from media-files.txt
+# 4. Before stopping the app, check SQLite, the file list and the sizes
+python3 scripts/verify_backup.py --database thread.db --manifest manifest.json --media ./media
+```
+
+For a copy on the server instead of S3, take `thread-<time>.db.age` and its folder `thread-<time>.db.age.media` out of the volume (`docker compose -f deploy/docker-compose.yml --env-file .env cp app:/data/backups/thread-<time>.db.age .`, the same for the folder), and give the check that folder's `manifest.json` and the folder itself as `--media`. The check does not decrypt files: their keys stay on the devices. After restoring, open a few old attachments on a device that has the keys.
+
+Then stop the app, put `thread.db` and the `media/` folder into the `thread_data` volume (owner `65532:65532`, remove old `thread.db-wal` and `thread.db-shm`), bring back your `.env` with the same `PASSWORD_PEPPER`, start again. Devices keep their own keys, so conversations open again on the same phones and computers.
 
 ## When something does not work
 

@@ -32,8 +32,10 @@ cd web && npm run dev                # Vite on :5173, proxies /api (incl. WebSoc
 cd web && npm run build              # tsc + production bundle into web/dist
 gofmt -l . && go vet ./... && golangci-lint run && go test -race ./...
 cd web && npm test                   # node:test: crypto, i18n, call tuning (no extra deps)
+cd web && npm run test:proxy         # the dev proxy for /api and /lk (needs :8080 free)
 cd deploy/music && uv run --only-group dev pytest && ruff check . && ruff format --check .   # the optional music sidecar
 shellcheck -x scripts/*.sh           # server scripts
+python3 -m unittest discover -s scripts -p '*_test.py'   # the backup restore check
 docker build -t thread .
 ```
 

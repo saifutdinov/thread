@@ -17,11 +17,12 @@ internal/server        the whole backend, one package
   media.go             encrypted blob upload/download, orphan cleanup
   hub.go               WebSocket fan-out, presence, typing, call signaling relay
   push.go              Web Push (VAPID) with ciphertext payloads, silent read/call-end clears, test push, delivery counters
-  calls.go             1:1 call signaling (sealed SDP/ICE), ringing state, TURN REST credentials
+  calls.go             1:1 call signaling (sealed SDP/ICE), TURN REST credentials
+  call_state.go        pending calls, first answering tab/device, late-signal guards and expiry
   group.go             group calls: LiveKit tokens (HS256), who is in which call, ringing the chat, /lk signaling proxy
   profiles.go          sealed avatars (per chat) and group photos, versioned
   preview.go           opt-in link preview fetcher with a dialer-level SSRF guard
-  backup.go            daily VACUUM INTO snapshot, age encryption, retention, S3 upload (SigV4)
+  backup.go            daily VACUUM INTO snapshot, pinned media + manifest, age encryption, retention, ordered S3 upload (SigV4)
   metrics.go           Prometheus text endpoint on an internal port, response counters
   words.txt            EFF long wordlist subset for passwords (CC BY 3.0 US, EFF)
 web/                   Preact + Vite PWA
@@ -29,6 +30,10 @@ web/                   Preact + Vite PWA
   src/lib/idb.ts       IndexedDB kv (device keys, chat keys, lang); shared with public/sw.js
   src/lib/api.ts       typed /api client
   src/lib/store.ts     app state (signals), decrypt/encrypt, sending, sync, WebSocket, devices, invites
+  src/lib/messages.ts  monotonic message versions and chat previews
+  src/lib/media-cache.ts reference-counted Blob URL LRU; use-media.ts loads nearby media and retains it until unmount
+  src/lib/diagnostics.ts allowlisted local RTC diagnostics, without addresses, identities or content
+  src/lib/hold.ts      push-to-talk input sources, release and focus-loss reset
   src/lib/route.ts     hash router on real history entries; in memory in iOS home-screen apps (WebKit 215884)
   src/lib/i18n.ts      ru/en strings, plurals, date formats
   src/lib/prefs.ts     theme, text size, language effects
