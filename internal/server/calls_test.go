@@ -228,14 +228,21 @@ func TestCallSignalingLimits(t *testing.T) {
 	expectCall(t, wa, "")
 
 	// Offer spam is cut off after a burst.
-	got := 0
+	got, stopped := 0, 0
 	for i := range 15 {
 		emit(t, wa, map[string]any{"t": "call", "k": "offer", "c": direct, "id": "spam" + itoa(int64(i)), "e": 1, "body": []byte("o")})
 	}
 	for {
 		select {
-		case <-wb.ch:
-			got++
+		case ev := <-wb.ch:
+			switch ev["k"] {
+			case "offer":
+				got++
+			case "taken":
+				stopped++
+			default:
+				t.Fatalf("unexpected call event: %v", ev)
+			}
 			continue
 		case <-time.After(700 * time.Millisecond):
 		}
@@ -243,6 +250,9 @@ func TestCallSignalingLimits(t *testing.T) {
 	}
 	if got == 0 || got >= 15 {
 		t.Fatalf("offers delivered = %d, want a capped burst", got)
+	}
+	if stopped != got-1 {
+		t.Fatalf("replaced rings stopped = %d, want %d", stopped, got-1)
 	}
 }
 

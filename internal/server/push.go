@@ -31,6 +31,7 @@ type pusher struct {
 	// Chromium allows only within a budget, skip it.
 	connected func(device int64) bool
 	post      func(s sub, body []byte, topic string, ttl int) // webPush; tests record instead
+	client    *http.Client                                    // public HTTPS only, checked again at the resolved address
 
 	// notified: the newest message pushed per (device, chat) since the
 	// chat was read, so a read elsewhere can take those notifications back.
@@ -47,6 +48,7 @@ type pusher struct {
 // notification.
 func newPusher(ctx context.Context, db *sql.DB, subject string, live, connected func(int64) bool, log *slog.Logger) (*pusher, error) {
 	p := &pusher{db: db, log: log, subject: subject, live: live, connected: connected, sem: make(chan struct{}, 8), notified: map[[2]int64]int64{}}
+	p.client = newPushClient(publicAddr)
 	p.post = p.webPush
 	var err error
 	if p.pub, err = metaGet(ctx, db, "vapid_pub"); err != nil {
@@ -82,7 +84,7 @@ func (s *Server) handleSubscribe(w http.ResponseWriter, r *http.Request, a *Auth
 	if !readJSON(w, r, &req) {
 		return
 	}
-	if len(req.Endpoint) < 10 || len(req.Endpoint) > 2048 || req.Keys.P256dh == "" || req.Keys.Auth == "" {
+	if !validPushEndpoint(req.Endpoint) || req.Keys.P256dh == "" || req.Keys.Auth == "" {
 		fail(w, http.StatusBadRequest, "bad_request")
 		return
 	}
@@ -94,6 +96,24 @@ func (s *Server) handleSubscribe(w http.ResponseWriter, r *http.Request, a *Auth
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{})
+}
+
+func validPushEndpoint(endpoint string) bool {
+	if len(endpoint) > 2048 {
+		return false
+	}
+	u, err := url.Parse(endpoint)
+	return err == nil && u.Scheme == "https" && u.Hostname() != "" && u.User == nil && u.Fragment == "" &&
+		(u.Port() == "" || u.Port() == "443")
+}
+
+// Push subscriptions are untrusted URLs, including those already stored in
+// the database. The dialer checks every resolved IP, so DNS rebinding cannot
+// turn a public endpoint into a request to our host or its private network.
+func newPushClient(allow func(string) bool) *http.Client {
+	c := newPreviewClient(allow)
+	c.CheckRedirect = func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }
+	return c
 }
 
 func (s *Server) handleUnsubscribe(w http.ResponseWriter, r *http.Request, a *Auth) {
@@ -268,6 +288,10 @@ func (p *pusher) deliver(s sub, body []byte, topic string, ttl int) {
 }
 
 func (p *pusher) webPush(s sub, body []byte, topic string, ttl int) {
+	if !validPushEndpoint(s.endpoint) {
+		p.failed.Add(1)
+		return
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	resp, err := webpush.SendNotificationWithContext(ctx, body, &webpush.Subscription{
@@ -275,6 +299,7 @@ func (p *pusher) webPush(s sub, body []byte, topic string, ttl int) {
 	}, &webpush.Options{
 		Subscriber: p.subject, VAPIDPublicKey: p.pub, VAPIDPrivateKey: p.priv,
 		TTL: ttl, Urgency: webpush.UrgencyHigh, Topic: topic,
+		HTTPClient: p.client,
 	})
 	if err != nil {
 		p.failed.Add(1)
@@ -288,7 +313,7 @@ func (p *pusher) webPush(s sub, body []byte, topic string, ttl int) {
 		if _, err := p.db.Exec(`DELETE FROM push_subs WHERE device_id = ? AND endpoint = ?`, s.device, s.endpoint); err != nil {
 			p.log.Warn("drop expired push subscription", "err", err)
 		}
-	case resp.StatusCode >= 400:
+	case resp.StatusCode >= 300:
 		p.failed.Add(1)
 		p.log.Warn("push rejected", "device", s.device, "status", resp.StatusCode)
 	default:

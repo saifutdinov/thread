@@ -25,6 +25,8 @@ import (
 const (
 	musicTimeout = 5 * time.Minute
 	musicKeep    = 10 * time.Minute // a finished job nobody took is dropped
+	// The plaintext limit (MAX_FILE in store.ts): maxUpload adds the cipher's 28 bytes.
+	maxTrack = maxUpload - 12 - 16
 )
 
 var spotifyTrackRE = regexp.MustCompile(`^(?:https://open\.spotify\.com/(?:intl-[a-z]{2}(?:-[A-Za-z]{2})?/)?track/|spotify:track:)([0-9A-Za-z]{22})(?:[/?#].*)?$`)
@@ -157,12 +159,12 @@ func (s *Server) fetchMusic(ctx context.Context, track string) musicJob {
 		s.log.Warn("music sidecar", "status", resp.StatusCode, "type", mime)
 		return musicJob{code: "music_failed"}
 	}
-	data, err := io.ReadAll(io.LimitReader(resp.Body, maxUpload+1))
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxTrack+1))
 	switch {
 	case err != nil:
 		s.log.Warn("music sidecar", "err", err)
 		return musicJob{code: "music_failed"}
-	case len(data) > maxUpload:
+	case len(data) > maxTrack:
 		return musicJob{code: "too_large"}
 	}
 	clip := func(v string) string { return v[:min(len(v), 4096)] } // 300 characters, percent-encoded

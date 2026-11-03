@@ -164,7 +164,7 @@ func (s *Server) handleChats(w http.ResponseWriter, r *http.Request, a *Auth) {
 	in, args := placeholders(ids)
 
 	rows, err = s.db.QueryContext(ctx, `SELECT mb.chat_id, u.id, u.name, mb.last_read, u.hide_online, u.last_seen, mb.avatar_v, mb.avatar_epoch,
-		COALESCE(u.invited_by, 0) = ?, mb.since_epoch
+		COALESCE(u.invited_by, 0) = ? AND u.recovery_allowed = 1, mb.since_epoch
 		FROM members mb JOIN users u ON u.id = mb.user_id WHERE mb.chat_id IN (`+in+`) ORDER BY mb.joined_at`, append([]any{a.UserID}, args...)...)
 	if err != nil {
 		s.internal(w, err)

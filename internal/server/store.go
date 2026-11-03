@@ -171,6 +171,7 @@ var migrations = []string{
 	wrapped   BLOB    NOT NULL,
 	PRIMARY KEY (user_id, epoch, device_id)
 )`,
+	`ALTER TABLE users ADD COLUMN recovery_allowed INTEGER NOT NULL DEFAULT 1`,
 }
 
 func migrate(db *sql.DB) error {

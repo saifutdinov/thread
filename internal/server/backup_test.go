@@ -96,7 +96,7 @@ func TestBackup(t *testing.T) {
 	if got := s3.keys("media/"); len(got) != 1 || got[0] != "media/"+attached {
 		t.Fatalf("uploaded media = %v (loose upload %s must wait)", got, loose)
 	}
-	if got := s3.keys("db/"); len(got) != 1 {
+	if got := s3.keys("db/"); len(got) != 2 { // age file and completion manifest
 		t.Fatalf("uploaded snapshots = %v", got)
 	}
 
@@ -112,6 +112,7 @@ func TestBackup(t *testing.T) {
 	if _, err := io.Copy(out, r); err != nil {
 		t.Fatal(err)
 	}
+	f.Close() // Windows cannot prune a snapshot while the test keeps it open.
 	out.Close()
 	db, err := sql.Open("sqlite", plain)
 	if err != nil {
@@ -133,7 +134,7 @@ func TestBackup(t *testing.T) {
 	if names, _ = e.s.snapshots(); len(names) != 2 || names[0] != "thread-20261002T040000Z.db.age" {
 		t.Fatalf("after prune = %v", names)
 	}
-	if got := s3.keys("db/"); len(got) != 3 {
+	if got := s3.keys("db/"); len(got) != 6 {
 		t.Fatalf("uploaded snapshots = %v", got)
 	}
 }

@@ -19,7 +19,8 @@ type client struct {
 	active       bool
 	send         chan []byte
 	cancel       context.CancelFunc
-	hidden       bool // its page is in the background (computers keep the socket); guarded by hub.mu
+	done         <-chan struct{} // identity/lifetime of this socket, without retaining its message queue
+	hidden       bool            // its page is in the background (computers keep the socket); guarded by hub.mu
 }
 
 // hub fans events out to connected devices and tracks presence.
@@ -106,6 +107,18 @@ func (h *hub) deviceOnline(device int64) bool {
 	return false
 }
 
+func (h *hub) callSockets(user int64) map[int64][]<-chan struct{} {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	sockets := map[int64][]<-chan struct{}{}
+	for c := range h.users[user] {
+		if c.active {
+			sockets[c.device] = append(sockets[c.device], c.done)
+		}
+	}
+	return sockets
+}
+
 // deviceInFront: an open socket whose page is visible. A background tab
 // keeps its socket but still needs pushes for system notifications.
 func (h *hub) deviceInFront(device int64) bool {
@@ -140,12 +153,12 @@ func (h *hub) sendUsers(ids []int64, b []byte) {
 	}
 }
 
-// sendUserExcept reaches a user's approved devices other than one.
-func (h *hub) sendUserExcept(user, except int64, b []byte) {
+// Two tabs may share one device id. Only the tab which answered wins.
+func (h *hub) sendUserExceptClient(user int64, except *client, b []byte) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	for c := range h.users[user] {
-		if c.active && c.device != except {
+		if c.active && c != except {
 			h.deliver(c, b)
 		}
 	}
@@ -200,7 +213,7 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request, a *Auth) {
 	conn.SetReadLimit(64 << 10) // call offers carry a sealed SDP
 	ctx, cancel := context.WithCancel(s.wsCtx)
 	defer cancel()
-	c := &client{user: a.UserID, device: a.DeviceID, active: a.Status == "active", send: make(chan []byte, 256), cancel: cancel}
+	c := &client{user: a.UserID, device: a.DeviceID, active: a.Status == "active", send: make(chan []byte, 256), cancel: cancel, done: ctx.Done()}
 	if s.hub.add(c) {
 		s.announce(ctx, a.UserID, true)
 	}

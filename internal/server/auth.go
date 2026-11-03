@@ -402,14 +402,15 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request, a *Auth) {
 	var created int64
 	var recovery bool
 	var avatarV int64
-	err := s.db.QueryRowContext(r.Context(), `SELECT u.hide_online, u.created_at, u.avatar_v, d.recovery FROM users u
-		JOIN devices d ON d.user_id = u.id WHERE u.id = ? AND d.id = ?`, a.UserID, a.DeviceID).Scan(&hide, &created, &avatarV, &recovery)
+	var recoveryAllowed bool
+	err := s.db.QueryRowContext(r.Context(), `SELECT u.hide_online, u.created_at, u.avatar_v, d.recovery, u.recovery_allowed FROM users u
+		JOIN devices d ON d.user_id = u.id WHERE u.id = ? AND d.id = ?`, a.UserID, a.DeviceID).Scan(&hide, &created, &avatarV, &recovery, &recoveryAllowed)
 	if err != nil {
 		s.internal(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"user":   map[string]any{"id": a.UserID, "name": a.Name, "hide_online": hide, "created_at": created, "avatar_v": avatarV},
+		"user":   map[string]any{"id": a.UserID, "name": a.Name, "hide_online": hide, "created_at": created, "avatar_v": avatarV, "recovery_allowed": recoveryAllowed},
 		"device": map[string]any{"id": a.DeviceID, "status": a.Status, "recovery": recovery},
 		"music":  s.cfg.MusicURL != "", // music by link (music.go)
 	})
@@ -417,8 +418,9 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request, a *Auth) {
 
 func (s *Server) handleUpdateMe(w http.ResponseWriter, r *http.Request, a *Auth) {
 	var req struct {
-		Name       *string `json:"name"`
-		HideOnline *bool   `json:"hide_online"`
+		Name            *string `json:"name"`
+		HideOnline      *bool   `json:"hide_online"`
+		RecoveryAllowed *bool   `json:"recovery_allowed"`
 	}
 	if !readJSON(w, r, &req) {
 		return
@@ -429,16 +431,22 @@ func (s *Server) handleUpdateMe(w http.ResponseWriter, r *http.Request, a *Auth)
 			fail(w, http.StatusBadRequest, "bad_name")
 			return
 		}
-		if _, err := s.db.ExecContext(r.Context(), `UPDATE users SET name = ? WHERE id = ?`, name, a.UserID); err != nil {
-			s.internal(w, err)
-			return
-		}
+		req.Name = &name
 	}
-	if req.HideOnline != nil {
-		if _, err := s.db.ExecContext(r.Context(), `UPDATE users SET hide_online = ? WHERE id = ?`, *req.HideOnline, a.UserID); err != nil {
-			s.internal(w, err)
-			return
+	err := inTx(r.Context(), s.db, func(tx *sql.Tx) error {
+		if _, err := tx.ExecContext(r.Context(), `UPDATE users SET name = COALESCE(?, name),
+			hide_online = COALESCE(?, hide_online), recovery_allowed = COALESCE(?, recovery_allowed) WHERE id = ?`,
+			req.Name, req.HideOnline, req.RecoveryAllowed, a.UserID); err != nil {
+			return err
 		}
+		if req.RecoveryAllowed != nil && !*req.RecoveryAllowed {
+			_, err := tx.ExecContext(r.Context(), `DELETE FROM recoveries WHERE user_id = ?`, a.UserID)
+			return err
+		}
+		return nil
+	})
+	if s.writeErr(w, err) {
+		return
 	}
 	s.broadcastUser(r.Context(), a.UserID)
 	writeJSON(w, http.StatusOK, map[string]any{})

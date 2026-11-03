@@ -11,7 +11,6 @@ import (
 	"net/http"
 	"slices"
 	"strings"
-	"sync"
 	"time"
 )
 
@@ -33,54 +32,6 @@ type callSignal struct {
 	E    int    `json:"e"`    // key epoch the body is sealed with
 	Body []byte `json:"body"` // sealed SDP or ICE candidate
 	H    bool   `json:"h"`    // "vis": the page went to the background
-}
-
-// ringing keeps the latest offer per callee for ringFor, so a phone that
-// wakes up from the push notification still gets the call.
-type ringing struct {
-	mu sync.Mutex
-	m  map[int64]pendingCall
-}
-
-type pendingCall struct {
-	id    string
-	ev    []byte
-	until time.Time
-}
-
-func newRinging() *ringing { return &ringing{m: map[int64]pendingCall{}} }
-
-// set reports whether this call was not ringing yet (a repeated offer
-// for the same call does not ring the phone again).
-func (r *ringing) set(user int64, id string, ev []byte) bool {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	p, ok := r.m[user]
-	r.m[user] = pendingCall{id: id, ev: ev, until: time.Now().Add(ringFor)}
-	return !ok || p.id != id
-}
-
-// clear reports whether the call was still ringing: only the first of a
-// user's devices to answer gets through.
-func (r *ringing) clear(user int64, id string) bool {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if p, ok := r.m[user]; ok && p.id == id {
-		delete(r.m, user)
-		return true
-	}
-	return false
-}
-
-func (r *ringing) get(user int64) []byte {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	p, ok := r.m[user]
-	if !ok || time.Now().After(p.until) {
-		delete(r.m, user)
-		return nil
-	}
-	return p.ev
 }
 
 // callPeer returns the other member of a direct chat the caller is in.
@@ -118,13 +69,32 @@ func (s *Server) handleCallSignal(ctx context.Context, c *client, in callSignal)
 		}
 	}
 	taken, _ := json.Marshal(event{"t": "call", "k": "taken", "c": in.C, "id": in.ID})
-	stopRinging := func(user int64) { s.hub.sendUserExcept(user, c.device, taken) }
+	stopRinging := func(user int64) { s.hub.sendUserExceptClient(user, c, taken) }
+	key := callKey{chat: in.C, id: in.ID}
 	switch in.K {
 	case "offer":
 		// Each offer wakes the callee's phones by push: a contact must not
 		// be able to make them ring nonstop.
-		if !s.auth.allow(fmt.Sprintf("call:%d", c.user)) || !s.ring.set(peer, in.ID, ev) {
+		if !s.auth.allow(fmt.Sprintf("call:%d", c.user)) {
 			return
+		}
+		devices, err := queryIDs(ctx, s.db, `SELECT id FROM devices WHERE user_id = ? AND status = 'active'`, peer)
+		if err != nil {
+			return
+		}
+		status, replaced := s.ring.offer(c.user, c.device, peer, key, ev, devices, c.done)
+		switch status {
+		case 0:
+			return
+		case -1:
+			s.hub.deliver(c, mustCallEvent(event{"t": "call", "k": "busy", "c": in.C, "id": in.ID, "from": peer}))
+			return
+		}
+		if replaced != nil {
+			// Retire the old id first, so a page still ringing accepts the
+			// replacement instead of replying busy. The new push replaces
+			// the old notification; an unscoped callEnd could erase it.
+			s.hub.sendUsers([]int64{peer}, mustCallEvent(event{"t": "call", "k": "taken", "c": replaced.chat, "id": replaced.id}))
 		}
 		s.hub.sendUsers([]int64{peer}, ev)
 		var name string
@@ -133,8 +103,8 @@ func (s *Server) handleCallSignal(ctx context.Context, c *client, in callSignal)
 		}
 		s.push.notifyCall(ctx, in.C, peer, c.user, name, in.V, in.ID, false)
 	case "answer":
-		if !s.ring.clear(c.user, in.ID) {
-			s.hub.sendDevice(c.device, taken) // another device of mine was first
+		if !s.ring.answer(c.user, c.device, in.To, key, c.done) {
+			s.hub.deliver(c, taken) // only this tab: never cancel the winning tab
 			return
 		}
 		toPeerDevice()
@@ -143,18 +113,34 @@ func (s *Server) handleCallSignal(ctx context.Context, c *client, in callSignal)
 	case "ice", "reoffer", "reanswer", "restart":
 		// Mid-call: candidates, an ICE restart after a network change (the
 		// caller re-offers; the callee may ask for it), device to device.
-		toPeerDevice()
-	case "hangup", "decline", "busy":
-		s.ring.clear(peer, in.ID)
-		s.ring.clear(c.user, in.ID)
-		if in.To != 0 {
+		if s.ring.relay(c.user, c.device, in.To, key, c.done) {
+			toPeerDevice()
+		}
+	case "busy":
+		if s.ring.busy(c.user, c.device, in.To, key, c.done, s.hub.callSockets(c.user)) {
+			toPeerDevice()
+			stopRinging(c.user)
+			s.push.notifyCallEnd(ctx, c.user, false)
+		}
+	case "hangup", "decline":
+		to, ringingUser, ended := s.ring.end(c.user, c.device, peer, key, in.K, c.done)
+		if !ended {
+			// After a restart the browser still knows the selected device.
+			// It checks the sender too; known calls keep the server's guard.
+			if in.K == "hangup" && c.device != 0 && in.To != 0 && s.ring.relay(c.user, c.device, in.To, key, c.done) {
+				toPeerDevice()
+			}
+			return
+		}
+		in.To = to
+		if to != 0 {
 			toPeerDevice()
 		} else {
 			s.hub.sendUsers([]int64{peer}, ev)
 		}
-		if in.K == "decline" {
-			stopRinging(c.user)
-			s.push.notifyCallEnd(ctx, c.user, false)
+		if ringingUser != 0 {
+			stopRinging(ringingUser)
+			s.push.notifyCallEnd(ctx, ringingUser, false)
 		}
 	}
 }
@@ -172,12 +158,13 @@ func (s *Server) handleCallDecline(w http.ResponseWriter, r *http.Request, a *Au
 	if !readJSON(w, r, &req) {
 		return
 	}
-	if !s.ring.clear(a.UserID, req.ID) {
-		writeJSON(w, http.StatusOK, map[string]any{})
-		return
-	}
 	s.handleCallSignal(r.Context(), &client{user: a.UserID, active: true}, callSignal{T: "call", K: "decline", C: req.C, ID: req.ID})
 	writeJSON(w, http.StatusOK, map[string]any{})
+}
+
+func mustCallEvent(e event) []byte {
+	b, _ := json.Marshal(e) // event values here are JSON scalars
+	return b
 }
 
 // handleTurn issues TURN REST credentials (coturn --use-auth-secret):

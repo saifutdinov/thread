@@ -4,7 +4,9 @@ import (
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -73,12 +75,27 @@ func (s *Server) backupLoop(ctx context.Context) {
 
 // backup writes an encrypted snapshot when the last one is a day old.
 func (s *Server) backup(ctx context.Context, at time.Time) error {
+	s.backupMu.Lock()
+	defer s.backupMu.Unlock()
+	if err := s.cleanBackupStaging(); err != nil {
+		return err
+	}
 	last, err := metaGet(ctx, s.db, "backup_at")
 	if err != nil {
 		return err
 	}
 	if n, _ := strconv.ParseInt(last, 10, 64); at.Sub(time.Unix(n, 0)) < backupEvery {
-		return nil
+		// Upgrade an old snapshot without pinned media immediately. It cannot
+		// be made complete later using only the public age recipient key.
+		names, err := s.snapshots()
+		if err != nil {
+			return err
+		}
+		if len(names) > 0 {
+			if _, err := os.Stat(filepath.Join(s.backupDir(), names[len(names)-1]+".media", "manifest.json")); err == nil {
+				return nil
+			}
+		}
 	}
 	dir := s.backupDir()
 	if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -86,19 +103,105 @@ func (s *Server) backup(ctx context.Context, at time.Time) error {
 	}
 	plain := filepath.Join(dir, ".snapshot.db")
 	os.Remove(plain) // left over from a crash; VACUUM INTO refuses to overwrite
-	if _, err := s.db.ExecContext(ctx, `VACUUM INTO ?`, plain); err != nil {
-		return fmt.Errorf("snapshot: %w", err)
-	}
 	defer os.Remove(plain)
 	name := "thread-" + at.UTC().Format("20060102T150405Z") + ".db.age"
-	if err := encryptFile(filepath.Join(dir, name), plain, s.backupTo); err != nil {
+	stage, err := os.MkdirTemp(dir, ".media-")
+	if err != nil {
+		return err
+	}
+	defer func() { _ = os.RemoveAll(stage) }()
+	if err := s.snapshotWithMedia(ctx, plain, stage); err != nil {
+		return err
+	}
+	dst := filepath.Join(dir, name)
+	pending := dst + ".pending"
+	defer os.Remove(pending)
+	if err := encryptFile(pending, plain, s.backupTo); err != nil {
 		return fmt.Errorf("encrypt snapshot: %w", err)
+	}
+	// The age file becomes discoverable only after its manifest and hard
+	// links are in place. An interrupted encryption/upload is not published.
+	if err := os.Rename(stage, dst+".media"); err != nil {
+		return err
+	}
+	if err := os.Rename(pending, dst); err != nil {
+		return err
 	}
 	if err := metaSet(ctx, s.db, "backup_at", strconv.FormatInt(at.Unix(), 10)); err != nil {
 		return err
 	}
 	s.log.Info("backup written", "file", name)
 	return s.pruneBackups()
+}
+
+type backupManifest struct {
+	Version int      `json:"version"`
+	Files   []string `json:"files"`
+}
+
+// A process crash can leave plaintext or pinned files before publication.
+// This also runs when today's complete snapshot needs no replacement.
+func (s *Server) cleanBackupStaging() error {
+	entries, err := os.ReadDir(s.backupDir())
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		name := entry.Name()
+		staging := name == ".snapshot.db" || strings.HasPrefix(name, ".media-") ||
+			(strings.HasPrefix(name, "thread-") && (strings.HasSuffix(name, ".db.age.pending") || strings.HasSuffix(name, ".db.age.pending.part")))
+		if strings.HasPrefix(name, "thread-") && strings.HasSuffix(name, ".db.age.media") {
+			_, err := os.Stat(filepath.Join(s.backupDir(), strings.TrimSuffix(name, ".media")))
+			if errors.Is(err, os.ErrNotExist) {
+				staging = true
+			} else if err != nil {
+				return err
+			}
+		}
+		if staging {
+			if err := os.RemoveAll(filepath.Join(s.backupDir(), name)); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func (s *Server) snapshotWithMedia(ctx context.Context, plain, stage string) error {
+	s.mediaMu.Lock()
+	defer s.mediaMu.Unlock()
+	if _, err := s.db.ExecContext(ctx, `VACUUM INTO ?`, plain); err != nil {
+		return fmt.Errorf("snapshot: %w", err)
+	}
+	db, err := sql.Open("sqlite", "file:"+filepath.ToSlash(plain)+"?mode=ro")
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	rows, err := db.QueryContext(ctx, `SELECT id FROM media WHERE message_id IS NOT NULL ORDER BY id`)
+	if err != nil {
+		return err
+	}
+	ids, err := scanStrings(rows)
+	if err != nil {
+		return err
+	}
+	for _, id := range ids {
+		if !validMediaID(id) {
+			return fmt.Errorf("snapshot: invalid media id")
+		}
+		if err := os.Link(s.mediaPath(id), filepath.Join(stage, id)); err != nil {
+			return fmt.Errorf("pin snapshot media %s: %w", id, err)
+		}
+	}
+	manifest, err := json.Marshal(backupManifest{Version: 1, Files: ids})
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(stage, "manifest.json"), manifest, 0o600)
 }
 
 func encryptFile(dst, src string, to []age.Recipient) error {
@@ -153,6 +256,9 @@ func (s *Server) pruneBackups() error {
 		if err := os.Remove(filepath.Join(s.backupDir(), names[0])); err != nil {
 			return err
 		}
+		if err := os.RemoveAll(filepath.Join(s.backupDir(), names[0]+".media")); err != nil {
+			return err
+		}
 		names = names[1:]
 	}
 	return nil
@@ -162,6 +268,8 @@ func (s *Server) pruneBackups() error {
 // (tracked by the last uploaded name) and media rows not marked backed_up.
 // Old snapshots in the bucket expire by a lifecycle rule, not from here.
 func (s *Server) syncS3(ctx context.Context) error {
+	s.backupMu.Lock()
+	defer s.backupMu.Unlock()
 	done, err := metaGet(ctx, s.db, "backup_s3_db")
 	if err != nil {
 		return err
@@ -174,7 +282,43 @@ func (s *Server) syncS3(ctx context.Context) error {
 		if n <= done {
 			continue
 		}
+		pins := filepath.Join(s.backupDir(), n+".media")
+		bytes, err := os.ReadFile(filepath.Join(pins, "manifest.json"))
+		if errors.Is(err, os.ErrNotExist) {
+			s.log.Warn("legacy snapshot has no pinned media, keeping local", "file", n)
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		var manifest backupManifest
+		if err := json.Unmarshal(bytes, &manifest); err != nil || manifest.Version != 1 {
+			return fmt.Errorf("invalid backup manifest for %s", n)
+		}
+		for _, id := range manifest.Files {
+			if !validMediaID(id) {
+				return fmt.Errorf("invalid backup media id")
+			}
+			var backed bool
+			if err := s.db.QueryRowContext(ctx, `SELECT backed_up FROM media WHERE id = ?`, id).Scan(&backed); err != nil && !errors.Is(err, sql.ErrNoRows) {
+				return err
+			}
+			if backed {
+				continue
+			}
+			if err := s.s3Put(ctx, "media/"+id, filepath.Join(pins, id)); err != nil {
+				return err
+			}
+			if _, err := s.db.ExecContext(ctx, `UPDATE media SET backed_up = 1 WHERE id = ?`, id); err != nil {
+				return err
+			}
+		}
 		if err := s.s3Put(ctx, "db/"+n, filepath.Join(s.backupDir(), n)); err != nil {
+			return err
+		}
+		// Published last: restore tools can distinguish a complete snapshot
+		// from an age file whose upload was interrupted or lost its media.
+		if err := s.s3Put(ctx, "db/"+n+".manifest.json", filepath.Join(pins, "manifest.json")); err != nil {
 			return err
 		}
 		if err := metaSet(ctx, s.db, "backup_s3_db", n); err != nil {

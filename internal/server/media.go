@@ -16,7 +16,9 @@ import (
 // which travels inside the (encrypted) message. Files live on disk next to
 // the database, not in it, so SQLite stays small and backups stay fast.
 
-const maxUpload = 50 << 20
+// The UI limit is the plaintext size. Each blob adds a 12-byte IV and
+// a 16-byte AES-GCM authentication tag, without changing the file format.
+const maxUpload = (50 << 20) + 12 + 16
 
 func (s *Server) mediaPath(id string) string { return filepath.Join(s.cfg.DataDir, "media", id) }
 
@@ -155,6 +157,8 @@ func scanStrings(rows *sql.Rows) ([]string, error) {
 }
 
 func (s *Server) deleteMedia(ctx context.Context, ids []string) error {
+	s.mediaMu.Lock()
+	defer s.mediaMu.Unlock()
 	for _, id := range ids {
 		if err := os.Remove(s.mediaPath(id)); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return err

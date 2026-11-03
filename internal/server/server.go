@@ -69,6 +69,8 @@ type Server struct {
 	sfu     *http.Client // LiveKit's RoomService (group.go roomService)
 
 	backupTo []age.Recipient
+	backupMu sync.Mutex // serialize snapshot publication, pruning and S3 upload
+	mediaMu  sync.Mutex // pin the snapshot's files before a message can delete them
 
 	// WebSockets hijack their connections, so http.Server.Shutdown does
 	// not wait for them: Close cancels wsCtx and waits for ws.
@@ -186,9 +188,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/turn", s.active(s.handleTurn))
 	mux.HandleFunc("POST /api/preview", s.active(s.handlePreview))
 	mux.HandleFunc("GET /api/push/key", s.handlePushKey)
-	mux.HandleFunc("POST /api/push", s.anyDevice(s.handleSubscribe))
+	mux.HandleFunc("POST /api/push", s.active(s.handleSubscribe))
 	mux.HandleFunc("DELETE /api/push", s.anyDevice(s.handleUnsubscribe))
-	mux.HandleFunc("POST /api/push/test", s.anyDevice(s.handlePushTest))
+	mux.HandleFunc("POST /api/push/test", s.active(s.handlePushTest))
 	mux.HandleFunc("POST /api/calls/decline", s.active(s.handleCallDecline))
 	mux.HandleFunc("GET /api/calls/group", s.active(s.handleGroupCalls))
 	mux.HandleFunc("POST /api/chats/{id}/call", s.active(s.handleGroupCall))
@@ -280,6 +282,7 @@ func (s *Server) cleanup(ctx context.Context) {
 	}
 	s.auth.prune()
 	s.nonce.prune()
+	s.ring.prune()
 }
 
 // secure adds security headers and rejects cross-origin writes.

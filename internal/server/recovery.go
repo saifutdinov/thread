@@ -45,7 +45,7 @@ func (s *Server) handleCreateRecovery(w http.ResponseWriter, r *http.Request, a 
 		// chat, can vouch for them; anyone else gets the same answer as for
 		// a user that does not exist.
 		var by sql.NullInt64
-		if err := tx.QueryRowContext(ctx, `SELECT invited_by FROM users WHERE id = ? AND EXISTS (`+sharedChatsSQL+`)`,
+		if err := tx.QueryRowContext(ctx, `SELECT invited_by FROM users WHERE id = ? AND recovery_allowed = 1 AND EXISTS (`+sharedChatsSQL+`)`,
 			req.User, req.User, a.UserID).Scan(&by); err != nil || !by.Valid || by.Int64 != a.UserID {
 			return errNotMember
 		}
@@ -80,7 +80,7 @@ func (s *Server) handlePeekRecovery(w http.ResponseWriter, r *http.Request) {
 	var expires int64
 	err := s.db.QueryRowContext(r.Context(), `SELECT u.name, c.name, k.bundle, k.expires_at FROM recoveries k
 		JOIN users u ON u.id = k.user_id JOIN users c ON c.id = k.created_by
-		WHERE k.id = ? AND k.expires_at > ?`, sha(req.Key), now()).Scan(&name, &by, &bundle, &expires)
+		WHERE k.id = ? AND k.expires_at > ? AND u.recovery_allowed = 1`, sha(req.Key), now()).Scan(&name, &by, &bundle, &expires)
 	if errors.Is(err, sql.ErrNoRows) {
 		fail(w, http.StatusNotFound, "invite_invalid")
 		return
@@ -120,7 +120,7 @@ func (s *Server) handleRedeemRecovery(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	id := sha(req.Key)
 	var one int
-	if err := s.db.QueryRowContext(ctx, `SELECT 1 FROM recoveries WHERE id = ? AND expires_at > ?`, id, now()).Scan(&one); err != nil {
+	if err := s.db.QueryRowContext(ctx, `SELECT 1 FROM recoveries k JOIN users u ON u.id = k.user_id WHERE k.id = ? AND k.expires_at > ? AND u.recovery_allowed = 1`, id, now()).Scan(&one); err != nil {
 		fail(w, http.StatusNotFound, "invite_invalid") // before argon2: an unknown link costs nothing
 		return
 	}
@@ -134,7 +134,7 @@ func (s *Server) handleRedeemRecovery(w http.ResponseWriter, r *http.Request) {
 	var userID, creator, deviceID int64
 	stored := []int64{}
 	err = inTx(ctx, s.db, func(tx *sql.Tx) error {
-		err := tx.QueryRowContext(ctx, `SELECT user_id, created_by FROM recoveries WHERE id = ? AND expires_at > ?`, id, now()).
+		err := tx.QueryRowContext(ctx, `SELECT k.user_id, k.created_by FROM recoveries k JOIN users u ON u.id = k.user_id WHERE k.id = ? AND k.expires_at > ? AND u.recovery_allowed = 1`, id, now()).
 			Scan(&userID, &creator)
 		if errors.Is(err, sql.ErrNoRows) {
 			return errRecovery
