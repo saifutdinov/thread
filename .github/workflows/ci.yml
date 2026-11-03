@@ -48,3 +48,15 @@ jobs:
         run: DOMAIN=chat.example.org PUBLIC_IP=203.0.113.10 PASSWORD_PEPPER=x TURN_SECRET=y LIVEKIT_SECRET=z docker compose -f deploy/docker-compose.yml config -q
       - name: Image builds
         run: docker build -t thread:ci .
+      - uses: astral-sh/setup-uv@v10.3.3
+        with:
+          version: 0.13.6
+      - name: Music sidecar (optional service)
+        working-directory: deploy/music
+        run: |
+          uvx ruff@0.17.3 check .
+          uvx ruff@0.17.3 format --check .
+          uv lock --check
+          uv run --only-group dev pytest -q
+          docker build -q -t thread-music:ci .
+          docker run --rm thread-music:ci sh -c 'spotdl --version && deno --version && ffmpeg -version | head -1'

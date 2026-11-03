@@ -3,3 +3,11 @@
 /web/dist/
 .env
 .DS_Store
+
+# deploy/music (uv)
+.venv/
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+# YouTube cookies for the optional music sidecar
+/music/
