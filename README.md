@@ -59,28 +59,8 @@ The protocol is described in [docs/adr/0001-e2ee-webcrypto.md](docs/adr/0001-e2e
 | `BACKUP_KEEP` | How many local snapshots to keep (7) |
 | `BACKUP_S3_ENDPOINT`, `BACKUP_S3_REGION`, `BACKUP_S3_BUCKET`, `BACKUP_S3_ACCESS_KEY`, `BACKUP_S3_SECRET_KEY` | Optional S3-compatible bucket for off-server copies |
 | `METRICS_ADDR` | e.g. `:9095`: Prometheus metrics on the internal Docker network (`thread_http_responses_total`, `thread_push_total`, `thread_sockets`, `thread_backup_*`) |
-| `COMPOSE_PROFILES`, `MUSIC_URL` | `music` and `http://music:8090` turn on music from a link: read the next section first |
-| `MUSIC_PROXY`, `SPOTIFY_CLIENT_ID`, `SPOTIFY_CLIENT_SECRET` | Optional for music from a link: a proxy for the downloads, your own Spotify app |
 
 After editing `.env`, apply it with `sudo scripts/install.sh`.
-
-## Music from a link (optional, off by default)
-
-**Read this before you turn it on.** Thread can run [spotDL](https://github.com/spotDL/spotify-downloader) in a container of its own (`deploy/music`): a member pastes a Spotify track link, the container looks the track up on Spotify, downloads its sound from YouTube Music, and the app sends it to the chat as an encrypted file. It is off unless the server's operator turns it on.
-
-- **Use it at your own risk.** Downloading from YouTube breaks the terms of service of YouTube and, most likely, of Spotify, and may break copyright law where you live. Private, non-commercial use among family and friends does not change that. Thread includes, hosts and distributes no music; it only starts a third-party tool on your own server. You alone answer for what you download and share. This is not legal advice.
-- **No warranty, no affiliation.** The music container comes with no warranty, like the rest of Thread (AGPL-3.0). Thread is not affiliated with Spotify, YouTube or the spotDL project.
-- **What your server sees.** This is the one place where the server sees content: the server and the container learn which track was fetched and handle its sound. They never learn which chat it went to; the copy in the chat is end-to-end encrypted like any file (`docs/adr/0004-music.md`).
-- **It breaks.** YouTube changes often, and downloads stop working until `yt-dlp` (and `spotdl`) are updated in `deploy/music/pyproject.toml`.
-
-To turn it on, add to `.env` and run `sudo scripts/install.sh`:
-
-```
-COMPOSE_PROFILES=music
-MUSIC_URL=http://music:8090
-```
-
-Optional: `MUSIC_PROXY` when YouTube is slow or blocked from your server, `SPOTIFY_CLIENT_ID` and `SPOTIFY_CLIENT_SECRET` for a Spotify app of your own (the shared one hits rate limits), and YouTube cookies in `music/cookies.txt` next to `.env`. To turn it off again, remove both lines and run the script. The player, own audio files and music in calls work without it.
 
 ## Development
 
