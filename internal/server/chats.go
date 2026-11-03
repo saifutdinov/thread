@@ -744,6 +744,7 @@ func (s *Server) handleLeaveChat(w http.ResponseWriter, r *http.Request, a *Auth
 	} else {
 		s.chatChanged(r.Context(), chatID)
 	}
+	s.dropUser(r.Context(), chatID, a.UserID)
 	s.hub.toUsers([]int64{a.UserID}, event{"t": "chat", "c": chatID})
 	writeJSON(w, http.StatusOK, map[string]any{})
 }

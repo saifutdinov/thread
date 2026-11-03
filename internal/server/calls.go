@@ -131,7 +131,7 @@ func (s *Server) handleCallSignal(ctx context.Context, c *client, in callSignal)
 		if err := s.db.QueryRowContext(ctx, `SELECT name FROM users WHERE id = ?`, c.user).Scan(&name); err != nil {
 			s.log.Warn("caller name", "err", err) // the push still rings, just without a name
 		}
-		s.push.notifyCall(ctx, in.C, peer, name, in.V, in.ID, false)
+		s.push.notifyCall(ctx, in.C, peer, c.user, name, in.V, in.ID, false)
 	case "answer":
 		if !s.ring.clear(c.user, in.ID) {
 			s.hub.sendDevice(c.device, taken) // another device of mine was first

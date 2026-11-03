@@ -7,7 +7,11 @@ import {
   groupCall,
   leave,
   type Person,
+  groupDevices,
   reopenGroupMic,
+  selectGroupCamera,
+  selectGroupMic,
+  selectGroupSpeaker,
   startGroupAudio,
   startGroupCall,
   toggleGroupCamera,
@@ -15,13 +19,12 @@ import {
   toggleGroupScreen,
 } from '../lib/group';
 import { t } from '../lib/i18n';
-import { canShareScreen } from '../lib/call';
-import { canTune } from '../lib/mic';
+import { canShareScreen, selectSpeaker } from '../lib/call';
 import { fmtDuration } from '../lib/recorder';
 import { chatPicture, findChat, nameOf, picture } from '../lib/store';
 import { chatName } from './ChatList';
-import { MicTuning } from './MicTuning';
-import { Avatar, Icon, IconButton, type IconName, Modal } from './ui';
+import { CallSettings } from './CallSettings';
+import { Avatar, Icon, IconButton, type IconName } from './ui';
 
 // A minimized group call shrinks to a strip, like a 1:1 call (Call.tsx).
 export const minimized = signal(false);
@@ -97,7 +100,7 @@ export function GroupCallScreen() {
   const g = groupCall.value;
   const dialog = useRef<HTMLDialogElement>(null);
   const [, tick] = useState(0);
-  const [tuning, setTuning] = useState(false);
+  const [settings, setSettings] = useState(false); // the call settings window
   const mini = !!g && minimized.value && g.phase !== 'incoming';
   useEffect(() => {
     const i = setInterval(() => tick((n) => n + 1), 1000);
@@ -154,6 +157,7 @@ export function GroupCallScreen() {
   return (
     <dialog ref={dialog} class="call-screen gcall" aria-label={title} onCancel={(e) => e.preventDefault() /* Escape must not end a call */}>
       <IconButton icon="down" label={t('call.minimize')} class="call-minimize" onClick={() => (minimized.value = true)} />
+      <IconButton icon="tune" label={t('call.settings')} class="call-settings" aria-haspopup="dialog" onClick={() => setSettings(true)} />
       <header class="gcall-head">
         <h2>{title}</h2>
         <p>{status}</p>
@@ -195,17 +199,20 @@ export function GroupCallScreen() {
             onClick={() => void toggleGroupScreen()}
           />
         )}
-        {canTune && <Btn icon="tune" label={t('mic.button')} onClick={() => setTuning(true)} />}
         <Btn icon="callEnd" label={t('gcall.leave')} tone="red" onClick={() => void leave()} />
       </div>
-      {tuning && (
-        <Modal label={t('mic.settings')} onClose={() => setTuning(false)} class="device-picker">
-          <h2>{t('mic.settings')}</h2>
-          <MicTuning reopen={reopenGroupMic} />
-          <button type="button" class="btn secondary" onClick={() => setTuning(false)}>
-            {t('common.done')}
-          </button>
-        </Modal>
+      {settings && (
+        <CallSettings
+          onClose={() => setSettings(false)}
+          {...groupDevices()}
+          onMic={selectGroupMic}
+          onCam={selectGroupCamera}
+          onSpeaker={(id) => {
+            selectSpeaker(id);
+            return selectGroupSpeaker(id);
+          }}
+          reopen={reopenGroupMic}
+        />
       )}
     </dialog>
   );

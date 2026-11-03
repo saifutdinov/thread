@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'preact/hooks';
 import { api, type Device } from '../lib/api';
 import { errText, fmtListTime, lang, t } from '../lib/i18n';
 import { design, linkPreviews, textSize, theme, WALLPAPERS, wallpaper } from '../lib/prefs';
+import { cameras, deviceName, refreshDevices, remember, remembered } from '../lib/devices';
 import { appVersion, enablePush, install, installPrompt, isIOS, notifPermission, standalone } from '../lib/pwa';
 import { back } from '../lib/route';
 import { choices, choose, MAX_SOUND_FILE, ownSoundName, playSound, setOwnSound, type SoundKind } from '../lib/sounds';
@@ -82,11 +83,19 @@ function SoundRow(props: { kind: SoundKind }) {
   const { kind } = props;
   const id = choices.value[kind];
   const [file, setFile] = useState<string | null>(null);
+  const [pending, setPending] = useState(false); // "Own file" chosen, no file picked yet
   const [stop, setStop] = useState<(() => void) | null>(null);
   const input = useRef<HTMLInputElement>(null);
   useEffect(() => {
     void ownSoundName(kind).then(setFile);
   }, [kind]);
+  // The file picker closed without a file: the choice goes back to what plays.
+  useEffect(() => {
+    const el = input.current;
+    const cancel = () => setPending(false);
+    el?.addEventListener('cancel', cancel);
+    return () => el?.removeEventListener('cancel', cancel);
+  }, []);
   useEffect(() => () => stop?.(), [stop]); // leaving the page stops the preview
   const listen = () => {
     if (stop) return setStop(null);
@@ -100,6 +109,7 @@ function SoundRow(props: { kind: SoundKind }) {
     try {
       await setOwnSound(kind, f);
       setFile(f.name);
+      setPending(false);
     } catch (e) {
       showToast(t((e as Error).message === 'too_large' ? 'sound.tooBig' : 'sound.bad', { mb: MAX_SOUND_FILE >> 20 }));
     }
@@ -109,15 +119,14 @@ function SoundRow(props: { kind: SoundKind }) {
       <label class="field">
         <span>{t(`sound.${kind}`)}</span>
         <select
-          value={id}
+          value={pending ? 'file' : id}
           onChange={(e) => {
             const v = e.currentTarget.value;
             stop?.(); // the preview of the old choice ends
             setStop(null);
-            if (v === 'file' && !file) {
-              e.currentTarget.value = id; // stays until a file is picked
-              input.current?.click();
-            } else choose(kind, v);
+            setPending(v === 'file' && !file);
+            if (v === 'file' && !file) input.current?.click();
+            else choose(kind, v);
           }}
         >
           {Object.keys(TUNES[kind]).map((k) => (
@@ -128,9 +137,11 @@ function SoundRow(props: { kind: SoundKind }) {
           <option value="file">{file ? t('sound.fileNamed', { name: file }) : t('sound.file')}</option>
         </select>
       </label>
-      <IconButton icon={stop ? 'pause' : 'play'} label={stop ? t('sound.stop') : t('sound.preview')} disabled={id === 'off'} onClick={listen} />
-      {/* Always here: a select's change may come without the tap a file picker needs (iOS). */}
-      <IconButton icon="file" label={file ? t('sound.pickFile') : t('sound.chooseFile')} onClick={() => input.current?.click()} />
+      <IconButton icon={stop ? 'pause' : 'play'} label={stop ? t('sound.stop') : t('sound.preview')} disabled={id === 'off' || pending} onClick={listen} />
+      {/* With "Own file" only; a select's change may come without the tap a file picker needs (iOS), so the button stays then. */}
+      {(id === 'file' || pending) && (
+        <IconButton icon="file" label={file ? t('sound.pickFile') : t('sound.chooseFile')} onClick={() => input.current?.click()} />
+      )}
       <input
         ref={input}
         type="file"
@@ -142,6 +153,67 @@ function SoundRow(props: { kind: SoundKind }) {
         }}
       />
     </div>
+  );
+}
+
+// CameraCheck: how the camera looks before a call, and which one video
+// calls start with on this device (the call's devices menu remembers the
+// same choice). The camera is on only while the preview shows.
+function CameraCheck() {
+  const [stream, setStream] = useState<MediaStream | null>(null);
+  const [cam, setCam] = useState(remembered('callCam'));
+  const video = useRef<HTMLVideoElement>(null);
+  useEffect(() => () => stream?.getTracks().forEach((tr) => tr.stop()), [stream]);
+  useEffect(() => {
+    if (video.current) video.current.srcObject = stream;
+  }, [stream]);
+  const open = async (id: string) => {
+    try {
+      const s = await navigator.mediaDevices.getUserMedia({ video: id ? { deviceId: { ideal: id } } : { facingMode: 'user' } });
+      setStream(s);
+      void refreshDevices(); // names appear once the camera is allowed
+    } catch {
+      showToast(t('call.noMedia'));
+    }
+  };
+  const list = cameras();
+  return (
+    <>
+      {list.length > 1 && (
+        <label class="field">
+          <span>{t('call.audio.camera')}</span>
+          <select
+            value={cam || list[0].deviceId}
+            onChange={(e) => {
+              const v = e.currentTarget.value;
+              setCam(v);
+              remember('callCam', v);
+              if (stream) void open(v);
+            }}
+          >
+            {list.map((d, i) => (
+              <option key={d.deviceId} value={d.deviceId}>
+                {deviceName(d, i)}
+              </option>
+            ))}
+          </select>
+        </label>
+      )}
+      {/* Mirrored like the call's self view, except a camera facing away. */}
+      {stream && (
+        <video
+          ref={video}
+          class={'cam-preview' + (stream.getVideoTracks()[0]?.getSettings().facingMode === 'environment' ? '' : ' mirror')}
+          autoPlay
+          playsInline
+          muted
+        />
+      )}
+      <button class="btn secondary" onClick={() => (stream ? setStream(null) : void open(cam))}>
+        <Icon name={stream ? 'videocamOff' : 'videocam'} /> {stream ? t('settings.cameraStop') : t('settings.cameraCheck')}
+      </button>
+      <p class="muted small">{t('settings.cameraHint')}</p>
+    </>
   );
 }
 
@@ -210,20 +282,37 @@ function NotifGuide() {
   );
 }
 
+// A Mac's Chrome or Edge keeps its installed apps inside the browser: quit
+// the browser and the app closes, and no notification comes. Safari's
+// "Add to Dock" app (macOS 14+) lives on its own and gets them closed too.
+const macChromium = /Macintosh/.test(navigator.userAgent) && navigator.maxTouchPoints <= 1 && /Chrome\/|Edg\//.test(navigator.userAgent);
+const MacHint = () => (macChromium ? <p class="muted small">{t('settings.macChrome')}</p> : null);
+
 export function InstallRow() {
   if (standalone.value)
     return (
-      <p class="row">
-        <Icon name="check" /> {t('settings.installed')}
-      </p>
+      <>
+        <p class="row">
+          <Icon name="check" /> {t('settings.installed')}
+        </p>
+        <MacHint />
+      </>
     );
   if (installPrompt.value)
     return (
-      <button class="btn" onClick={install}>
-        {t('settings.install')}
-      </button>
+      <>
+        <button class="btn" onClick={install}>
+          {t('settings.install')}
+        </button>
+        <MacHint />
+      </>
     );
-  return <p class="muted">{isIOS ? t('settings.iosInstall') : t('settings.otherInstall')}</p>;
+  return (
+    <>
+      <p class="muted">{isIOS ? t('settings.iosInstall') : t('settings.otherInstall')}</p>
+      <MacHint />
+    </>
+  );
 }
 
 // Where users of this copy can get its source code. If you run a modified
@@ -362,6 +451,11 @@ export function Settings() {
         <SoundRow kind="dial" />
         <SoundRow kind="message" />
         <p class="muted small">{t('settings.soundsHint')}</p>
+      </section>
+
+      <section class="card stack">
+        <h3>{t('settings.camera')}</h3>
+        <CameraCheck />
       </section>
 
       <section class="card stack">

@@ -94,8 +94,14 @@ func TestQuietMessageIsNotPushed(t *testing.T) {
 		t.Fatalf("quiet message pushed: %+v", ps)
 	}
 	send(false)
-	if k := kinds(drain(got), b.id); len(k) != 1 || k[0] != "msg" {
+	ps := drain(got)
+	if k := kinds(ps, b.id); len(k) != 1 || k[0] != "msg" {
 		t.Fatalf("pushes = %v", k)
+	}
+	// Who wrote (the service worker shows the name its person gave them)
+	// and when (a push held back by the network still shows its own time).
+	if p := ps[0].payload; p["u"] != float64(a.user) || p["at"] == nil {
+		t.Fatalf("payload = %v", p)
 	}
 }
 

@@ -316,6 +316,20 @@ textarea,
   box-shadow: 0 0 0 1px var(--accent);
 }
 
+/* Settings, Camera: the preview, mirrored like the call's self view. */
+.cam-preview {
+  width: 100%;
+  max-width: 24rem;
+  aspect-ratio: 4 / 3;
+  object-fit: cover;
+  border-radius: 0.75rem;
+  background: #000;
+}
+
+.cam-preview.mirror {
+  transform: scaleX(-1);
+}
+
 .sound-row {
   display: flex;
   align-items: flex-end;
@@ -587,8 +601,9 @@ textarea,
 
 .sidebar {
   position: relative;
-  width: 24rem;
-  max-width: 40%;
+  width: var(--sidebar-w, 24rem); /* the person's own width: SidebarResize */
+  min-width: 16rem;
+  max-width: 55%;
   flex: none;
   display: flex;
   flex-direction: column;
@@ -602,6 +617,10 @@ textarea,
   display: flex;
   flex-direction: column;
   background: var(--chat-bg);
+  /* The chat's column: most of the window on a computer, with side margins
+     that grow with it (--chat-pad); the bubbles keep a readable width. */
+  --chat-col: 64rem;
+  --chat-pad: clamp(0.75rem, 3vw, 2.5rem);
 }
 
 /* Chat backgrounds (Settings, this device): the theme's own, drawn ones,
@@ -1082,8 +1101,9 @@ textarea,
 .messages-col {
   list-style: none;
   margin: 0 auto;
-  padding: 0.75rem 0.75rem 0.5rem;
-  max-width: 46rem;
+  padding: 0.75rem var(--chat-pad) 0.5rem;
+  width: 100%;
+  max-width: var(--chat-col);
   display: flex;
   flex-direction: column;
   gap: 0.2rem;
@@ -1108,7 +1128,7 @@ textarea,
   position: relative;
   display: flex;
   flex-direction: column;
-  max-width: min(85%, 32rem);
+  max-width: min(80%, 40rem);
   outline-offset: 0;
   border-radius: 1rem;
   /* Vertical scroll stays native; horizontal moves reach swipe-to-reply. */
@@ -1500,9 +1520,9 @@ img.blur {
   position: relative;
   flex: none;
   width: 100%;
-  max-width: 46rem;
+  max-width: var(--chat-col);
   margin: 0 auto;
-  padding: 0 0.5rem max(0.5rem, env(safe-area-inset-bottom));
+  padding: 0 calc(var(--chat-pad) - 0.25rem) max(0.5rem, env(safe-area-inset-bottom));
 }
 
 .composer {
@@ -1822,11 +1842,55 @@ img.blur {
 
 /* ---------- narrow screens: one pane at a time ---------- */
 
+/* The chat list's edge: drag (or arrow keys) to make it wider or narrower. */
+.sidebar-resize {
+  position: absolute;
+  top: 0;
+  right: -0.35rem;
+  bottom: 0;
+  width: 0.7rem;
+  z-index: 5;
+  cursor: col-resize;
+  touch-action: none;
+}
+
+.sidebar-resize::after {
+  content: '';
+  position: absolute;
+  inset: 0 0.3rem;
+  background: var(--accent);
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+
+/* A finger needs more than the mouse's thin edge. */
+@media (pointer: coarse) {
+  .sidebar-resize {
+    right: -1.375rem;
+    width: 2.75rem;
+  }
+
+  .sidebar-resize::after {
+    inset: 0 1.3rem;
+  }
+}
+
+.sidebar-resize:hover::after,
+.sidebar-resize:focus-visible::after,
+.sidebar-resize.dragging::after {
+  opacity: 0.6;
+}
+
 @media (max-width: 767px) {
   .sidebar {
     width: 100%;
+    min-width: 0;
     max-width: none;
     border: 0;
+  }
+
+  .sidebar-resize {
+    display: none;
   }
 
   .app.in-chat .sidebar {
@@ -2341,7 +2405,7 @@ img.blur {
 }
 
 .attach-menu {
-  right: max(0.75rem, calc((100vw - 46rem) / 2));
+  right: max(0.75rem, calc((100vw - var(--chat-col)) / 2));
   bottom: calc(4.5rem + env(safe-area-inset-bottom));
   min-width: 12rem;
 }
@@ -2510,10 +2574,21 @@ img.blur {
 
 /* The small picture takes its own shape (width and ratio from Call.tsx),
    so a camera turned sideways is not cut either. */
-.call-local {
+/* Where our own picture can be dragged: clear of the buttons on top, the
+   controls below and a notch. Only the picture takes taps. */
+.call-room {
   position: absolute;
-  top: max(1rem, env(safe-area-inset-top));
+  top: calc(max(0.75rem, env(safe-area-inset-top)) + 3.5rem);
+  bottom: calc(max(0.75rem, env(safe-area-inset-bottom)) + 7rem);
+  left: max(1rem, env(safe-area-inset-left));
   right: max(1rem, env(safe-area-inset-right));
+  z-index: 2;
+  pointer-events: none;
+}
+
+.call-local {
+  pointer-events: auto;
+  position: absolute; /* left, top and translate from Call.tsx: dragged anywhere in .call-room */
   padding: 0;
   border: 0;
   border-radius: 0.9rem;
@@ -2521,11 +2596,13 @@ img.blur {
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
   z-index: 2;
   background: #000;
-  touch-action: manipulation; /* a double tap swaps, it does not zoom */
+  touch-action: none; /* a double tap swaps, a drag moves it: neither zooms or scrolls */
+  cursor: grab;
 }
 
-.call-local:disabled {
-  opacity: 1; /* nothing to swap with is no reason to dim our own picture */
+.call-local.dragging {
+  cursor: grabbing;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.6);
 }
 
 .call-local video {
@@ -2698,13 +2775,20 @@ img.blur {
   object-fit: contain;
 }
 
-.call-screen .call-minimize {
+.call-screen .call-minimize,
+.call-screen .call-settings {
   position: absolute;
   top: max(0.75rem, env(safe-area-inset-top));
   left: max(0.75rem, env(safe-area-inset-left));
-  z-index: 2;
+  z-index: 3;
   color: #fff;
   background: rgba(0, 0, 0, 0.35);
+}
+
+/* The call's settings (devices, microphone): top right, out of the way. */
+.call-screen .call-settings {
+  left: auto;
+  right: max(0.75rem, env(safe-area-inset-right));
 }
 
 .call-who .call-note {

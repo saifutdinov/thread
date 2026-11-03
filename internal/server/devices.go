@@ -238,6 +238,7 @@ func (s *Server) revokeDevice(ctx context.Context, userID, deviceID int64) error
 	}
 	s.hub.closeDevice(deviceID)
 	if wasActive {
+		s.dropDevice(ctx, userID, deviceID) // a pending device was never in a call
 		ids, err := contactIDs(ctx, s.db, userID)
 		if err == nil {
 			s.hub.toUsers(ids, event{"t": "chat"})

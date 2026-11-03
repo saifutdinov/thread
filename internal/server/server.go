@@ -64,6 +64,7 @@ type Server struct {
 	m      metrics
 
 	preview *http.Client // link previews; tests swap the address check
+	sfu     *http.Client // LiveKit's RoomService (group.go roomService)
 
 	backupTo []age.Recipient
 
@@ -101,6 +102,7 @@ func New(ctx context.Context, cfg Config, log *slog.Logger) (*Server, error) {
 		groups: newGroupCalls(),
 
 		preview:  newPreviewClient(publicAddr),
+		sfu:      &http.Client{Timeout: 10 * time.Second},
 		backupTo: backupTo,
 	}
 	if s.push, err = newPusher(ctx, db, cfg.VAPIDSubject, s.hub.deviceInFront, s.hub.deviceOnline, log); err != nil {

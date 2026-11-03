@@ -3,6 +3,9 @@
 //   device       -> StoredDevice (non-extractable CryptoKeys)
 //   k:<chat>:<e> -> raw chat key bytes
 //   lang         -> UI language for notifications
+//   names        -> { [user id]: the name I gave them } (store.ts ownNames)
+//   push:<chat>  -> PushNote (store.ts): the chat's name and icon for notifications
+//   gjoin        -> { c, at }: "Join" tapped on a group call's notification (sw.js, group.ts)
 
 const DB = 'thread';
 const STORE = 'kv';

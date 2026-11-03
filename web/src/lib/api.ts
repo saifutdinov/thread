@@ -49,6 +49,7 @@ export interface Member {
   avatar_epoch?: number;
   invitee?: boolean; // I invited them, so I can make them a recovery link
   since?: number; // their first key epoch here (0 or none: from the start)
+  realName?: string; // the name from their profile, when I call them something else (store.ts ownNames)
 }
 
 // Picture is a sealed avatar or group photo (see profiles.go).

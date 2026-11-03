@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
@@ -117,6 +118,41 @@ func (g *groupCalls) leave(chat, device int64) map[int64]groupCall {
 	return out
 }
 
+// leaveUser takes all of a user's devices out of the chat's call.
+func (g *groupCalls) leaveUser(chat, user int64) map[int64]groupCall {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	out := map[int64]groupCall{}
+	c, ok := g.byChat[chat]
+	if !ok {
+		return out
+	}
+	for d, u := range c.devices {
+		if u == user {
+			delete(c.devices, d)
+			out[chat] = groupCall{}
+		}
+	}
+	if _, changed := out[chat]; changed {
+		out[chat] = c.snapshot()
+		if len(c.devices) == 0 {
+			delete(g.byChat, chat)
+		}
+	}
+	return out
+}
+
+// running: the chats with a call going on, and the calls' ids.
+func (g *groupCalls) running() map[int64]string {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	out := make(map[int64]string, len(g.byChat))
+	for chat, c := range g.byChat {
+		out[chat] = c.id
+	}
+	return out
+}
+
 func (g *groupCalls) get(chat int64) (groupCall, bool) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -223,7 +259,7 @@ func (s *Server) handleGroupCall(w http.ResponseWriter, r *http.Request, a *Auth
 			s.log.Warn("caller name", "err", err) // the push still rings, just without a name
 		}
 		for _, m := range without(members, a.UserID) {
-			s.push.notifyCall(r.Context(), chat, m, name, c.video, c.id, true)
+			s.push.notifyCall(r.Context(), chat, m, a.UserID, name, c.video, c.id, true)
 		}
 	} else if !started {
 		s.push.notifyCallEnd(r.Context(), a.UserID, true) // picked up here: the ring on my sleeping devices goes
@@ -318,16 +354,95 @@ func (s *Server) handleLiveKit(w http.ResponseWriter, r *http.Request, _ *Auth) 
 // liveKitToken is LiveKit's access token: a JWT (HS256) naming the room
 // and what the participant may do in it.
 func liveKitToken(key, secret, room, identity string, at time.Time) string {
+	return liveKitJWT(key, secret, identity, at, map[string]any{"room": room, "roomJoin": true, "canPublish": true, "canSubscribe": true, "canPublishData": true})
+}
+
+// liveKitAdminToken may administer one room (list and remove people).
+func liveKitAdminToken(key, secret, room string, at time.Time) string {
+	return liveKitJWT(key, secret, "connect-server", at, map[string]any{"room": room, "roomAdmin": true})
+}
+
+func liveKitJWT(key, secret, sub string, at time.Time, video map[string]any) string {
 	enc := func(v any) string {
 		b, _ := json.Marshal(v) // plain maps of strings, numbers and bools
 		return base64.RawURLEncoding.EncodeToString(b)
 	}
 	head := enc(map[string]string{"alg": "HS256", "typ": "JWT"})
-	claims := enc(map[string]any{
-		"iss": key, "sub": identity, "nbf": at.Unix() - 10, "exp": at.Add(liveKitTTL).Unix(),
-		"video": map[string]any{"room": room, "roomJoin": true, "canPublish": true, "canSubscribe": true, "canPublishData": true},
-	})
+	claims := enc(map[string]any{"iss": key, "sub": sub, "nbf": at.Unix() - 10, "exp": at.Add(liveKitTTL).Unix(), "video": video})
 	mac := hmac.New(sha256.New, []byte(secret))
 	mac.Write([]byte(head + "." + claims))
 	return head + "." + claims + "." + base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+}
+
+// roomService calls LiveKit's RoomService (Twirp, JSON) for one room.
+func (s *Server) roomService(ctx context.Context, method, room string, body, out any) error {
+	b, err := json.Marshal(body)
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(s.cfg.LiveKitURL, "/")+"/twirp/livekit.RoomService/"+method, bytes.NewReader(b))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+liveKitAdminToken(s.cfg.LiveKitKey, s.cfg.LiveKitSecret, room, time.Now()))
+	resp, err := s.sfu.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("livekit %s: %s", method, resp.Status)
+	}
+	if out == nil {
+		return nil
+	}
+	return json.NewDecoder(resp.Body).Decode(out)
+}
+
+// dropFromCall disconnects the LiveKit connections whose identity starts
+// with prefix ("<user>." or "<user>.<device>.") from the chat's call:
+// someone who left the group, or a device switched off. We stop giving
+// them passes; this ends the connection they hold. Best effort, logged.
+func (s *Server) dropFromCall(chat int64, id, prefix string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	room := groupRoom(chat, id)
+	var list struct {
+		Participants []struct {
+			Identity string `json:"identity"`
+		} `json:"participants"`
+	}
+	if err := s.roomService(ctx, "ListParticipants", room, map[string]string{"room": room}, &list); err != nil {
+		s.log.Warn("group call: list people", "chat", chat, "err", err)
+		return
+	}
+	for _, p := range list.Participants {
+		if !strings.HasPrefix(p.Identity, prefix) {
+			continue
+		}
+		if err := s.roomService(ctx, "RemoveParticipant", room, map[string]string{"room": room, "identity": p.Identity}, nil); err != nil {
+			s.log.Warn("group call: remove", "chat", chat, "err", err)
+		}
+	}
+}
+
+// dropUser takes a user who left the chat out of its running call: out of
+// who is in it here, and out of the room in LiveKit.
+func (s *Server) dropUser(ctx context.Context, chat, user int64) {
+	c, ok := s.groups.get(chat)
+	if !ok {
+		return
+	}
+	s.groupCallsLeft(ctx, s.groups.leaveUser(chat, user))
+	go s.dropFromCall(chat, c.id, fmt.Sprintf("%d.", user))
+}
+
+// dropDevice takes a switched-off device out of every running call; it may
+// hold a LiveKit connection in one its socket no longer shows.
+func (s *Server) dropDevice(ctx context.Context, user, device int64) {
+	s.groupCallsLeft(ctx, s.groups.leave(0, device))
+	for chat, id := range s.groups.running() {
+		go s.dropFromCall(chat, id, fmt.Sprintf("%d.%d.", user, device))
+	}
 }

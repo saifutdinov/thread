@@ -1,7 +1,9 @@
+import { signal } from '@preact/signals';
 import { useEffect, useState } from 'preact/hooks';
 import { call } from '../lib/call';
 import { groupCall } from '../lib/group';
 import { fromB64 } from '../lib/crypto';
+import { remember, remembered } from '../lib/devices';
 import { deviceCode } from '../lib/crypto';
 import { errText, t } from '../lib/i18n';
 import { enablePush, isIOS, notifPermission, pushSupported, standalone, updateReady } from '../lib/pwa';
@@ -202,6 +204,53 @@ function Onboarding() {
   );
 }
 
+// SidebarResize: the chat list's width, dragged at its edge or set with the
+// arrow keys (a double click restores it), remembered on this device. In
+// rem, so it grows with the text size.
+const SIDEBAR = { min: 16, max: 48, base: 24 };
+const sidebarW = signal(Number(remembered('sidebarW')) || SIDEBAR.base);
+const applySidebar = () => document.documentElement.style.setProperty('--sidebar-w', sidebarW.value + 'rem');
+applySidebar();
+
+function SidebarResize() {
+  const [drag, setDrag] = useState(false);
+  const set = (rem: number) => {
+    sidebarW.value = Math.round(Math.min(SIDEBAR.max, Math.max(SIDEBAR.min, rem)) * 4) / 4;
+    remember('sidebarW', String(sidebarW.value));
+    applySidebar();
+  };
+  return (
+    <div
+      class={'sidebar-resize' + (drag ? ' dragging' : '')}
+      role="separator"
+      aria-orientation="vertical"
+      aria-label={t('list.resize')}
+      aria-valuenow={sidebarW.value}
+      aria-valuemin={SIDEBAR.min}
+      aria-valuemax={SIDEBAR.max}
+      tabIndex={0}
+      onPointerDown={(e) => {
+        if (e.button !== 0) return;
+        e.currentTarget.setPointerCapture(e.pointerId);
+        setDrag(true);
+      }}
+      onPointerMove={(e) => {
+        if (!drag) return;
+        const left = e.currentTarget.parentElement!.getBoundingClientRect().left;
+        set((e.clientX - left) / parseFloat(getComputedStyle(document.documentElement).fontSize));
+      }}
+      onPointerUp={() => setDrag(false)}
+      onPointerCancel={() => setDrag(false)}
+      onDblClick={() => set(SIDEBAR.base)}
+      onKeyDown={(e) => {
+        if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+        e.preventDefault();
+        set(sidebarW.value + (e.key === 'ArrowLeft' ? -1 : 1));
+      }}
+    />
+  );
+}
+
 export function Main() {
   const r = route.value;
   const chatId = r.name === 'chat' || r.name === 'info' ? r.id : undefined;
@@ -220,6 +269,7 @@ export function Main() {
         <ChatList />
         {r.name === 'settings' && <Settings />}
         {r.name === 'new' && <NewChat />}
+        <SidebarResize />
       </aside>
       <main class="main">
         {chatId ? <ChatView id={chatId} /> : <EmptyPane />}

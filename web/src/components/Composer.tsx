@@ -76,6 +76,7 @@ export function Composer(props: {
   const [emoji, setEmoji] = useState(false);
   const [hasSel, setHasSel] = useState(false);
   const [menu, setMenu] = useState(false);
+  const menuAt = useRef<DOMRect | null>(null); // the attach button, which the menu opens over
   // Link preview for the first link in the text (opt-in, see prefs).
   const [card, setCard] = useState<{ from: string; lp: LinkCard } | null>(null);
   const [noCard, setNoCard] = useState(''); // a link whose card was closed
@@ -497,7 +498,15 @@ export function Composer(props: {
               }}
             />
             {!editing && (
-              <IconButton icon="attach" label={t('att.menu')} aria-expanded={menu} onClick={() => setMenu(!menu)} />
+              <IconButton
+                icon="attach"
+                label={t('att.menu')}
+                aria-expanded={menu}
+                onClick={(e: MouseEvent) => {
+                  menuAt.current = (e.currentTarget as HTMLElement).getBoundingClientRect();
+                  setMenu(!menu);
+                }}
+              />
             )}
             <input
               ref={photoInput}
@@ -582,7 +591,11 @@ export function Composer(props: {
       </div>
       {menu && (
         <div class="menu-layer" onPointerDown={(e) => e.target === e.currentTarget && setMenu(false)}>
-          <div class="menu attach-menu" role="menu">
+          <div
+            class="menu attach-menu"
+            role="menu"
+            style={menuAt.current ? { right: `${innerWidth - menuAt.current.right}px`, bottom: `${innerHeight - menuAt.current.top + 6}px` } : undefined}
+          >
             <button type="button" role="menuitem" onClick={() => (setMenu(false), photoInput.current?.click())}>
               <Icon name="image" /> {t('att.photos')}
             </button>

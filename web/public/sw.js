@@ -97,8 +97,8 @@ function fromB64(s) {
 }
 
 const TEXT = {
-  ru: { app: 'Нитка', call: 'Входящий звонок', callVideo: 'Входящий видеозвонок', groupCall: 'Зовёт в групповой звонок', groupCallVideo: 'Зовёт в групповой видеозвонок', answer: 'Ответить', decline: 'Отклонить', test: 'Уведомления работают', testBody: 'Так будут выглядеть сообщения и звонки.', msg: 'Новое сообщение', photo: '📷 Фото', voice: '🎤 Голосовое сообщение', video: '📹 Видеосообщение', clip: '🎬 Видео', callLog: '📞 Звонок', missed: '📞 Пропущенный звонок', file: '📎 Файл', login: 'Новый вход в аккаунт: {label}. Откройте Нитку, чтобы разрешить или запретить.' },
-  en: { app: 'Thread', call: 'Incoming call', callVideo: 'Incoming video call', groupCall: 'Invites you to a group call', groupCallVideo: 'Invites you to a group video call', answer: 'Answer', decline: 'Decline', test: 'Notifications work', testBody: 'This is how messages and calls will look.', msg: 'New message', photo: '📷 Photo', voice: '🎤 Voice message', video: '📹 Video message', clip: '🎬 Video', callLog: '📞 Call', missed: '📞 Missed call', file: '📎 File', login: 'New sign-in to your account: {label}. Open Thread to allow or deny it.' },
+  ru: { app: 'Нитка', call: 'Входящий звонок', callVideo: 'Входящий видеозвонок', groupCall: 'Зовёт в групповой звонок', groupCallVideo: 'Зовёт в групповой видеозвонок', answer: 'Ответить', decline: 'Отклонить', join: 'Присоединиться', read: 'Прочитано', more: 'новых: {n}', test: 'Уведомления работают', testBody: 'Так будут выглядеть сообщения и звонки.', msg: 'Новое сообщение', photo: '📷 Фото', voice: '🎤 Голосовое сообщение', video: '📹 Видеосообщение', clip: '🎬 Видео', callLog: '📞 Звонок', missed: '📞 Пропущенный звонок', file: '📎 Файл', login: 'Новый вход в аккаунт: {label}. Откройте Нитку, чтобы разрешить или запретить.' },
+  en: { app: 'Thread', call: 'Incoming call', callVideo: 'Incoming video call', groupCall: 'Invites you to a group call', groupCallVideo: 'Invites you to a group video call', answer: 'Answer', decline: 'Decline', join: 'Join', read: 'Mark as read', more: '{n} new', test: 'Notifications work', testBody: 'This is how messages and calls will look.', msg: 'New message', photo: '📷 Photo', voice: '🎤 Voice message', video: '📹 Video message', clip: '🎬 Video', callLog: '📞 Call', missed: '📞 Missed call', file: '📎 File', login: 'New sign-in to your account: {label}. Open Thread to allow or deny it.' },
 };
 
 async function decryptText(d) {
@@ -123,6 +123,15 @@ async function close(tag, upTo) {
   }
 }
 
+// What the app left for this chat (store.ts notePush): its name, a group
+// or not, and its picture. Who wrote, by the name I gave them (`names`).
+const BADGE = '/badge-96.png'; // Android's status bar: drawn from its alpha
+async function card(d, L) {
+  const note = (await idbGet('push:' + d.c)) || {};
+  const names = (await idbGet('names')) || {};
+  return { note, from: (d.u && names[d.u]) || d.n || L.app };
+}
+
 async function onPush(d) {
   const lang = (await idbGet('lang')) === 'en' ? 'en' : 'ru';
   const L = TEXT[lang];
@@ -142,26 +151,32 @@ async function onPush(d) {
     });
   }
   if (d.t === 'call' && d.g) {
-    // A group call: it opens the chat, whose banner joins it.
+    // A group call: a tap opens the chat, whose banner joins it; "Join"
+    // (Chromium) joins straight away.
     const hide = await idbGet('hidePreview');
-    return self.registration.showNotification(hide ? L.app : `📞 ${d.n || L.app}`, {
-      body: d.v ? L.groupCallVideo : L.groupCall,
+    const { note, from } = await card(d, L);
+    return self.registration.showNotification(hide ? L.app : `📞 ${note.t || from}`, {
+      body: hide ? L.groupCall : `${from} · ${(d.v ? L.groupCallVideo : L.groupCall).toLowerCase()}`,
       tag: 'gcall',
       renotify: true,
       vibrate: [400, 200, 400],
-      icon: '/icon-192.png',
-      data: { url: '/#/c/' + d.c },
+      icon: (!hide && note.i) || '/icon-192.png',
+      badge: BADGE,
+      data: { url: '/#/c/' + d.c, gcall: true, c: d.c },
+      actions: [{ action: 'join', title: L.join }],
     });
   }
   if (d.t === 'call') {
     const hide = await idbGet('hidePreview');
-    return self.registration.showNotification(hide ? L.app : `📞 ${d.n || L.app}`, {
+    const { note } = await card(d, L);
+    return self.registration.showNotification(hide ? L.app : `📞 ${note.t || d.n || L.app}`, {
       body: d.v ? L.callVideo : L.call,
       tag: 'call',
       renotify: true,
       requireInteraction: true,
       vibrate: [400, 200, 400, 200, 400],
-      icon: '/icon-192.png',
+      icon: (!hide && note.i) || '/icon-192.png',
+      badge: BADGE,
       data: { url: '/#/c/' + d.c, call: true, c: d.c, id: d.id },
       actions: [
         { action: 'answer', title: L.answer },
@@ -178,7 +193,7 @@ async function onPush(d) {
   if (p && p.cl) await close('call'); // the ring is over: the call log takes its place
   // App lock with hidden previews: say nothing about who or what.
   if (await idbGet('hidePreview')) {
-    return self.registration.showNotification(L.app, { body: L.msg, tag: 'c' + d.c, icon: '/icon-192.png', data: { url: '/#/c/' + d.c, m: d.m } });
+    return self.registration.showNotification(L.app, { body: L.msg, tag: 'c' + d.c, icon: '/icon-192.png', badge: BADGE, data: { url: '/#/c/' + d.c, c: d.c, m: d.m } });
   }
   let body = L.msg;
   if (p) {
@@ -189,12 +204,22 @@ async function onPush(d) {
   }
   // A dot on the app icon until the app opens and shows the real count.
   if (self.navigator.setAppBadge) self.navigator.setAppBadge().catch(() => {});
-  return self.registration.showNotification(d.n || L.app, {
-    body,
+  // One notification per chat: the newest message, how many came since the
+  // chat was last open, a group's title on top and "Name: text" under it.
+  const { note, from } = await card(d, L);
+  const prev = (await self.registration.getNotifications({ tag: 'c' + d.c }))[0];
+  const n = ((prev && prev.data && prev.data.n) || 0) + 1;
+  const title = (note.g && note.t) || from;
+  return self.registration.showNotification(n > 1 ? `${title} · ${L.more.replace('{n}', n)}` : title, {
+    body: note.g ? `${from}: ${body}` : body,
     tag: 'c' + d.c,
     renotify: true,
-    icon: '/icon-192.png',
-    data: { url: '/#/c/' + d.c, m: d.m },
+    icon: note.i || '/icon-192.png',
+    badge: BADGE,
+    timestamp: d.at || Date.now(),
+    vibrate: [120, 60, 120],
+    data: { url: '/#/c/' + d.c, c: d.c, m: d.m, n },
+    actions: [{ action: 'read', title: L.read }],
   });
 }
 
@@ -225,6 +250,29 @@ self.addEventListener('notificationclick', (e) => {
         }
         const c = list.find((x) => 'focus' in x);
         return idbSet('answer', { id: data.id, at: Date.now() }).then(() => (c ? c.focus() : self.clients.openWindow(url)));
+      }
+      // "Mark as read": the server learns it as if the chat were opened up to
+      // this message (the other devices' notifications close too), no app.
+      // Not marked (offline, signed out): the notification comes back.
+      if (e.action === 'read' && data.c) {
+        const n = e.notification;
+        return fetch(`/api/chats/${data.c}/read`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: data.m }) })
+          .then((res) => res.ok, () => false)
+          .then((ok) =>
+            ok
+              ? self.registration.getNotifications().then((left) => !left.length && self.navigator.clearAppBadge && self.navigator.clearAppBadge().catch(() => {}))
+              : self.registration.showNotification(n.title, { body: n.body, tag: n.tag, icon: n.icon, badge: n.badge, data: n.data, actions: n.actions }),
+          );
+      }
+      // "Join" on a group call: left in IndexedDB first for an app this
+      // opens (group.ts reads it once it knows the running calls), then an
+      // open one joins at once.
+      if (data.gcall && e.action === 'join') {
+        return idbSet('gjoin', { c: data.c, at: Date.now() }).then(() => {
+          list.forEach((c) => c.postMessage({ t: 'gjoin', c: data.c }));
+          const c = list.find((x) => 'focus' in x);
+          return c ? c.focus() : self.clients.openWindow(url);
+        });
       }
       for (const c of list) {
         if ('focus' in c) {

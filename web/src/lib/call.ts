@@ -64,7 +64,6 @@ export interface CallView {
   bg?: BgId; // behind us: blurred or replaced
   screen?: boolean; // we show our screen instead of the camera
   peerScreen?: boolean; // they show theirs: it is always shown whole
-  canMusic?: boolean; // the connection has a music slot (an older app's has not)
   music?: boolean; // we send music from a tab or the screen
   peerMusic?: boolean; // they send theirs
   musicIn?: MediaStream; // their music slot, played by its own <audio>
@@ -126,12 +125,11 @@ navigator.serviceWorker?.addEventListener('message', (e) => {
   else if (e.data.k === 'decline') decline();
 });
 
-// The camera: the one picked in the devices menu (remembered), else the
-// front or back one. "ideal", not "exact": a camera unplugged since then
-// falls back to another instead of failing the call.
-let camId = remembered('callCam');
+// The camera: the one picked in the devices menu or in Settings (remembered),
+// else the front or back one. "ideal", not "exact": a camera unplugged since
+// then falls back to another instead of failing the call.
 let facing: 'user' | 'environment' = 'user';
-const CAMERA = (): MediaTrackConstraints => ({
+const CAMERA = (camId = remembered('callCam')): MediaTrackConstraints => ({
   ...(camId ? { deviceId: { ideal: camId } } : { facingMode: facing }),
   width: { ideal: 1280 },
   height: { ideal: 720 },
@@ -493,7 +491,7 @@ export async function accept(withVideo: boolean) {
     if (slot) slot.direction = 'sendrecv';
     const music = musicSlot(p); // none from an older app
     if (music) music.direction = 'sendrecv';
-    update({ canVideo: !!slot, canMusic: !!music });
+    update({ canVideo: !!slot });
     codecs(p, false);
     await localDescription(p, await p.createAnswer());
     const { e, body } = await sealSignal(v.chat, v.id, 'answer', JSON.stringify(p.localDescription));
@@ -549,8 +547,8 @@ function cleanup() {
   call.value?.local?.getTracks().forEach((tr) => tr.stop());
   mic?.close();
   mic = null;
-  musicTrack?.stop();
-  musicTrack = null;
+  screenSound?.stop();
+  screenSound = null;
   pc?.close();
   pc = null;
   peerDevice = 0;
@@ -722,7 +720,6 @@ export async function switchCamera() {
   // From the camera in use: one picked by name may face either way.
   const now = call.value?.local?.getVideoTracks()[0]?.getSettings().facingMode;
   facing = (now === 'environment' || now === 'user' ? now : facing) === 'user' ? 'environment' : 'user';
-  camId = '';
   remember('callCam', '');
   try {
     await useCamera();
@@ -732,7 +729,6 @@ export async function switchCamera() {
 }
 
 export async function selectCamera(deviceId: string) {
-  camId = deviceId;
   remember('callCam', deviceId);
   const v = call.value;
   if (!v || v.camOff || v.screen) return;
@@ -750,22 +746,42 @@ export async function selectCamera(deviceId: string) {
 export const canShareScreen = !mobile && typeof navigator.mediaDevices?.getDisplayMedia === 'function';
 let camBefore = false; // the camera was on when sharing began
 
+// shareScreen puts a screen, a window or a tab in place of the camera, with
+// its sound when it is ticked in the browser's picker (Chrome and Edge on
+// computers; other browsers capture no sound). The sound goes into the
+// sound slot (musicSlot) as is: no echo cancelling, noise suppression or
+// gain control, which are made for speech and spoil music. The browser's
+// own "Stop sharing" ends both.
+let screenSound: MediaStreamTrack | null = null;
+let choosing = false; // the browser's picker is open
+
 export async function shareScreen() {
   const v = call.value;
   const sender = senderOf('video');
-  if (!v || !sender || v.screen) return;
+  if (!v || !sender || v.screen || choosing) return;
+  choosing = true;
   let s: MediaStream;
   try {
-    s = await navigator.mediaDevices.getDisplayMedia({ video: { frameRate: { ideal: 15, max: 30 } }, audio: false });
+    s = await navigator.mediaDevices.getDisplayMedia({
+      video: { frameRate: { ideal: 15, max: 30 } },
+      // restrictOwnAudio: the whole screen's sound without this page's own,
+      // or the other side would hear themselves.
+      audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false, channelCount: 2, restrictOwnAudio: true },
+      systemAudio: 'include',
+      selfBrowserSurface: 'exclude', // this tab would send the call back
+    } as DisplayMediaStreamOptions);
   } catch (e) {
     // Cancelled in the browser's own picker: nothing to say.
-    if ((e as DOMException)?.name !== 'NotAllowedError') showToast(t('call.screenFailed'));
+    if ((e as DOMException)?.name !== 'NotAllowedError' && call.value?.id === v.id) showToast(t('call.screenFailed'));
     return;
+  } finally {
+    choosing = false;
   }
   const track = s.getVideoTracks()[0];
+  const sound = s.getAudioTracks()[0];
   track.contentHint = 'detail'; // text stays sharp: frames drop before resolution
   const now = call.value;
-  if (!now || now.id !== v.id) return track.stop(); // the call ended while choosing
+  if (!now || now.id !== v.id) return s.getTracks().forEach((tr) => tr.stop()); // the call ended while choosing
   // Taken off the hidden-page handler first: sharing a tab hides this page,
   // and the handler would put the camera back over the screen.
   const effects = fx;
@@ -774,7 +790,7 @@ export async function shareScreen() {
     await sender.replaceTrack(track);
   } catch (e) {
     fx = effects;
-    track.stop();
+    s.getTracks().forEach((tr) => tr.stop());
     return showToast(errText(e));
   }
   camBefore = !now.camOff;
@@ -787,13 +803,45 @@ export async function shareScreen() {
     update({ video: true });
     void keepAwake();
   }
+  if (sound) await shareSound(sound);
   if (pc) void senders(pc);
   sendState();
+}
+
+async function shareSound(sound: MediaStreamTrack) {
+  // None, or receive-only, in a call with an older app (it would mix the
+  // sound into the voice): the picture goes alone then.
+  const slot = musicSlot();
+  if (slot?.currentDirection !== 'sendrecv') return sound.stop();
+  sound.contentHint = 'music';
+  screenSound = sound;
+  sound.addEventListener('ended', () => void stopSound());
+  try {
+    await slot.sender.replaceTrack(sound);
+  } catch {
+    if (screenSound === sound) screenSound = null;
+    return sound.stop();
+  }
+  if (screenSound !== sound || !call.value?.screen) return; // stopped meanwhile
+  update({ music: true });
+  showToast(t('call.soundHeadphones'));
+}
+
+async function stopSound() {
+  if (!screenSound) return;
+  screenSound.stop();
+  screenSound = null;
+  update({ music: false });
+  sendState();
+  await musicSlot()
+    ?.sender.replaceTrack(null)
+    .catch(() => {});
 }
 
 export async function stopScreen() {
   const v = call.value;
   if (!v?.screen) return;
+  void stopSound();
   v.local?.getVideoTracks().forEach((tr) => tr.stop());
   update({ local: new MediaStream(v.local?.getAudioTracks() ?? []), screen: false, camOff: true });
   sendState(); // the other side stops showing the last frame at once
@@ -811,74 +859,6 @@ export async function stopScreen() {
     ?.replaceTrack(null)
     .catch(() => {});
   sendState();
-}
-
-// Music for both (Chrome and Edge on computers: other browsers capture no
-// sound). The person picks a tab (YouTube, Spotify in the browser), a
-// window or the whole screen and ticks its sound; the picker insists on a
-// picture too, which is dropped at once. The sound goes into the music
-// slot as is: no echo cancelling, noise suppression or gain control, which
-// are made for speech and spoil music. The browser's own "Stop sharing"
-// ends it too.
-export const canShareMusic = canShareScreen && 'suppressLocalAudioPlayback' in (navigator.mediaDevices.getSupportedConstraints?.() ?? {});
-let musicTrack: MediaStreamTrack | null = null;
-let choosingMusic = false; // the browser's picker is open
-
-export async function shareMusic() {
-  const v = call.value;
-  const slot = musicSlot();
-  if (!v || !slot || v.music || choosingMusic) return;
-  choosingMusic = true;
-  let s: MediaStream;
-  try {
-    s = await navigator.mediaDevices.getDisplayMedia({
-      video: { displaySurface: 'browser' }, // the picker opens on tabs
-      // restrictOwnAudio: the whole screen's sound without this page's own,
-      // or the other side would hear themselves.
-      audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false, channelCount: 2, restrictOwnAudio: true },
-      systemAudio: 'include',
-      selfBrowserSurface: 'exclude', // this tab would send the call back
-    } as DisplayMediaStreamOptions);
-  } catch (e) {
-    // Cancelled in the browser's own picker: nothing to say.
-    if ((e as DOMException)?.name !== 'NotAllowedError' && call.value?.id === v.id) showToast(t('call.musicFailed'));
-    return;
-  } finally {
-    choosingMusic = false;
-  }
-  s.getVideoTracks().forEach((tr) => tr.stop());
-  const track = s.getAudioTracks()[0];
-  if (call.value?.id !== v.id) return track?.stop(); // the call ended while choosing
-  if (!track) return showToast(t('call.musicNoSound')); // the sound left unticked
-  track.contentHint = 'music';
-  // Ours before the swap: a hang-up or the browser's "Stop sharing"
-  // meanwhile stops it like any other time.
-  musicTrack = track;
-  track.addEventListener('ended', () => void stopMusic());
-  try {
-    await slot.sender.replaceTrack(track);
-  } catch (e) {
-    if (musicTrack === track) musicTrack = null;
-    track.stop();
-    if (call.value?.id === v.id) showToast(errText(e));
-    return;
-  }
-  if (musicTrack !== track || call.value?.id !== v.id) return; // stopped or over meanwhile
-  update({ music: true });
-  if (pc) void senders(pc);
-  sendState();
-  showToast(t('call.musicHeadphones'));
-}
-
-export async function stopMusic() {
-  if (!musicTrack) return;
-  musicTrack.stop();
-  musicTrack = null;
-  update({ music: false });
-  sendState();
-  await musicSlot()
-    ?.sender.replaceTrack(null)
-    .catch(() => {});
 }
 
 // selectMic swaps the microphone mid-call. On Android this is also how a
@@ -981,9 +961,6 @@ async function onSignal(ev: Record<string, unknown>) {
         peerDevice = ev.dev as number;
         update({ phase: 'connecting' });
         await pc.setRemoteDescription(JSON.parse(await openSignal(v.chat, ev.e as number, id, 'answer', ev.body as string)));
-        // An older app answers the music slot receive-only and would mix
-        // the music into the voice: no music button then.
-        update({ canMusic: musicSlot()?.currentDirection === 'sendrecv' });
         await flushIce();
         return;
       case 'ice': {

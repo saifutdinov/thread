@@ -663,7 +663,26 @@ function Bubble(props: {
             </span>
           ),
         )}
-        {m.p?.cl ? (
+        {m.p?.cl?.g ? (
+          // A group call: "going on" with a Join button while it lasts.
+          <span class="call-log">
+            <Icon name="group" size={18} />
+            <span>{runningCalls.value.get(chat.id)?.id === m.p.cl.g ? t('gcall.logRunning') : t('gcall.log')}</span>
+            {runningCalls.value.get(chat.id)?.id === m.p.cl.g && !groupCall.value && !call.value && (
+              <button
+                type="button"
+                class="btn small"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  void startGroupCall(chat.id, false);
+                }}
+              >
+                {t('gcall.join')}
+              </button>
+            )}
+            {!foot && meta}
+          </span>
+        ) : m.p?.cl ? (
           <span class="call-log">
             <Icon name={m.p.cl.v ? 'videocam' : 'phone'} size={18} />
             <span>{callLabel(m.p.cl, mine)}</span>

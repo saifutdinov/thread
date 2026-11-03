@@ -5,7 +5,6 @@ import {
   accept,
   call,
   type CallView,
-  canShareMusic,
   canShareScreen,
   decline,
   hangup,
@@ -16,26 +15,23 @@ import {
   selectSpeaker,
   setBackground,
   setEffect,
-  shareMusic,
   shareScreen,
   speaker,
-  stopMusic,
   stopScreen,
   switchCamera,
   toggleCamera,
   toggleMute,
 } from '../lib/call';
-import { cameras, canPickOutput, deviceName, microphones, remember, remembered, speakers } from '../lib/devices';
+import { cameras, canPickOutput, remember, remembered } from '../lib/devices';
 import { BACKGROUNDS, EFFECTS } from '../lib/effects';
 import { t } from '../lib/i18n';
 import { fmtDuration } from '../lib/recorder';
 import { locked } from '../lib/lock';
-import { canTune } from '../lib/mic';
 import { callFit } from '../lib/prefs';
-import { isDoubleTap, type Tap, tileWidth } from '../lib/tap';
+import { isDoubleTap, placeTile, type Tap, tileWidth } from '../lib/tap';
 import { type CallLog, chatPicture, findChat, showToast } from '../lib/store';
-import { MicTuning } from './MicTuning';
-import { Avatar, Icon, IconButton, type IconName, Modal } from './ui';
+import { CallSettings } from './CallSettings';
+import { Avatar, Icon, IconButton, type IconName } from './ui';
 
 // A minimized call shrinks to a strip at the top (and, with video, a small
 // tile) so the app stays usable; the sound keeps playing.
@@ -57,65 +53,14 @@ const attach = (s?: MediaStream) => (el: HTMLMediaElement | null) => {
   if (el && el.srcObject !== (s ?? null)) el.srcObject = s ?? null;
 };
 
-// DevicePicker: which camera, microphone and speakers the call uses, all
-// listed even when there is one (to see which). On Android the
-// "microphones" include the earpiece and the speakerphone.
-function DevicePicker(props: { onClose: () => void }) {
-  const c = call.value;
-  const mic = c?.local?.getAudioTracks()[0]?.getSettings().deviceId;
-  // The camera in use, or (off, or the screen shown) the one that comes back.
-  const cam = (!c?.camOff && !c?.screen && c?.local?.getVideoTracks()[0]?.getSettings().deviceId) || remembered('callCam');
-  const cams = cameras();
-  const ins = microphones();
-  const outs = speakers();
-  return (
-    <Modal label={t('call.devices')} onClose={props.onClose} class="device-picker">
-      <h2>{t('call.devices')}</h2>
-      {cams.length > 0 && (
-        <fieldset>
-          <legend>{t('call.audio.camera')}</legend>
-          {cams.map((d, i) => (
-            <label key={d.deviceId} class="row">
-              <input type="radio" name="cam" checked={d.deviceId === cam} onChange={() => void selectCamera(d.deviceId)} />
-              <span>{deviceName(d, i)}</span>
-            </label>
-          ))}
-        </fieldset>
-      )}
-      {ins.length > 0 && (
-        <fieldset>
-          <legend>{t('call.audio.mic')}</legend>
-          {ins.map((d, i) => (
-            <label key={d.deviceId} class="row">
-              <input type="radio" name="mic" checked={d.deviceId === mic} onChange={() => void selectMic(d.deviceId)} />
-              <span>{deviceName(d, i)}</span>
-            </label>
-          ))}
-        </fieldset>
-      )}
-      {canTune && <MicTuning reopen={reopenMic} />}
-      {outs.length > 0 && (
-        <fieldset>
-          <legend>{t('call.audio.out')}</legend>
-          {outs.map((d, i) => (
-            <label key={d.deviceId} class="row">
-              <input
-                type="radio"
-                name="speaker"
-                checked={d.deviceId === (speaker.value || 'default')}
-                onChange={() => selectSpeaker(d.deviceId)}
-              />
-              <span>{deviceName(d, i)}</span>
-            </label>
-          ))}
-        </fieldset>
-      )}
-      <button type="button" class="btn secondary" onClick={props.onClose}>
-        {t('common.done')}
-      </button>
-    </Modal>
-  );
-}
+// Our own picture can be dragged anywhere in .call-room: between the buttons
+// on top and the controls below, clear of a notch. Where it was left is kept
+// as fractions of that room (placeTile), so it holds when the window or the
+// picture changes size.
+const selfPos = signal(((): [number, number] => {
+  const [x, y] = remembered('selfTile').split(',').map(Number);
+  return x >= 0 && x <= 1 && y >= 0 && y <= 1 ? [x, y] : [1, 0]; // top right at first
+})());
 
 // FxRow: one row of the effects tray, "none" first; scrolls sideways
 // when it does not fit.
@@ -324,6 +269,8 @@ export function CallScreen() {
   const [swapped, setSwapped] = useState(false);
   const [thumbSize, setThumbSize] = useState({ w: 3, h: 4 }); // the small picture's own shape, rotations too
   const lastTap = useRef<Tap | null>(null);
+  const drag = useRef<{ px: number; py: number; left: number; top: number; moved: boolean } | null>(null);
+  const [dragging, setDragging] = useState(false);
   const mini = !!c && minimized.value && c.phase !== 'incoming';
   useEffect(() => {
     const i = setInterval(() => tick((n) => n + 1), 1000);
@@ -438,7 +385,10 @@ export function CallScreen() {
         onCancel={(e) => e.preventDefault() /* Escape must not end a call */}
       >
         {c.phase !== 'incoming' && (
-          <IconButton icon="down" label={t('call.minimize')} class="call-minimize" onClick={() => (minimized.value = true)} />
+          <>
+            <IconButton icon="down" label={t('call.minimize')} class="call-minimize" onClick={() => (minimized.value = true)} />
+            <IconButton icon="tune" label={t('call.settings')} class="call-settings" aria-haspopup="dialog" onClick={() => setPicker(true)} />
+          </>
         )}
         {big && (
           <video
@@ -461,36 +411,74 @@ export function CallScreen() {
         )}
         {small && (
           // A button: a double tap or click swaps; a keyboard or screen
-          // reader's click (no pointer, detail 0) swaps at once.
-          <button
-            type="button"
-            class={'call-local' + (!swap && mirror ? ' mirror' : '')}
-            style={{ aspectRatio: `${thumbSize.w} / ${thumbSize.h}`, width: tileWidth(thumbSize.w, thumbSize.h) }}
-            disabled={!canSwap}
-            aria-label={t('call.swap')}
-            title={canSwap ? t('call.swap') : undefined}
-            onPointerUp={(e) => {
-              if (e.button !== 0) return;
-              const now = { t: e.timeStamp, x: e.clientX, y: e.clientY };
-              if (isDoubleTap(lastTap.current, now)) {
-                lastTap.current = null;
-                toggleSwap();
-              } else lastTap.current = now;
-            }}
-            onClick={(e) => e.detail === 0 && toggleSwap()}
-          >
-            <video
-              ref={attach(small)}
-              data-remote={swap || undefined}
-              autoPlay
-              playsInline
-              muted
-              onResize={(e) => {
-                const v = e.currentTarget;
-                if (v.videoWidth && v.videoHeight) setThumbSize({ w: v.videoWidth, h: v.videoHeight });
+          // reader's click (no pointer, detail 0) swaps at once. Dragged, it
+          // moves within .call-room (selfPos). Not `disabled` with nothing to
+          // swap: a disabled button gets no pointer events, nor a drag.
+          <div class="call-room">
+            <button
+              type="button"
+              class={'call-local' + (!swap && mirror ? ' mirror' : '') + (dragging ? ' dragging' : '')}
+              style={{
+                aspectRatio: `${thumbSize.w} / ${thumbSize.h}`,
+                width: tileWidth(thumbSize.w, thumbSize.h),
+                left: `${selfPos.value[0] * 100}%`,
+                top: `${selfPos.value[1] * 100}%`,
+                translate: `${-selfPos.value[0] * 100}% ${-selfPos.value[1] * 100}%`,
               }}
-            />
-          </button>
+              aria-disabled={!canSwap || undefined}
+              aria-label={t('call.swap')}
+              title={canSwap ? t('call.swap') : undefined}
+              onPointerDown={(e) => {
+                if (e.button !== 0) return;
+                const el = e.currentTarget;
+                const r = el.getBoundingClientRect();
+                const box = el.parentElement!.getBoundingClientRect();
+                drag.current = { px: e.clientX, py: e.clientY, left: r.left - box.left, top: r.top - box.top, moved: false };
+                el.setPointerCapture(e.pointerId);
+              }}
+              onPointerMove={(e) => {
+                const d = drag.current;
+                if (!d) return;
+                const dx = e.clientX - d.px;
+                const dy = e.clientY - d.py;
+                if (!d.moved && Math.hypot(dx, dy) < 6) return; // a tap jitters, a drag moves
+                if (!d.moved) setDragging(true);
+                d.moved = true;
+                const el = e.currentTarget;
+                const room = el.parentElement!.getBoundingClientRect();
+                selfPos.value = placeTile({ w: room.width, h: room.height }, { w: el.offsetWidth, h: el.offsetHeight }, d.left + dx, d.top + dy);
+              }}
+              onPointerUp={(e) => {
+                const d = drag.current;
+                drag.current = null;
+                setDragging(false);
+                if (d?.moved) return remember('selfTile', selfPos.value.join(','));
+                if (e.button !== 0 || !canSwap) return;
+                const now = { t: e.timeStamp, x: e.clientX, y: e.clientY };
+                if (isDoubleTap(lastTap.current, now)) {
+                  lastTap.current = null;
+                  toggleSwap();
+                } else lastTap.current = now;
+              }}
+              onPointerCancel={() => {
+                drag.current = null;
+                setDragging(false);
+              }}
+              onClick={(e) => e.detail === 0 && canSwap && toggleSwap()}
+            >
+              <video
+                ref={attach(small)}
+                data-remote={swap || undefined}
+                autoPlay
+                playsInline
+                muted
+                onResize={(e) => {
+                  const v = e.currentTarget;
+                  if (v.videoWidth && v.videoHeight) setThumbSize({ w: v.videoWidth, h: v.videoHeight });
+                }}
+              />
+            </button>
+          </div>
         )}
         {c.phase === 'active' && c.q && <QualityBadge q={c.q} />}
         <div class="call-who">
@@ -570,14 +558,6 @@ export function CallScreen() {
                   onClick={() => void (c.screen ? stopScreen() : shareScreen())}
                 />
               )}
-              {canShareMusic && c.phase === 'active' && c.canMusic && (
-                <Btn
-                  icon="music"
-                  label={c.music ? t('call.musicStop') : t('call.music')}
-                  tone={c.music ? 'on' : undefined}
-                  onClick={() => void (c.music ? stopMusic() : shareMusic())}
-                />
-              )}
               {c.video && !c.camOff && !c.screen && (
                 <Btn
                   icon="sparkle"
@@ -587,13 +567,23 @@ export function CallScreen() {
                   onClick={() => setFxOpen(!fxOpen)}
                 />
               )}
-              <Btn icon="devices" label={t('call.devices')} expanded={picker} onClick={() => setPicker(true)} />
               {canFloat(c) && <Btn icon="pip" label={t('call.pip')} onClick={() => void floatCall().catch(() => showToast(t('call.pipFailed')))} />}
               <Btn icon="callEnd" label={t('call.hangup')} tone="red" onClick={() => hangup()} />
             </>
           )}
         </div>
-        {picker && <DevicePicker onClose={() => setPicker(false)} />}
+        {picker && (
+          <CallSettings
+            onClose={() => setPicker(false)}
+            mic={c.local?.getAudioTracks()[0]?.getSettings().deviceId}
+            // The camera in use, or (off, or the screen shown) the one that comes back.
+            cam={(!c.camOff && !c.screen && c.local?.getVideoTracks()[0]?.getSettings().deviceId) || remembered('callCam')}
+            onMic={selectMic}
+            onCam={selectCamera}
+            onSpeaker={selectSpeaker}
+            reopen={reopenMic}
+          />
+        )}
       </dialog>
     </>
   );

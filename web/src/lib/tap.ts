@@ -20,3 +20,13 @@ export function tileWidth(w: number, h: number): string {
   const base = w > h ? '12rem, 40vw' : '8rem, 28vw';
   return w && h ? `min(${base}, calc(40vh * ${w} / ${h}))` : `min(${base})`;
 }
+
+type Size = { w: number; h: number };
+
+// placeTile turns where a dragged tile's top left corner is wanted, in px
+// within the room it moves in (.call-room), into fractions of the room it
+// has left, kept within it.
+export function placeTile(room: Size, tile: Size, left: number, top: number): [number, number] {
+  const frac = (at: number, size: number, own: number) => (size > own ? Math.min(1, Math.max(0, at / (size - own))) : 0);
+  return [frac(left, room.w, tile.w), frac(top, room.h, tile.h)];
+}

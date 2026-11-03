@@ -2,11 +2,12 @@ import { signal } from '@preact/signals';
 import type { LocalVideoTrack, Participant, RemoteTrack, Room, VideoTrack } from 'livekit-client';
 import { api, ApiError, type RunningCall } from './api';
 import { rand, toB64u } from './crypto';
-import { remembered } from './devices';
+import { remember, remembered } from './devices';
 import { errText, t } from './i18n';
+import { idbGet, idbSet } from './idb';
 import { latest, micConstraints, type Mic, openMic, wantsProcessing } from './mic';
 import { hangupTone, playSound } from './sounds';
-import { me, openSignal, releaseSocket, sealSignal, setGroupHandler, showToast, socketHold } from './store';
+import { me, openSignal, releaseSocket, sealSignal, sendCallLog, setGroupHandler, showToast, socketHold } from './store';
 
 // Group calls (docs/adr/0002-group-calls.md): up to 10 people through the
 // LiveKit SFU next to the server. Every frame is encrypted here with the
@@ -45,6 +46,7 @@ export const groupCallsOn = signal(false);
 export const runningCalls = signal<Map<number, RunningCall>>(new Map());
 
 const RING_MS = 45_000;
+const CROWD = 5; // from this many people on, a newcomer comes in muted
 let lk: typeof import('livekit-client') | null = null; // loaded on the first group call
 let room: Room | null = null;
 let worker: Worker | null = null; // LiveKit's E2EE worker holds the call key: ours to stop
@@ -101,6 +103,29 @@ setGroupHandler((e) => {
   }
 });
 
+// "Join" on a group call's notification (sw.js): an open app joins at once;
+// one the tap opened joins once it knows the running calls (reopen). Either
+// way the note is used up, so a later reconnect does not join again.
+// A call this app does not know of yet (a phone back from the background,
+// its list from before) keeps the note for the list the new socket brings.
+let joining = false;
+async function pendingJoin(chat?: number) {
+  if (joining) return; // both ways at once: one join
+  joining = true;
+  try {
+    const j = await idbGet<{ c: number; at: number } | null>('gjoin').catch(() => null);
+    if (!j || Date.now() - j.at > 60_000 || (chat !== undefined && j.c !== chat) || !runningCalls.value.has(j.c)) return;
+    await idbSet('gjoin', null).catch(() => {});
+    await startGroupCall(j.c, false);
+  } finally {
+    joining = false;
+  }
+}
+
+navigator.serviceWorker?.addEventListener('message', (e) => {
+  if (e.data?.t === 'gjoin') void pendingJoin(e.data.c);
+});
+
 // A new socket: the running calls (an app that just opened shows their
 // banners), and back into ours, which the server dropped with the old one.
 async function reopen() {
@@ -108,6 +133,7 @@ async function reopen() {
     const r = await api.groupCalls();
     groupCallsOn.value = r.on;
     runningCalls.value = new Map(r.calls.map((c) => [c.c, c]));
+    void pendingJoin();
     const j = joined;
     if (j && groupCall.value?.phase === 'active') {
       const back = await api.joinGroupCall(j.chat, { ...j, rejoin: true });
@@ -135,6 +161,8 @@ export async function startGroupCall(chat: number, video: boolean) {
   groupCall.value = { chat, id: '', phase: 'connecting', video, muted: false, camOff: !video, people: [] };
   try {
     let body: Parameters<typeof api.joinGroupCall>[1] = {};
+    // Joining a call that already has five people: in it muted, to listen first.
+    const crowded = (runningCalls.value.get(chat)?.users.length ?? 0) >= CROWD;
     if (!runningCalls.value.has(chat)) {
       const id = toB64u(rand(12));
       const sealed = await sealSignal(chat, id, 'gkey', toB64u(rand(32)));
@@ -147,7 +175,9 @@ export async function startGroupCall(chat: number, video: boolean) {
     const key = await openSignal(chat, j.e, j.id, 'gkey', j.key);
     if (stale()) return;
     update({ id: j.id });
-    await enter(j.url, j.token, key, video, stale);
+    // Ours is the call (no race lost): it goes into the chat, without a push.
+    if (body.id && j.id === body.id) sendCallLog(chat, { v: video, d: 0, s: 'ok', g: j.id }).catch(() => {});
+    await enter(j.url, j.token, key, video, stale, crowded);
   } catch (e) {
     if (stale()) return;
     showToast(e instanceof ApiError && e.code === 'call_full' ? t('gcall.full') : errText(e));
@@ -157,7 +187,7 @@ export async function startGroupCall(chat: number, video: boolean) {
 
 // enter connects to LiveKit with frame encryption on. Every await may be
 // a hang-up: a cancelled attempt opens nothing and closes what it opened.
-async function enter(path: string, token: string, key: string, video: boolean, stale: () => boolean) {
+async function enter(path: string, token: string, key: string, video: boolean, stale: () => boolean, muted = false) {
   lk = await import('livekit-client');
   const { default: E2EEWorker } = await import('livekit-client/e2ee-worker?worker');
   if (stale()) return;
@@ -228,8 +258,11 @@ async function enter(path: string, token: string, key: string, video: boolean, s
   try {
     const own = await processedMic(mic || undefined);
     if (stale()) own?.close();
-    else if (own) await publishMic(r, own);
-    else await r.localParticipant.setMicrophoneEnabled(true);
+    else if (own) {
+      await publishMic(r, own);
+      if (muted) await r.localParticipant.setMicrophoneEnabled(false);
+    } else if (!muted) await r.localParticipant.setMicrophoneEnabled(true);
+    if (muted && !stale()) showToast(t('gcall.joinedMuted', { n: CROWD }));
     if (video && !stale()) await r.localParticipant.setCameraEnabled(true);
   } catch {
     if (!stale()) showToast(t('call.noMedia')); // in the call anyway: listening works without a microphone
@@ -290,7 +323,8 @@ export const reopenGroupMic = latest(async () => {
   const pub = p.getTrackPublication(lk.Track.Source.Microphone);
   const muted = !p.isMicrophoneEnabled;
   try {
-    const own = await processedMic((gmic?.raw ?? pub?.track?.mediaStreamTrack)?.getSettings().deviceId);
+    // The one picked in the call's settings, else the one in use.
+    const own = await processedMic(remembered('callMic') || (gmic?.raw ?? pub?.track?.mediaStreamTrack)?.getSettings().deviceId);
     if (room !== r) return own?.close();
     if (!own && !gmic) return; // LiveKit's microphone already, and it stays
     if (pub?.track) await p.unpublishTrack(pub.track);
@@ -306,14 +340,49 @@ export const reopenGroupMic = latest(async () => {
   }
 });
 
+// groupDevices: the microphone and camera the call uses now, for its settings.
+export function groupDevices(): { mic?: string; cam?: string } {
+  const p = room?.localParticipant;
+  if (!p || !lk) return {};
+  const { Camera, Microphone } = lk.Track.Source;
+  const mic = gmic?.raw ?? p.getTrackPublication(Microphone)?.track?.mediaStreamTrack;
+  const cam = p.getTrackPublication(Camera)?.track?.mediaStreamTrack;
+  return { mic: mic?.getSettings().deviceId, cam: (cam?.readyState === 'live' && cam.getSettings().deviceId) || remembered('callCam') };
+}
+
+// selectGroupMic and selectGroupCamera switch devices mid-call, remembered as
+// in a 1:1 call. A processed microphone (ours) opens again on the new one;
+// LiveKit's own it switches itself, the camera too, and the speakers.
+export async function selectGroupMic(id: string) {
+  remember('callMic', id);
+  if (gmic) return reopenGroupMic();
+  await room?.switchActiveDevice('audioinput', id).catch((e) => showToast(errText(e)));
+}
+
+export async function selectGroupCamera(id: string) {
+  remember('callCam', id);
+  await room?.switchActiveDevice('videoinput', id).catch((e) => showToast(errText(e)));
+  update({ people: room ? people(room) : [] });
+}
+
+export const selectGroupSpeaker = (id: string) => room?.switchActiveDevice('audiooutput', id).catch(() => {});
+
 // toggleGroupScreen shares the screen as a track of its own, frame-encrypted
-// like the camera (computers only: canShareScreen). Closing the browser's
-// own "Stop sharing" ends it too; LiveKit unpublishes it then.
+// like the camera (computers only: canShareScreen), with its sound when it
+// is ticked in the picker: stereo, unprocessed, no DTX (quiet passages of
+// music are not silence). Closing the browser's own "Stop sharing" ends it
+// too; LiveKit unpublishes it then.
+// restrictOwnAudio: the whole screen's sound without this page's own (the call).
+const SCREEN_SOUND = { echoCancellation: false, noiseSuppression: false, autoGainControl: false, channelCount: 2, restrictOwnAudio: true };
 export async function toggleGroupScreen() {
   const p = room?.localParticipant;
-  if (!p) return;
+  if (!p || !lk) return;
   await p
-    .setScreenShareEnabled(!p.isScreenShareEnabled, { audio: false, selfBrowserSurface: 'exclude', surfaceSwitching: 'include' })
+    .setScreenShareEnabled(
+      !p.isScreenShareEnabled,
+      { audio: SCREEN_SOUND, systemAudio: 'include', selfBrowserSurface: 'exclude', surfaceSwitching: 'include' },
+      { audioPreset: lk.AudioPresets.musicHighQualityStereo, dtx: false, red: false, forceStereo: true },
+    )
     // Closing the picker is NotAllowedError "Permission denied"; macOS without
     // the system's screen recording permission is one too, "by system".
     .catch((e: DOMException) => (e?.name !== 'NotAllowedError' || /system/i.test(e.message)) && showToast(t('call.screenFailed')));

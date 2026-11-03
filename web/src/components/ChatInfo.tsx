@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'preact/hooks';
-import { api } from '../lib/api';
+import { api, type Member } from '../lib/api';
 import { errText, fmtDate, fmtLastSeen, t } from '../lib/i18n';
 import { back } from '../lib/route';
 import {
@@ -13,7 +13,9 @@ import {
   type Msg,
   myId,
   openDirect,
+  partner,
   picture,
+  setOwnName,
   setGroupPhoto,
   showToast,
 } from '../lib/store';
@@ -25,6 +27,35 @@ import { SafetyPanel } from './Security';
 import { Avatar, EncImage, Icon, lightbox, Modal, Panel, PictureButtons } from './ui';
 
 type Invite = { id: string; max_uses: number; uses: number; expires_at: number };
+
+// OwnName: what I call this person, instead of the name from their profile.
+// Only on this device (store.ts setOwnName); empty brings their own back.
+function OwnName(props: { m: Member }) {
+  const { m } = props;
+  const [draft, setDraft] = useState(m.realName ? m.name : '');
+  const save = () => {
+    if (draft.trim() !== (m.realName ? m.name : '')) setOwnName(m.id, draft).catch((e) => showToast(errText(e)));
+  };
+  return (
+    <section class="card stack">
+      <label class="field">
+        <span>{t('info.ownName')}</span>
+        <input
+          value={draft}
+          maxLength={64}
+          placeholder={m.realName ?? m.name}
+          onInput={(e) => setDraft(e.currentTarget.value)}
+          onBlur={save}
+          onKeyDown={(e) => e.key === 'Enter' && e.currentTarget.blur()}
+        />
+      </label>
+      <p class="muted small">
+        {m.realName && t('info.ownNameReal', { name: m.realName }) + ' '}
+        {t('info.ownNameHint')}
+      </p>
+    </section>
+  );
+}
 
 export function ChatInfo(props: { id: number }) {
   const c = findChat(props.id);
@@ -70,10 +101,10 @@ export function ChatInfo(props: { id: number }) {
     }
   }
 
-  async function recover(m: { id: number; name: string }) {
+  async function recover(m: Member) {
     setBusy(true);
     try {
-      setRescue({ name: m.name, link: await createRecoveryLink(m.id) });
+      setRescue({ name: m.realName ?? m.name, link: await createRecoveryLink(m.id) }); // the name they sign in with
     } catch (e) {
       showToast(errText(e));
     } finally {
@@ -101,6 +132,8 @@ export function ChatInfo(props: { id: number }) {
           <Icon name="lock" size={14} /> {t('info.encrypted')}
         </p>
       </div>
+
+      {c.kind === 'direct' && partner(c) && <OwnName key={partner(c)!.id} m={partner(c)!} />}
 
       {link ? (
         <section class="card">

@@ -1,13 +1,16 @@
 package server
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -211,5 +214,101 @@ func TestLiveKitProxy(t *testing.T) {
 	// Only signed-in devices reach the SFU at all.
 	if code := e.newUser().do("GET", "/lk/rtc/validate", nil, nil); code != http.StatusUnauthorized {
 		t.Fatalf("anonymous = %d", code)
+	}
+}
+
+// fakeRoomService stands in for LiveKit's RoomService: it lists the room's
+// people and records who is removed, checking the admin pass.
+type fakeRoomService struct {
+	mu      sync.Mutex
+	people  []string
+	removed []string
+}
+
+func (f *fakeRoomService) serve(t *testing.T, secret string) *httptest.Server {
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct{ Room, Identity string }
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Errorf("body: %v", err)
+		}
+		tok := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+		parts := strings.Split(tok, ".")
+		mac := hmac.New(sha256.New, []byte(secret))
+		mac.Write([]byte(parts[0] + "." + parts[1]))
+		b, _ := base64.RawURLEncoding.DecodeString(parts[1])
+		var claims struct {
+			Video struct {
+				Room      string
+				RoomAdmin bool
+			}
+		}
+		if len(parts) != 3 || parts[2] != base64.RawURLEncoding.EncodeToString(mac.Sum(nil)) || json.Unmarshal(b, &claims) != nil ||
+			!claims.Video.RoomAdmin || claims.Video.Room != req.Room {
+			t.Errorf("pass for %q: %s", req.Room, b)
+		}
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		switch r.URL.Path {
+		case "/twirp/livekit.RoomService/ListParticipants":
+			var ps []map[string]string
+			for _, id := range f.people {
+				ps = append(ps, map[string]string{"identity": id})
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"participants": ps})
+		case "/twirp/livekit.RoomService/RemoveParticipant":
+			f.removed = append(f.removed, req.Room+" "+req.Identity)
+			_, _ = w.Write([]byte("{}"))
+		default:
+			t.Errorf("path %s", r.URL.Path)
+		}
+	}))
+}
+
+func (f *fakeRoomService) gone() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.removed...)
+}
+
+// Someone who leaves the group, or a device switched off, is taken out of
+// the running call in LiveKit too: their pass is not enough to stay.
+func TestGroupCallDropsTheRemoved(t *testing.T) {
+	e := newEnv(t)
+	a := e.register("A")
+	chat, key := a.createChat("group", 5)
+	b := e.join(key, "B")
+	c := e.join(key, "C")
+	room := "c" + itoa(chat) + "-drop-call-1"
+	f := &fakeRoomService{people: []string{
+		fmt.Sprintf("%d.%d.aa", a.user, a.id), fmt.Sprintf("%d.%d.bb", b.user, b.id), fmt.Sprintf("%d.%d.cc", c.user, c.id),
+	}}
+	sfu := f.serve(t, "s3cret")
+	defer sfu.Close()
+	e.s.cfg.LiveKitURL, e.s.cfg.LiveKitKey, e.s.cfg.LiveKitSecret = sfu.URL, "connect", "s3cret"
+	a.socket(t)
+	b.socket(t)
+	c.socket(t)
+	path := "/api/chats/" + itoa(chat) + "/call"
+	a.must(200, "POST", path, map[string]any{"id": "drop-call-1", "e": 1, "key": []byte("k")}, nil)
+	b.must(200, "POST", path, map[string]any{}, nil)
+	c.must(200, "POST", path, map[string]any{}, nil)
+
+	b.must(200, "DELETE", "/api/chats/"+itoa(chat), nil, nil)
+	eventually(t, "B removed from LiveKit", func() bool { return len(f.gone()) == 1 })
+	if g := f.gone(); g[0] != room+" "+f.people[1] {
+		t.Fatalf("removed %v", g)
+	}
+	var list groupList
+	a.must(200, "GET", "/api/calls/group", nil, &list)
+	if len(list.Calls) != 1 || len(list.Calls[0].Users) != 2 {
+		t.Fatalf("calls = %+v", list.Calls)
+	}
+
+	if err := e.s.revokeDevice(context.Background(), c.user, c.id); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "C's device removed from LiveKit", func() bool { return len(f.gone()) == 2 })
+	if g := f.gone(); g[1] != room+" "+f.people[2] {
+		t.Fatalf("removed %v", g)
 	}
 }

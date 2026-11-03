@@ -6,6 +6,7 @@ import {
   type InviteInfo,
   type Me,
   type PendingDevice,
+  type Member,
   type RawChat,
   type RawMessage,
   type WrappedKey,
@@ -103,6 +104,7 @@ export interface CallLog {
   v: boolean; // video
   d: number; // talk time, ms
   s: 'ok' | 'missed' | 'declined' | 'busy' | 'failed';
+  g?: string; // a group call: its id (written by whoever started it, "ok" for older apps)
 }
 
 export interface Msg extends RawMessage {
@@ -257,7 +259,7 @@ export async function login(password: string): Promise<void> {
   } catch (e) {
     // This browser's device was disconnected: start over as a new device.
     if (e instanceof ApiError && e.code === 'device_revoked') {
-      await idbClear();
+      await forgetLocal();
       return login(password);
     }
     throw e;
@@ -265,15 +267,24 @@ export async function login(password: string): Promise<void> {
   await start();
 }
 
-export async function resetDevice() {
+// forgetLocal wipes this browser's store, and what is cached from it: a
+// notification note still being written would put a chat back.
+let localGen = 0;
+async function forgetLocal() {
+  localGen++;
+  names = null;
   await idbClear();
+}
+
+export async function resetDevice() {
+  await forgetLocal();
   device = null;
 }
 
 export async function logout() {
   await unsubscribe().catch(() => {});
   await api.logout().catch(() => {});
-  await idbClear();
+  await forgetLocal();
   location.replace('/');
 }
 
@@ -423,7 +434,33 @@ async function hydrate(raw: RawMessage[]): Promise<Msg[]> {
   return Promise.all(raw.map(hydrateOne));
 }
 
+// ---------- my names for people ----------
+
+// Names I give people, on this device only: IndexedDB `names`, which the
+// service worker reads too. The server never sees them. A member carries
+// the name to show; realName keeps the one from their profile.
+let names: Record<number, string> | null = null;
+const ownNames = async () => (names ??= (await idbGet<Record<number, string>>('names').catch(() => undefined)) ?? {});
+
+function named(m: Member, own: Record<number, string>): Member {
+  const real = m.realName ?? m.name;
+  const mine = m.id !== myId() && own[m.id];
+  return mine ? { ...m, name: mine, realName: real } : { ...m, name: real, realName: undefined };
+}
+
+export async function setOwnName(user: number, name: string) {
+  const own = { ...(await ownNames()) };
+  const v = name.trim().slice(0, 64);
+  if (v) own[user] = v;
+  else delete own[user];
+  await idbSet('names', own);
+  names = own;
+  chats.value = chats.value.map((c) => (c.members.some((m) => m.id === user) ? { ...c, members: c.members.map((m) => named(m, own)) } : c));
+  void notePush(chats.value); // the notifications' names follow
+}
+
 async function decorate(raw: RawChat[]): Promise<Chat[]> {
+  const own = await ownNames();
   const lasts = await hydrate(raw.flatMap((c) => (c.last ? [c.last] : [])));
   const pins = await hydrate(raw.flatMap((c) => (c.pinned_msg ? [c.pinned_msg] : [])));
   return Promise.all(
@@ -433,7 +470,13 @@ async function decorate(raw: RawChat[]): Promise<Chat[]> {
         const k = await chatKey(c.id, c.title_epoch);
         if (k) titleText = await open(k, `t:${c.title_epoch}`, fromB64(c.title)).then(fromUtf8, () => '');
       }
-      return { ...c, titleText, lastMsg: lasts.find((m) => m.chat === c.id), pinnedMsg: pins.find((m) => m.chat === c.id) };
+      return {
+        ...c,
+        members: c.members.map((m) => named(m, own)),
+        titleText,
+        lastMsg: lasts.find((m) => m.chat === c.id),
+        pinnedMsg: pins.find((m) => m.chat === c.id),
+      };
     }),
   );
 }
@@ -468,6 +511,7 @@ export function loadChats(): Promise<void> {
       });
     } while (chatsAgain);
     void reconcileAvatar();
+    void notePush(chats.value);
   })().finally(() => (chatsReq = null));
   return chatsReq;
 }
@@ -555,7 +599,7 @@ function onMessage(m: Msg) {
   if (fresh && !mine && notifyHere() && (!cl || missed)) {
     const from = nameOf(m.chat, m.user);
     const text = cl ? `📞 ${t('call.missed')}` : summary(m.p);
-    void notifyMessage(m.chat, c.kind === 'group' && c.titleText ? `${from} · ${c.titleText}` : from, text, t('notify.message'));
+    void notifyMessage(m.chat, m.id, from, text, t('notify.message'), t('notify.read'));
   }
 }
 
@@ -1344,6 +1388,52 @@ const pics = signal<Record<string, string | null>>({});
 const picsLoading = new Set<string>();
 
 const avatarAad = (chat: number, user: number, epoch: number) => (user ? `a:${chat}:${user}:${epoch}` : `p:${chat}:${epoch}`);
+
+// ---------- what push notifications show ----------
+
+// A push has no time for network round trips or for the chat's title and
+// pictures, which only the app decrypts. So the app leaves each chat's
+// name (a group's title, or the person, by the name I gave them) and a
+// small icon (the group's photo or the person's avatar) in IndexedDB
+// `push:<chat>` for the service worker and notify.ts. Same device, same
+// trust as the chat keys kept there.
+export interface PushNote {
+  t: string; // the chat's name
+  i?: string; // its picture as a data: URL
+  g: boolean; // a group: "Name: text" under its title
+  v: string; // what it was made from, to skip unchanged chats
+}
+
+async function notePush(list: Chat[]) {
+  const gen = localGen;
+  for (const c of list) {
+    const p = partner(c);
+    const pv = c.kind === 'group' ? c.photo_v : p?.avatar_v;
+    const note: PushNote = { t: c.kind === 'group' ? c.titleText : (p?.name ?? ''), g: c.kind === 'group', v: '' };
+    note.v = `${note.t}|${pv ?? 0}`;
+    try {
+      if ((await idbGet<PushNote>(`push:${c.id}`))?.v === note.v) continue;
+      const b = pv ? await openPicture(c.id, c.kind === 'group' ? 0 : p!.id) : null;
+      if (b) note.i = await dataUrl(b);
+      else if (pv) note.v = ''; // no key for the picture yet: again next time
+      if (gen !== localGen) return; // logged out or reset meanwhile: nothing goes back in
+      await idbSet(`push:${c.id}`, note);
+    } catch {
+      /* the next chat list load tries again */
+    }
+  }
+}
+
+// dataUrl: a picture's bytes as a data: URL, typed by its first bytes.
+function dataUrl(b: Bytes): Promise<string> {
+  const type = b[0] === 0x89 ? 'image/png' : b[0] === 0xff ? 'image/jpeg' : 'image/webp';
+  return new Promise((ok, fail) => {
+    const r = new FileReader();
+    r.onload = () => ok(r.result as string);
+    r.onerror = () => fail(r.error);
+    r.readAsDataURL(new Blob([b as BlobPart], { type }));
+  });
+}
 
 async function openPicture(chat: number, user: number): Promise<Bytes | null> {
   const p = await (user ? api.avatar(chat, user) : api.photo(chat)).catch((e) => {

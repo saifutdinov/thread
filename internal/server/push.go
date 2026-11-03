@@ -112,7 +112,7 @@ type sub struct {
 // notifyMessage pushes to recipients' devices that have no live socket.
 // The body rides along only while it fits the ~4 KB push payload limit.
 func (p *pusher) notifyMessage(ctx context.Context, m *message, from *Auth) {
-	payload := map[string]any{"t": "msg", "c": m.Chat, "m": m.ID, "e": m.Epoch, "n": from.Name}
+	payload := map[string]any{"t": "msg", "c": m.Chat, "m": m.ID, "e": m.Epoch, "n": from.Name, "u": from.UserID, "at": m.At}
 	if len(m.Body) <= 2400 {
 		payload["b"] = m.Body
 	}
@@ -208,9 +208,9 @@ func (s *Server) handlePushTest(w http.ResponseWriter, r *http.Request, a *Auth)
 // it stops, hence the short TTL.
 // The call id lets the notification's Decline button decline it without
 // a page (handleCallDecline). A group call ("g") opens its chat instead.
-func (p *pusher) notifyCall(ctx context.Context, chatID, callee int64, from string, video bool, id string, group bool) {
+func (p *pusher) notifyCall(ctx context.Context, chatID, callee, fromID int64, from string, video bool, id string, group bool) {
 	p.send(ctx, `SELECT p.device_id, p.endpoint, p.p256dh, p.auth FROM push_subs p JOIN devices d ON d.id = p.device_id
-		WHERE d.user_id = ? AND d.status = 'active'`, map[string]any{"t": "call", "c": chatID, "n": from, "v": video, "id": id, "g": group},
+		WHERE d.user_id = ? AND d.status = 'active'`, map[string]any{"t": "call", "c": chatID, "u": fromID, "n": from, "v": video, "id": id, "g": group},
 		callTopic(group), int(ringFor.Seconds()), callee)
 }
 

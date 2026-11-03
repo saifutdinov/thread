@@ -5,6 +5,7 @@
 // a notification instead of doubling it. Best effort: a notification that
 // cannot be shown is not worth an error.
 import { idbGet } from './idb';
+import type { PushNote } from './store';
 import { pushOn, pushSupported } from './pwa';
 import { audible, choices } from './sounds';
 
@@ -28,11 +29,12 @@ const registration = () => navigator.serviceWorker.getRegistration().catch(() =>
 let queue: Promise<unknown> = Promise.resolve();
 const inOrder = (task: () => Promise<unknown>) => (queue = queue.then(task).catch(() => {}));
 
-type Options = NotificationOptions & { renotify?: boolean; actions?: { action: string; title: string }[] };
+type Options = NotificationOptions & { renotify?: boolean; timestamp?: number; actions?: { action: string; title: string }[] };
 
-// display runs inside the queue only.
+// display runs inside the queue only. The badge is the small monochrome
+// icon Android puts in the status bar.
 async function display(title: string, options: Options) {
-  if (allowed()) await (await registration())?.showNotification(title, { icon: '/icon-192.png', ...options });
+  if (allowed()) await (await registration())?.showNotification(title, { icon: '/icon-192.png', badge: '/badge-96.png', ...options });
 }
 
 // quiet: the page plays the sound chosen in Settings itself, so the system
@@ -40,11 +42,24 @@ async function display(title: string, options: Options) {
 // system's sound is better than none. "No sound" stays silent either way.
 const quiet = (kind: 'message' | 'ring') => audible() || choices.value[kind] === 'off';
 
-// A new message: who wrote and what, unless the app lock hides previews.
-export function notifyMessage(chat: number, from: string, text: string, fallback: string) {
+// A new message: who wrote and what, unless the app lock hides previews,
+// laid out like the service worker's (sw.js): a group's title on top and
+// "Name: text" under it, the chat's picture, "Mark as read" (Chromium).
+export function notifyMessage(chat: number, id: number, from: string, text: string, fallback: string, read: string) {
   return inOrder(async () => {
     const hide = await idbGet<boolean>('hidePreview');
-    await display(hide || !from ? fallback : from, { body: hide ? '' : text, tag: 'c' + chat, renotify: true, silent: quiet('message'), data: { url: '/#/c/' + chat } });
+    if (hide || !from) return display(fallback, { tag: 'c' + chat, renotify: true, silent: quiet('message'), data: { url: '/#/c/' + chat, c: chat, m: id } });
+    const note = await idbGet<PushNote>('push:' + chat).catch(() => undefined);
+    await display(note?.g && note.t ? note.t : from, {
+      body: note?.g ? `${from}: ${text}` : text,
+      icon: note?.i ?? '/icon-192.png',
+      tag: 'c' + chat,
+      renotify: true,
+      silent: quiet('message'),
+      timestamp: Date.now(),
+      data: { url: '/#/c/' + chat, c: chat, m: id },
+      actions: [{ action: 'read', title: read }],
+    });
   });
 }
 
