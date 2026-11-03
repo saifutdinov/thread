@@ -2,30 +2,10 @@ import { useEffect, useRef, useState } from 'preact/hooks';
 import { errText, t } from '../lib/i18n';
 import { fmtDuration, fmtSize } from '../lib/recorder';
 import { claim, player, playTrack } from '../lib/player';
-import { type Attachment, mediaUrl, showToast } from '../lib/store';
+import { type Attachment, acquireMedia, showToast } from '../lib/store';
 import { trackInfo } from '../lib/track';
+import { useDecrypted } from '../lib/use-media';
 import { Icon, IconButton } from './ui';
-
-// useDecrypted fetches and decrypts an attachment once it scrolls near
-// the viewport, so a long chat does not download every recording.
-function useDecrypted(a: Attachment) {
-  const ref = useRef<HTMLElement>(null);
-  const [url, setUrl] = useState<string>();
-  const want = useRef(false);
-  const load = () => {
-    if (want.current) return;
-    want.current = true;
-    mediaUrl(a).then(setUrl, () => (want.current = false));
-  };
-  useEffect(() => {
-    const el = ref.current;
-    if (!el) return;
-    const io = new IntersectionObserver((es) => es.some((e) => e.isIntersecting) && load(), { rootMargin: '600px' });
-    io.observe(el);
-    return () => io.disconnect();
-  }, [a.id]);
-  return { ref, url, load };
-}
 
 export function VoicePlayer(props: { a: Attachment }) {
   const { a } = props;
@@ -40,7 +20,7 @@ export function VoicePlayer(props: { a: Attachment }) {
 
   const toggle = () => {
     const el = audio.current;
-    if (!el || !url) return load();
+    if (!el || !url) return void load().catch(() => {});
     if (el.paused) {
       claim(el);
       el.playbackRate = rate;
@@ -122,7 +102,7 @@ export function VideoNote(props: { a: Attachment }) {
     const el = video.current;
     if (!el || !url) {
       pending.current = true;
-      return load();
+      return void load().catch(() => {});
     }
     if (el.paused) {
       claim(el);
@@ -167,12 +147,12 @@ export function VideoNote(props: { a: Attachment }) {
 // can be tens of megabytes), then played by the browser's own player.
 export function VideoClip(props: { a: Attachment }) {
   const { a } = props;
-  const [url, setUrl] = useState<string>();
+  const { ref, url, load } = useDecrypted(a, false);
   const [busy, setBusy] = useState(false);
   const open = async () => {
     setBusy(true);
     try {
-      setUrl(await mediaUrl(a));
+      await load();
     } catch (e) {
       showToast(errText(e));
     } finally {
@@ -180,7 +160,7 @@ export function VideoClip(props: { a: Attachment }) {
     }
   };
   const ratio = { aspectRatio: `${a.w || 16} / ${a.h || 9}` };
-  return url ? (
+  return <div ref={ref} class="media-holder">{url ? (
     <video class="clip" style={ratio} src={url} controls autoPlay playsInline onPlay={(e) => claim(e.currentTarget)} />
   ) : (
     <button type="button" class="clip" style={ratio} onClick={open} disabled={busy} aria-label={`${t('att.clip')}, ${fmtDuration(a.d ?? 0)}`}>
@@ -192,15 +172,21 @@ export function VideoClip(props: { a: Attachment }) {
         {fmtDuration(a.d ?? 0)} · {fmtSize(a.s)}
       </span>
     </button>
-  );
+  )}</div>;
 }
 
-// saveFile hands an attachment to the browser's downloads.
+// saveFile hands an attachment to the browser's downloads. Its URL is kept
+// a while: save dialogs may read the blob well after the click.
 async function saveFile(a: Attachment) {
-  const link = document.createElement('a');
-  link.href = await mediaUrl(a);
-  link.download = (a.n ?? 'file').replace(/[\\/:*?"<>|]/g, '_');
-  link.click();
+  const lease = acquireMedia(a);
+  try {
+    const link = document.createElement('a');
+    link.href = await lease.url;
+    link.download = (a.n ?? 'file').replace(/[\\/:*?"<>|]/g, '_');
+    link.click();
+  } finally {
+    setTimeout(() => lease.release(), 40_000);
+  }
 }
 
 // TrackRow: a music file in a message, played by the app's player

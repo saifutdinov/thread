@@ -326,6 +326,7 @@ export function InviteScreen() {
         </>
       ) : (
         <form class="stack" onSubmit={join}>
+          <p class="muted small">{t('invite.recoveryPolicy')}</p>
           <label class="field">
             <span>{t('invite.name')}</span>
             <input

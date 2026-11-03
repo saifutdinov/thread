@@ -2,13 +2,14 @@ import { signal } from '@preact/signals';
 import { api } from './api';
 import { rand, toB64u } from './crypto';
 import { refreshDevices, remember, remembered } from './devices';
+import { downloadDiagnostics } from './diagnostics';
 import { mobile } from './pwa';
 import { hangupTone, playSound } from './sounds';
 import { type BgId, type EffectId, type Effects, type Look, startEffects } from './effects';
 import { errText, t } from './i18n';
 import { idbGet, idbSet } from './idb';
 import { latest } from './latest';
-import { micConstraints, type Mic, openMic } from './mic';
+import { micConstraints, type Mic, openMic, pushToTalk } from './mic';
 import { decline as declineGroup, groupCall } from './group';
 import { clear, notifyCall, notifyHere } from './notify';
 import { type Level, preferCodecs, rate, tuneOpus, videoOrder } from './rtc';
@@ -222,8 +223,11 @@ function hint(s: MediaStream) {
 // when the app is hidden, so it is taken again on return.
 async function keepAwake() {
   if (!call.value?.video || wake || document.visibilityState !== 'visible') return;
-  wake = (await navigator.wakeLock?.request('screen').catch(() => null)) ?? null;
-  wake?.addEventListener('release', () => (wake = null));
+  const id = call.value.id;
+  const held = (await navigator.wakeLock?.request('screen').catch(() => null)) ?? null;
+  if (call.value?.id !== id) return void held?.release().catch(() => {});
+  wake = held;
+  held?.addEventListener('release', () => { if (wake === held) wake = null; });
 }
 document.addEventListener('visibilitychange', () => void keepAwake());
 
@@ -231,6 +235,7 @@ async function sendIce(c: RTCIceCandidateInit) {
   const v = call.value;
   if (!v) return;
   const { e, body } = await sealSignal(v.chat, v.id, 'ice', JSON.stringify(c));
+  if (call.value?.id !== v.id) return;
   wsSend({ t: 'call', k: 'ice', c: v.chat, id: v.id, to: peerDevice, e, body });
 }
 
@@ -276,21 +281,30 @@ async function localDescription(p: RTCPeerConnection, d: RTCSessionDescriptionIn
   await p.setLocalDescription({ type: d.type, sdp: tuneOpus(d.sdp ?? '') });
 }
 
-async function connect(local: MediaStream): Promise<RTCPeerConnection> {
-  const id = call.value?.id;
+async function connect(local: MediaStream, id: string): Promise<RTCPeerConnection | null> {
   const iceServers = await api.turn().then((r) => r.ice_servers, () => []);
+  if (call.value?.id !== id) return null;
   // One transport for audio and video: one relay allocation, not two. No
   // iceCandidatePoolSize: with pre-gathered candidates the next call after
   // a hang-up hung in "connecting" (the callee could not resolve the
   // caller's reused mDNS host name), seen in Chrome 152.
   const p = new RTCPeerConnection({ iceServers, bundlePolicy: 'max-bundle' });
-  const sent = await openMic(local.getAudioTracks()[0]);
-  if (call.value?.id !== id) sent.close(); // hung up meanwhile: the cleanup has run
-  else {
-    mic = sent;
-    // Processing that failed may have opened the microphone again: mute follows the new one.
-    if (sent.raw !== local.getAudioTracks()[0]) update({ local: new MediaStream([sent.raw, ...local.getVideoTracks()]) });
+  let sent: Mic;
+  try {
+    sent = await openMic(local.getAudioTracks()[0]);
+  } catch (e) {
+    p.close();
+    throw e;
   }
+  if (call.value?.id !== id) {
+    sent.close();
+    p.close();
+    return null;
+  }
+  mic = sent;
+  sent.raw.enabled = sent.track.enabled = !call.value.muted;
+  // Processing that failed may have opened the microphone again: mute follows the new one.
+  if (sent.raw !== local.getAudioTracks()[0]) update({ local: new MediaStream([sent.raw, ...local.getVideoTracks()]) });
   for (const tr of local.getTracks()) p.addTrack(tr.kind === 'audio' ? sent.track : tr, local);
   // Negotiated on both sides with the same id: no signaling, and it rides
   // the call's DTLS transport, so it is end-to-end encrypted like the media.
@@ -369,15 +383,20 @@ function lost(now: boolean) {
 // asks it to. Media keeps flowing on the old path until the new one works.
 async function renegotiate() {
   const v = call.value;
-  if (!v || !pc || v.phase !== 'active') return;
+  const p = pc;
+  if (!v || !p || v.phase !== 'active') return;
   if (!caller) {
     wsSend({ t: 'call', k: 'restart', c: v.chat, id: v.id, to: peerDevice });
     return;
   }
   try {
-    if (pc.signalingState === 'have-local-offer') await pc.setLocalDescription({ type: 'rollback' });
-    await localDescription(pc, await pc.createOffer({ iceRestart: true }));
-    const { e, body } = await sealSignal(v.chat, v.id, 'reoffer', JSON.stringify(pc.localDescription));
+    if (p.signalingState === 'have-local-offer') await p.setLocalDescription({ type: 'rollback' });
+    const d = await p.createOffer({ iceRestart: true });
+    if (pc !== p) return;
+    await localDescription(p, d);
+    if (pc !== p) return;
+    const { e, body } = await sealSignal(v.chat, v.id, 'reoffer', JSON.stringify(p.localDescription));
+    if (pc !== p) return;
     wsSend({ t: 'call', k: 'reoffer', c: v.chat, id: v.id, to: peerDevice, e, body });
   } catch {
     /* the next retry tries again */
@@ -399,7 +418,7 @@ async function sample() {
   const p = pc;
   if (!p) return;
   const report = await p.getStats().catch(() => null);
-  if (!report) return;
+  if (!report || pc !== p) return;
   const get = (id: unknown) => report.get(id as string) as Stat | undefined;
   let pair: Stat | undefined;
   report.forEach((s: Stat) => {
@@ -434,8 +453,15 @@ async function sample() {
 }
 
 async function flushIce() {
-  for (const c of outIce.splice(0)) await sendIce(c).catch(() => {});
-  if (pc?.remoteDescription) for (const c of inIce.splice(0)) await pc.addIceCandidate(c).catch(() => {});
+  const p = pc;
+  for (const c of outIce.splice(0)) {
+    if (pc !== p) return;
+    await sendIce(c).catch(() => {});
+  }
+  if (p?.remoteDescription) for (const c of inIce.splice(0)) {
+    if (pc !== p) return;
+    await p.addIceCandidate(c).catch(() => {});
+  }
 }
 
 function fail(e: unknown) {
@@ -450,32 +476,39 @@ export async function startCall(chatId: number, peer: number, video: boolean) {
   caller = true;
   outcome = 'missed';
   socketHold.call = true;
-  call.value = { id, chat: chatId, peer, video, phase: 'outgoing', muted: false, camOff: !video };
+  call.value = { id, chat: chatId, peer, video, phase: 'outgoing', muted: pushToTalk.value, camOff: !video };
   void keepAwake();
   if (!video) audioSession('play-and-record');
   try {
     const local = await media(video);
+    if (call.value?.id !== id) return local.getTracks().forEach((tr) => tr.stop());
     update({ local });
-    const p = await connect(local);
+    const p = await connect(local, id);
+    if (!p || call.value?.id !== id) return;
     // A voice call opens a video slot too (no media flows until a camera is
     // on), so either side can turn its camera on later without renegotiating.
     if (!video) p.addTransceiver('video', { direction: 'sendrecv' });
     p.addTransceiver('audio', { direction: 'sendrecv' }); // the music slot
     update({ canVideo: true });
     codecs(p, true);
-    await localDescription(p, await p.createOffer());
+    const offer = await p.createOffer();
+    if (call.value?.id !== id) return;
+    await localDescription(p, offer);
+    if (call.value?.id !== id) return;
     const { e, body } = await sealSignal(chatId, id, 'offer', JSON.stringify(p.localDescription));
+    if (call.value?.id !== id) return;
     if (!wsSend({ t: 'call', k: 'offer', c: chatId, id, v: video, e, body })) throw new Error('network');
     stopTone = ringback();
     ringTimer = setTimeout(() => hangup('missed'), RING_MS);
   } catch (e) {
-    fail(e);
+    if (call.value?.id === id) fail(e);
   }
 }
 
 export async function accept(withVideo: boolean) {
   const v = call.value;
   if (!v || v.phase !== 'incoming' || !offer) return;
+  const incoming = offer;
   quiet();
   const video = v.video && withVideo;
   peerDevice = offer.dev;
@@ -484,9 +517,14 @@ export async function accept(withVideo: boolean) {
   if (!video) audioSession('play-and-record');
   try {
     const local = await media(video);
+    if (call.value?.id !== v.id) return local.getTracks().forEach((tr) => tr.stop());
     update({ local });
-    const p = await connect(local);
-    await p.setRemoteDescription(JSON.parse(await openSignal(v.chat, offer.e, v.id, 'offer', offer.body)));
+    const p = await connect(local, v.id);
+    if (!p || call.value?.id !== v.id) return;
+    const description = JSON.parse(await openSignal(v.chat, incoming.e, v.id, 'offer', incoming.body));
+    if (call.value?.id !== v.id) return;
+    await p.setRemoteDescription(description);
+    if (call.value?.id !== v.id) return;
     // Keep the video slot able to send even without a camera now (a voice
     // call, or answered without video), so the camera can come on later.
     const slot = p.getTransceivers().find((tr) => tr.receiver.track.kind === 'video');
@@ -495,12 +533,16 @@ export async function accept(withVideo: boolean) {
     if (music) music.direction = 'sendrecv';
     update({ canVideo: !!slot });
     codecs(p, false);
-    await localDescription(p, await p.createAnswer());
+    const answer = await p.createAnswer();
+    if (call.value?.id !== v.id) return;
+    await localDescription(p, answer);
+    if (call.value?.id !== v.id) return;
     const { e, body } = await sealSignal(v.chat, v.id, 'answer', JSON.stringify(p.localDescription));
+    if (call.value?.id !== v.id) return;
     wsSend({ t: 'call', k: 'answer', c: v.chat, id: v.id, to: peerDevice, e, body });
     await flushIce();
   } catch (e) {
-    fail(e);
+    if (call.value?.id === v.id) fail(e);
   }
 }
 
@@ -564,12 +606,22 @@ function cleanup() {
   if (rang) hangupTone(); // after the call's audio is gone: speaker, not earpiece
 }
 
-export function toggleMute() {
+export function setMuted(muted: boolean) {
   const v = call.value;
   if (!v) return;
-  v.local?.getAudioTracks().forEach((tr) => (tr.enabled = v.muted));
-  update({ muted: !v.muted });
+  v.local?.getAudioTracks().forEach((tr) => (tr.enabled = !muted));
+  if (mic) mic.raw.enabled = mic.track.enabled = !muted;
+  update({ muted });
   sendState();
+}
+export const toggleMute = () => setMuted(!call.value?.muted);
+
+export async function exportCallDiagnostics() {
+  const p = pc;
+  if (!p) return;
+  const report = await p.getStats();
+  if (pc !== p) return;
+  downloadDiagnostics('direct', [report], {connection: p.connectionState, ice: p.iceConnectionState, signaling: p.signalingState, reconnecting: !!call.value?.reconnecting});
 }
 
 // useCamera puts a fresh camera track (the chosen one) into the call and
@@ -590,6 +642,7 @@ async function useCamera(): Promise<void> {
     track.stop();
     throw e;
   }
+  if (call.value?.id !== v.id || call.value.screen) return track.stop();
   dropEffects(); // the old camera and its effect, now that they are not sent
   const now = call.value?.local;
   now?.getVideoTracks().forEach((tr) => tr.stop());
@@ -694,6 +747,7 @@ export async function toggleCamera() {
   try {
     if (v.camOff) {
       await useCamera();
+      if (call.value?.id !== v.id) return;
       if (pc) void senders(pc); // the new track gets the video caps
       if (!v.video) {
         update({ video: true }); // a voice call turns into a video call
@@ -703,6 +757,7 @@ export async function toggleCamera() {
     } else {
       dropEffects();
       await sender.replaceTrack(null);
+      if (call.value?.id !== v.id) return;
       v.local?.getVideoTracks().forEach((tr) => tr.stop());
       update({ local: new MediaStream(v.local?.getAudioTracks() ?? []), effect: undefined, bg: undefined });
     }
@@ -894,12 +949,15 @@ export async function selectMic(deviceId?: string) {
     const track = s.getAudioTracks()[0];
     track.enabled = !v.muted;
     next = await openMic(track);
-    if (call.value?.id === v.id) await sender.replaceTrack(next.track);
+    if (call.value?.id !== v.id) return next.close();
+    next.raw.enabled = next.track.enabled = !call.value.muted;
+    await sender.replaceTrack(next.track);
     if (call.value?.id !== v.id) return next.close(); // the call ended meanwhile: so does this microphone
     const now = call.value.local;
     now?.getAudioTracks().forEach((tr) => tr.stop());
     mic?.close();
     mic = next;
+    mic.raw.enabled = mic.track.enabled = !call.value.muted;
     next = null;
     update({ local: new MediaStream([mic.raw, ...(now?.getVideoTracks() ?? [])]) });
     if (deviceId) remember('callMic', deviceId);
@@ -921,18 +979,28 @@ export function selectSpeaker(deviceId: string) {
 // Mid-call renegotiation. Errors here never end the call: the retry loop
 // in lost() tries again.
 async function onReoffer(v: CallView, ev: Record<string, unknown>) {
-  if (!pc || caller) return;
-  peerDevice = ev.dev as number;
-  await pc.setRemoteDescription(JSON.parse(await openSignal(v.chat, ev.e as number, v.id, 'reoffer', ev.body as string)));
-  await localDescription(pc, await pc.createAnswer());
-  const { e, body } = await sealSignal(v.chat, v.id, 'reanswer', JSON.stringify(pc.localDescription));
+  const p = pc;
+  if (!p || caller || ev.dev !== peerDevice) return;
+  const d = JSON.parse(await openSignal(v.chat, ev.e as number, v.id, 'reoffer', ev.body as string));
+  if (pc !== p) return;
+  await p.setRemoteDescription(d);
+  const answer = await p.createAnswer();
+  if (pc !== p) return;
+  await localDescription(p, answer);
+  if (pc !== p) return;
+  const { e, body } = await sealSignal(v.chat, v.id, 'reanswer', JSON.stringify(p.localDescription));
+  if (pc !== p) return;
   wsSend({ t: 'call', k: 'reanswer', c: v.chat, id: v.id, to: peerDevice, e, body });
   await flushIce();
 }
 
 async function onReanswer(v: CallView, ev: Record<string, unknown>) {
-  if (!pc || !caller || pc.signalingState !== 'have-local-offer') return;
-  await pc.setRemoteDescription(JSON.parse(await openSignal(v.chat, ev.e as number, v.id, 'reanswer', ev.body as string)));
+  const p = pc;
+  if (!p || !caller || ev.dev !== peerDevice || p.signalingState !== 'have-local-offer') return;
+  const d = JSON.parse(await openSignal(v.chat, ev.e as number, v.id, 'reanswer', ev.body as string));
+  if (pc !== p) return;
+  await p.setRemoteDescription(d);
+  if (pc !== p) return;
   await flushIce();
 }
 
@@ -942,6 +1010,7 @@ async function onSignal(ev: Record<string, unknown>) {
   try {
     switch (ev.k) {
       case 'offer':
+        if (ended.has(id)) return;
         if (!findChat(ev.c as number)) {
           // Opened from the call push: the offer beats the chat list here.
           await appReady;
@@ -957,13 +1026,14 @@ async function onSignal(ev: Record<string, unknown>) {
         offer = { body: ev.body as string, e: ev.e as number, dev: ev.dev as number };
         caller = false;
         socketHold.call = true;
-        call.value = { id, chat: ev.c as number, peer: ev.from as number, video: !!ev.v, phase: 'incoming', muted: false, camOff: !ev.v };
+        call.value = { id, chat: ev.c as number, peer: ev.from as number, video: !!ev.v, phase: 'incoming', muted: pushToTalk.value, camOff: !ev.v };
         stopTone = ringtone();
         navigator.vibrate?.([400, 200, 400]);
         ringTimer = setTimeout(cleanup, RING_MS);
         // Answered from the notification before the call reached this page
         // (it opened, or woke, from the tap): pick it up.
         const asked = await idbGet<{ id: string; at: number } | null>('answer');
+        if (call.value?.id !== id) return;
         if (asked?.id === id && Date.now() - asked.at < RING_MS) {
           void idbSet('answer', null);
           return void accept(true);
@@ -973,20 +1043,27 @@ async function onSignal(ev: Record<string, unknown>) {
           void notifyCall(ev.c as number, id, name, t(ev.v ? 'call.incomingVideo' : 'call.incomingAudio'), t('call.accept'), t('call.decline'));
         }
         return;
-      case 'answer':
+      case 'answer': {
         // Only the first answer counts (the server lets one through too).
-        if (!v || v.id !== id || pc?.signalingState !== 'have-local-offer') return;
+        const p = pc;
+        if (!v || v.id !== id || p?.signalingState !== 'have-local-offer') return;
+        const d = JSON.parse(await openSignal(v.chat, ev.e as number, id, 'answer', ev.body as string));
+        if (pc !== p || call.value?.id !== id) return;
         quiet();
         peerDevice = ev.dev as number;
         update({ phase: 'connecting' });
-        await pc.setRemoteDescription(JSON.parse(await openSignal(v.chat, ev.e as number, id, 'answer', ev.body as string)));
+        await p.setRemoteDescription(d);
+        if (pc !== p) return;
         await flushIce();
         return;
+      }
       case 'ice': {
-        if (!v || v.id !== id || !pc) return;
+        const p = pc;
+        if (!v || v.id !== id || !p || (peerDevice && ev.dev !== peerDevice)) return;
         const c = JSON.parse(await openSignal(v.chat, ev.e as number, id, 'ice', ev.body as string));
+        if (pc !== p) return;
         // A candidate of an older ICE generation is refused: harmless.
-        if (pc.remoteDescription) await pc.addIceCandidate(c).catch(() => {});
+        if (p.remoteDescription) await p.addIceCandidate(c).catch(() => {});
         else inIce.push(c);
         return;
       }
@@ -997,12 +1074,14 @@ async function onSignal(ev: Record<string, unknown>) {
         if (v?.id === id) await onReanswer(v, ev).catch(() => {});
         return;
       case 'restart':
-        if (v?.id === id && caller) await renegotiate();
+        if (v?.id === id && caller && ev.dev === peerDevice) await renegotiate();
         return;
       case 'hangup':
       case 'decline':
       case 'busy':
         if (!v || v.id !== id) return void ended.add(id);
+        if (ev.k === 'busy' && (v.phase !== 'outgoing' || peerDevice)) return;
+        if (peerDevice && ev.dev && peerDevice !== ev.dev) return;
         if (ev.k === 'decline') outcome = 'declined';
         if (ev.k === 'busy') outcome = 'busy';
         finish();
@@ -1013,7 +1092,7 @@ async function onSignal(ev: Record<string, unknown>) {
         return;
     }
   } catch {
-    if (v?.id === id) hangup('failed');
+    if (v?.id === id && call.value?.id === id) hangup('failed');
   }
 }
 

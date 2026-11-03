@@ -141,9 +141,9 @@ function NotifBanner() {
 function UpdateBanner() {
   const [later, setLater] = useState(false);
   useEffect(() => {
-    if (updateReady.value && !call.value) showToast(t('update.ready'));
+    if (updateReady.value && !call.value && !groupCall.value) showToast(t('update.ready'));
   }, [updateReady.value]);
-  if (!updateReady.value || later || call.value) return null;
+  if (!updateReady.value || later || call.value || groupCall.value) return null;
   return (
     <section class="notif-banner" role="region" aria-label={t('update.title')}>
       <Icon name="refresh" />

@@ -1,6 +1,7 @@
 import { signal } from '@preact/signals';
 import { errText } from './i18n';
-import { type Attachment, mediaUrl, messages, showToast } from './store';
+import type { MediaLease } from './media-cache';
+import { type Attachment, acquireMedia, messages, showToast } from './store';
 import { isTrack, trackInfo } from './track';
 
 // The music player: one <audio> for the whole app, so a track plays on
@@ -20,6 +21,7 @@ export function claim(el: HTMLMediaElement) {
 }
 
 let el: HTMLAudioElement | null = null;
+let lease: MediaLease | null = null; // the loaded track's URL: the media cache may not revoke it
 function audio() {
   if (el) return el;
   const e = (el = new Audio());
@@ -45,14 +47,18 @@ export async function playTrack(tr: Track) {
   player.value = { t: tr, playing: false };
   playerPos.value = 0;
   playerDur.value = (tr.a.d ?? 0) / 1000;
+  const next = acquireMedia(tr.a);
   let url: string;
   try {
-    url = await mediaUrl(tr.a);
+    url = await next.url;
   } catch (err) {
+    next.release();
     if (player.value?.t === tr) player.value = null;
     return showToast(errText(err));
   }
-  if (player.value?.t !== tr) return; // another track was picked meanwhile
+  if (player.value?.t !== tr) return next.release(); // another track was picked meanwhile
+  lease?.release();
+  lease = next;
   e.src = url;
   claim(e);
   await e.play().catch(() => {});
@@ -89,6 +95,8 @@ export async function step(dir: 1 | -1) {
 export function stopPlayer() {
   el?.pause();
   el?.removeAttribute('src');
+  lease?.release();
+  lease = null;
   player.value = null;
   if ('mediaSession' in navigator) navigator.mediaSession.metadata = null;
 }

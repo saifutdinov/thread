@@ -3,7 +3,8 @@ import type { ButtonHTMLAttributes, ComponentChildren } from 'preact';
 import { useEffect, useRef, useState } from 'preact/hooks';
 import type { PendingDevice } from '../lib/api';
 import { errText, t } from '../lib/i18n';
-import { type Attachment, mediaUrl, showToast } from '../lib/store';
+import { type Attachment, acquireMedia, showToast } from '../lib/store';
+import { useDecrypted } from '../lib/use-media';
 
 // Material-style 24px glyphs, inlined: no icon font to download.
 const PATHS = {
@@ -257,21 +258,12 @@ export const approving = signal<PendingDevice | null>(null);
 
 export function EncImage(props: { a: Attachment; fill?: boolean; onOpen?: () => void }) {
   const { a } = props;
-  const [url, setUrl] = useState<string>();
-  useEffect(() => {
-    let live = true;
-    mediaUrl(a)
-      .then((u) => live && setUrl(u))
-      .catch(() => {});
-    return () => {
-      live = false;
-    };
-  }, [a.id]);
+  const { ref, url } = useDecrypted(a);
   const style = props.fill
     ? undefined
     : { width: `${(22 * Math.min(1, (a.w ?? 1) / (a.h ?? 1))).toFixed(2)}rem`, aspectRatio: `${a.w ?? 1} / ${a.h ?? 1}` };
   return (
-    <button type="button" class={'img' + (props.fill ? ' fill' : '')} style={style} onClick={props.onOpen} aria-label={t('chat.photo')}>
+    <button ref={ref} type="button" class={'img' + (props.fill ? ' fill' : '')} style={style} onClick={props.onOpen} aria-label={t('chat.photo')}>
       {a.th && <img src={a.th} alt="" class="thumb" />}
       {url && <img src={url} alt="" class="full" />}
     </button>
@@ -283,7 +275,11 @@ export function Lightbox() {
   const [url, setUrl] = useState<string>();
   useEffect(() => {
     setUrl(undefined);
-    if (a) mediaUrl(a).then(setUrl, () => {});
+    if (!a) return;
+    let live = true;
+    const lease = acquireMedia(a);
+    lease.url.then((u) => { if (live) setUrl(u); }, () => {});
+    return () => { live = false; lease.release(); };
   }, [a?.id]);
   if (!a) return null;
   return (

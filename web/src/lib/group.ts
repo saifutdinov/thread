@@ -3,10 +3,11 @@ import type { LocalVideoTrack, Participant, RemoteTrack, Room, VideoTrack } from
 import { api, ApiError, type RunningCall } from './api';
 import { rand, toB64u } from './crypto';
 import { remember, remembered } from './devices';
+import { downloadDiagnostics } from './diagnostics';
 import { errText, t } from './i18n';
 import { idbGet, idbSet } from './idb';
 import { latest } from './latest';
-import { micConstraints, type Mic, openMic, wantsProcessing } from './mic';
+import { micConstraints, type Mic, openMic, pushToTalk, wantsProcessing } from './mic';
 import { hangupTone, playSound } from './sounds';
 import { me, openSignal, releaseSocket, sealSignal, sendCallLog, setGroupHandler, showToast, socketHold } from './store';
 
@@ -53,6 +54,9 @@ let lk: typeof import('livekit-client') | null = null; // loaded on the first gr
 let room: Room | null = null;
 let worker: Worker | null = null; // LiveKit's E2EE worker holds the call key: ours to stop
 let gmic: Mic | null = null; // the microphone we publish, perhaps processed
+let desiredMute = false;
+let micStarting: Room | null = null; // capture/publication owns microphone creation until it settles
+let micReopen: Room | null = null; // settings changed while the initial capture was pending
 // Every join and every end bumps it: a join that sees another number by
 // the time its await returns was cancelled (a hang-up while connecting).
 let attempt = 0;
@@ -190,6 +194,9 @@ export async function startGroupCall(chat: number, video: boolean) {
 // enter connects to LiveKit with frame encryption on. Every await may be
 // a hang-up: a cancelled attempt opens nothing and closes what it opened.
 async function enter(path: string, token: string, key: string, video: boolean, stale: () => boolean, muted = false) {
+  const crowded = muted;
+  muted ||= pushToTalk.value;
+  desiredMute = muted;
   lk = await import('livekit-client');
   const { default: E2EEWorker } = await import('livekit-client/e2ee-worker?worker');
   if (stale()) return;
@@ -211,11 +218,12 @@ async function enter(path: string, token: string, key: string, video: boolean, s
     encryption: { keyProvider, worker: w },
   });
   room = r;
+  micStarting = r;
   const refresh = () =>
     room === r &&
     update({
       people: people(r),
-      muted: !r.localParticipant.isMicrophoneEnabled,
+      muted: desiredMute || !r.localParticipant.isMicrophoneEnabled,
       camOff: !r.localParticipant.isCameraEnabled,
       sharing: r.localParticipant.isScreenShareEnabled,
     });
@@ -234,14 +242,23 @@ async function enter(path: string, token: string, key: string, video: boolean, s
     E.LocalTrackUnpublished,
   ])
     r.on(ev, refresh);
-  r.on(E.TrackSubscribed, (track: RemoteTrack) => {
+  r.on(E.TrackSubscribed, (track: RemoteTrack, _pub, participant) => {
     if (track.kind !== 'audio') return;
     const el = track.attach();
     audioBox.append(el);
+    participant.setVolume(participantVolumes.value.get(participant.identity) ?? 1);
     const sink = remembered('callSpeaker');
     if (sink && 'setSinkId' in el) (el as HTMLAudioElement).setSinkId(sink).catch(() => {});
   });
   r.on(E.TrackUnsubscribed, (track: RemoteTrack) => track.detach().forEach((el) => el.remove()));
+  const gateMic = () => {
+    if (room !== r || !desiredMute) return;
+    const track = r.localParticipant.getTrackPublication(lk!.Track.Source.Microphone)?.track?.mediaStreamTrack;
+    if (track) track.enabled = false;
+    if (gmic) gmic.raw.enabled = gmic.track.enabled = false;
+  };
+  r.on(E.TrackUnmuted, gateMic);
+  r.on(E.LocalTrackPublished, gateMic);
   r.on(E.Reconnecting, () => update({ reconnecting: true }));
   r.on(E.Reconnected, () => update({ reconnecting: false }));
   r.on(E.AudioPlaybackStatusChanged, () => update({ needsTap: !r.canPlaybackAudio }));
@@ -256,18 +273,33 @@ async function enter(path: string, token: string, key: string, video: boolean, s
   await r.setE2EEEnabled(true);
   await r.connect(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}${path}`, token);
   if (stale()) return drop();
-  update({ phase: 'active', since: Date.now(), needsTap: !r.canPlaybackAudio });
+  update({ phase: 'active', since: Date.now(), needsTap: !r.canPlaybackAudio, muted: desiredMute });
+  let micReady = false;
   try {
     const own = await processedMic(mic || undefined);
     if (stale()) own?.close();
     else if (own) {
       await publishMic(r, own);
-      if (muted) await r.localParticipant.setMicrophoneEnabled(false);
-    } else if (!muted) await r.localParticipant.setMicrophoneEnabled(true);
-    if (muted && !stale()) showToast(t('gcall.joinedMuted', { n: CROWD }));
+    } else if (!desiredMute) {
+      await r.localParticipant.setMicrophoneEnabled(true);
+    }
+    micReady = true;
+    if (crowded && desiredMute && !stale()) showToast(t('gcall.joinedMuted', { n: CROWD }));
     if (video && !stale()) await r.localParticipant.setCameraEnabled(true);
   } catch {
     if (!stale()) showToast(t('call.noMedia')); // in the call anyway: listening works without a microphone
+  } finally {
+    if (room === r && !stale()) {
+      micStarting = null;
+      if (micReopen === r) {
+        micReopen = null;
+        await reopenGroupMic();
+      }
+      // Even when capture was skipped on a muted join, an unmute made
+      // while the camera opened must take effect. Do not retry a failed
+      // microphone permission automatically.
+      if (room === r && (micReady || desiredMute)) await setGroupMuted(desiredMute);
+    }
   }
   if (stale()) return drop(); // the microphone must not stay on after a hang-up
   refresh();
@@ -302,18 +334,26 @@ export function decline() {
 // itself, as without processing, and so reopens it when it ends (a phone
 // call, an unplugged headset); a track of ours it would only mute.
 async function processedMic(deviceId?: string): Promise<Mic | null> {
-  if (!wantsProcessing()) return null;
+  const hold = pushToTalk.value;
+  if (!wantsProcessing() && !hold) return null;
   const s = await navigator.mediaDevices.getUserMedia({ audio: micConstraints(deviceId ? { ideal: deviceId } : undefined) });
   const m = await openMic(s.getAudioTracks()[0]);
-  if (m.track !== m.raw) return m;
+  if (m.track !== m.raw || hold) return m;
   m.close(); // processing failed to start
   return null;
 }
 
 async function publishMic(r: Room, m: Mic) {
+  m.raw.enabled = m.track.enabled = !desiredMute;
   gmic = m;
   m.raw.addEventListener('ended', () => void reopenGroupMic()); // the device is gone: the default one
-  await r.localParticipant.publishTrack(m.track, { source: lk!.Track.Source.Microphone });
+  try {
+    await r.localParticipant.publishTrack(m.track, { source: lk!.Track.Source.Microphone });
+  } catch (e) {
+    if (gmic === m) gmic = null;
+    m.close();
+    throw e;
+  }
 }
 
 // reopenGroupMic opens the microphone again with the processing as now
@@ -322,23 +362,47 @@ export const reopenGroupMic = latest(async () => {
   const r = room;
   const p = r?.localParticipant;
   if (!p || !lk) return;
+  if (micStarting === r) {
+    micReopen = r;
+    return;
+  }
   const pub = p.getTrackPublication(lk.Track.Source.Microphone);
-  const muted = !p.isMicrophoneEnabled;
+  const previousMic = gmic;
+  micStarting = r;
+  let own: Mic | null = null;
+  let opened = false;
   try {
     // The one picked in the call's settings, else the one in use.
-    const own = await processedMic(remembered('callMic') || (gmic?.raw ?? pub?.track?.mediaStreamTrack)?.getSettings().deviceId);
+    own = await processedMic(remembered('callMic') || (previousMic?.raw ?? pub?.track?.mediaStreamTrack)?.getSettings().deviceId);
     if (room !== r) return own?.close();
-    if (!own && !gmic) return; // LiveKit's microphone already, and it stays
+    if (!own && !gmic) {
+      await r.switchActiveDevice('audioinput', remembered('callMic') || 'default');
+      return; // already using LiveKit's microphone, with the latest input
+    }
     if (pub?.track) await p.unpublishTrack(pub.track);
-    gmic?.close();
-    gmic = null;
     if (room !== r) return own?.close();
+    previousMic?.close();
+    gmic = null;
     if (own) {
       await publishMic(r, own);
-      if (muted) await p.setMicrophoneEnabled(false);
-    } else if (!muted) await p.setMicrophoneEnabled(true);
+      opened = true;
+    } else {
+      await r.switchActiveDevice('audioinput', remembered('callMic') || 'default');
+      if (room !== r) return;
+      if (!desiredMute) {
+        await p.setMicrophoneEnabled(true);
+        opened = true;
+      }
+    }
   } catch (e) {
-    showToast(errText(e));
+    own?.close();
+    if (gmic === own) gmic = null;
+    if (room === r) showToast(errText(e));
+  } finally {
+    if (room === r) {
+      micStarting = null;
+      if (opened || desiredMute) await setGroupMuted(desiredMute);
+    }
   }
 });
 
@@ -357,7 +421,7 @@ export function groupDevices(): { mic?: string; cam?: string } {
 // LiveKit's own it switches itself, the camera too, and the speakers.
 export async function selectGroupMic(id: string) {
   remember('callMic', id);
-  if (gmic) return reopenGroupMic();
+  if (gmic || (room && micStarting === room)) return reopenGroupMic();
   await room?.switchActiveDevice('audioinput', id).catch((e) => showToast(errText(e)));
 }
 
@@ -430,10 +494,46 @@ export async function stopGroupMusic() {
 }
 
 export async function toggleGroupMute() {
-  const p = room?.localParticipant;
-  if (!p) return;
-  await p.setMicrophoneEnabled(!p.isMicrophoneEnabled).catch(() => showToast(t('call.noMedia')));
-  update({ muted: !p.isMicrophoneEnabled });
+  await setGroupMuted(!groupCall.value?.muted);
+}
+
+let muteQueue = Promise.resolve();
+export function setGroupMuted(muted: boolean) {
+  const r = room;
+  desiredMute = muted;
+  if (r) update({muted});
+  // Stop the current track immediately on release, even while LiveKit is
+  // still opening/unmuting it. Queue operations so a late unmute cannot win.
+  const track = lk && r?.localParticipant.getTrackPublication(lk.Track.Source.Microphone)?.track?.mediaStreamTrack;
+  if (track && muted) track.enabled = false;
+  if (gmic && muted) gmic.raw.enabled = gmic.track.enabled = false;
+  if (!r || micStarting === r) return Promise.resolve();
+  muteQueue = muteQueue.catch(() => {}).then(async () => {
+    if (!r || room !== r) return;
+    const p = r.localParticipant;
+    await p.setMicrophoneEnabled(!desiredMute).catch(() => { if (room === r) showToast(t('call.noMedia')); });
+    const now = lk && p.getTrackPublication(lk.Track.Source.Microphone)?.track?.mediaStreamTrack;
+    if (room !== r) return;
+    if (now) now.enabled = !desiredMute;
+    if (gmic) gmic.raw.enabled = gmic.track.enabled = !desiredMute;
+    update({muted: desiredMute || !p.isMicrophoneEnabled});
+  });
+  return muteQueue;
+}
+
+export const participantVolumes = signal(new Map<string, number>());
+export function setParticipantVolume(identity: string, value: number) {
+  const volume = Math.max(0, Math.min(1, value));
+  participantVolumes.value = new Map(participantVolumes.value).set(identity, volume);
+  room?.remoteParticipants.get(identity)?.setVolume(volume);
+}
+
+export async function exportGroupDiagnostics() {
+  const r = room;
+  if (!r) return;
+  const tracks = [r.localParticipant, ...r.remoteParticipants.values()].flatMap((p) => [...p.trackPublications.values()].flatMap((pub) => pub.track ? [pub.track] : []));
+  const reports = (await Promise.all(tracks.map((track) => track.getRTCStatsReport().catch(() => undefined)))).filter((s): s is RTCStatsReport => !!s);
+  if (room === r) downloadDiagnostics('group', reports, {connection: r.state, participants: r.remoteParticipants.size + 1, encrypted: r.isE2EEEnabled});
 }
 
 export async function toggleGroupCamera() {
@@ -473,12 +573,17 @@ export async function leave() {
 
 function end() {
   attempt++;
+  muteQueue = Promise.resolve();
+  desiredMute = true;
+  micStarting = null;
+  micReopen = null;
   quiet();
   gmic?.close();
   gmic = null;
   music?.stop();
   music = null;
   audioBox.replaceChildren();
+  participantVolumes.value = new Map();
   const was = !!groupCall.value && groupCall.value.phase !== 'incoming';
   groupCall.value = null;
   if (was) {

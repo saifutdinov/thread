@@ -1,6 +1,7 @@
+import { TalkButton, talkMode, usePushToTalk } from './PushToTalk';
 import { signal } from '@preact/signals';
 import { useEffect, useRef, useState } from 'preact/hooks';
-import { cameras } from '../lib/devices';
+import { cameras, canSetVolume } from '../lib/devices';
 import {
   decline,
   flipGroupCamera,
@@ -16,6 +17,10 @@ import {
   startGroupCall,
   toggleGroupCamera,
   toggleGroupMute,
+  setGroupMuted,
+  exportGroupDiagnostics,
+  setParticipantVolume,
+  participantVolumes,
   toggleGroupScreen,
 } from '../lib/group';
 import { t } from '../lib/i18n';
@@ -98,6 +103,7 @@ function ScreenTile(props: { p: Person; chat: number }) {
 // shrinks to a strip when minimized.
 export function GroupCallScreen() {
   const g = groupCall.value;
+  const hold = usePushToTalk(g?.id, g?.phase === 'active', setGroupMuted);
   const dialog = useRef<HTMLDialogElement>(null);
   const [, tick] = useState(0);
   const [settings, setSettings] = useState(false); // the call settings window
@@ -149,7 +155,7 @@ export function GroupCallScreen() {
           <b>{title}</b>
           <span>{status}</span>
         </button>
-        <IconButton icon={g.muted ? 'micOff' : 'mic'} label={g.muted ? t('call.unmute') : t('call.mute')} onClick={() => void toggleGroupMute()} />
+        {talkMode.value ? <TalkButton hold={hold} muted={g.muted} /> : <IconButton icon={g.muted ? 'micOff' : 'mic'} label={g.muted ? t('call.unmute') : t('call.mute')} onClick={() => void toggleGroupMute()} />}
         <IconButton icon="callEnd" label={t('gcall.leave')} class="danger" onClick={() => void leave()} />
       </div>
     );
@@ -183,7 +189,7 @@ export function GroupCallScreen() {
         </button>
       )}
       <div class="call-controls">
-        <Btn icon={g.muted ? 'micOff' : 'mic'} label={g.muted ? t('call.unmute') : t('call.mute')} tone={g.muted ? 'on' : undefined} onClick={() => void toggleGroupMute()} />
+        {talkMode.value ? <TalkButton hold={hold} muted={g.muted} full /> : <Btn icon={g.muted ? 'micOff' : 'mic'} label={g.muted ? t('call.unmute') : t('call.mute')} tone={g.muted ? 'on' : undefined} onClick={() => void toggleGroupMute()} />}
         <Btn
           icon={g.camOff ? 'videocamOff' : 'videocam'}
           label={g.camOff ? t('call.camOn') : t('call.camOff')}
@@ -212,7 +218,13 @@ export function GroupCallScreen() {
             return selectGroupSpeaker(id);
           }}
           reopen={reopenGroupMic}
-        />
+          diagnostics={exportGroupDiagnostics}
+        >
+          {canSetVolume && g.people.filter((p) => !p.me).map((p) => <label key={p.id} class="participant-volume">
+            <span>{t('call.volumeOf', {name: nameOf(g.chat, p.user)})}</span>
+            <input type="range" min="0" max="1" step="0.05" value={participantVolumes.value.get(p.id) ?? 1} onInput={(e) => setParticipantVolume(p.id, Number(e.currentTarget.value))} />
+          </label>)}
+        </CallSettings>
       )}
     </dialog>
   );

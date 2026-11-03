@@ -20,6 +20,12 @@ export const microphones = () => real('audioinput');
 // (desktop Chrome, Edge, Firefox, Safari 18.4+ on Mac). Phones route by
 // themselves: Android through the microphone choice, iOS not at all.
 export const canPickOutput = typeof HTMLMediaElement !== 'undefined' && 'setSinkId' in HTMLMediaElement.prototype;
+export const canSetVolume = (() => {
+  if (typeof Audio === 'undefined') return false;
+  const audio = new Audio();
+  audio.volume = 0.5;
+  return audio.volume === 0.5;
+})();
 export const speakers = () => (canPickOutput ? real('audiooutput') : []);
 
 // deviceName: Chrome on Android names its audio routes in English; the

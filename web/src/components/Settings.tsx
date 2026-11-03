@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'preact/hooks';
 import { api, type Device } from '../lib/api';
 import { errText, fmtListTime, lang, t } from '../lib/i18n';
 import { design, linkPreviews, textSize, theme, WALLPAPERS, wallpaper } from '../lib/prefs';
-import { cameras, deviceName, refreshDevices, remember, remembered } from '../lib/devices';
+import { DeviceCheckButton } from './DeviceCheck';
 import { appVersion, enablePush, install, installPrompt, isIOS, notifPermission, standalone } from '../lib/pwa';
 import { back } from '../lib/route';
 import { choices, choose, MAX_SOUND_FILE, ownSoundName, playSound, setOwnSound, type SoundKind } from '../lib/sounds';
@@ -158,67 +158,6 @@ function SoundRow(props: { kind: SoundKind }) {
   );
 }
 
-// CameraCheck: how the camera looks before a call, and which one video
-// calls start with on this device (the call's devices menu remembers the
-// same choice). The camera is on only while the preview shows.
-function CameraCheck() {
-  const [stream, setStream] = useState<MediaStream | null>(null);
-  const [cam, setCam] = useState(remembered('callCam'));
-  const video = useRef<HTMLVideoElement>(null);
-  useEffect(() => () => stream?.getTracks().forEach((tr) => tr.stop()), [stream]);
-  useEffect(() => {
-    if (video.current) video.current.srcObject = stream;
-  }, [stream]);
-  const open = async (id: string) => {
-    try {
-      const s = await navigator.mediaDevices.getUserMedia({ video: id ? { deviceId: { ideal: id } } : { facingMode: 'user' } });
-      setStream(s);
-      void refreshDevices(); // names appear once the camera is allowed
-    } catch {
-      showToast(t('call.noMedia'));
-    }
-  };
-  const list = cameras();
-  return (
-    <>
-      {list.length > 1 && (
-        <label class="field">
-          <span>{t('call.audio.camera')}</span>
-          <select
-            value={cam || list[0].deviceId}
-            onChange={(e) => {
-              const v = e.currentTarget.value;
-              setCam(v);
-              remember('callCam', v);
-              if (stream) void open(v);
-            }}
-          >
-            {list.map((d, i) => (
-              <option key={d.deviceId} value={d.deviceId}>
-                {deviceName(d, i)}
-              </option>
-            ))}
-          </select>
-        </label>
-      )}
-      {/* Mirrored like the call's self view, except a camera facing away. */}
-      {stream && (
-        <video
-          ref={video}
-          class={'cam-preview' + (stream.getVideoTracks()[0]?.getSettings().facingMode === 'environment' ? '' : ' mirror')}
-          autoPlay
-          playsInline
-          muted
-        />
-      )}
-      <button class="btn secondary" onClick={() => (stream ? setStream(null) : void open(cam))}>
-        <Icon name={stream ? 'videocamOff' : 'videocam'} /> {stream ? t('settings.cameraStop') : t('settings.cameraCheck')}
-      </button>
-      <p class="muted small">{t('settings.cameraHint')}</p>
-    </>
-  );
-}
-
 // ShareNames: my names for people go to another device of mine only after
 // I compare its code with the one that device shows (its Settings): the
 // server alone cannot make a device mine.
@@ -371,6 +310,8 @@ export function Settings() {
   const user = me.value!.user;
   const [name, setName] = useState(user.name);
   const [hide, setHide] = useState(user.hide_online);
+  const [recoveryAllowed, setRecoveryAllowed] = useState(user.recovery_allowed !== false);
+  const [savingRecovery, setSavingRecovery] = useState(false);
   const [devices, setDevices] = useState<Device[]>([]);
   const [sharing, setSharing] = useState<Device | null>(null); // the device my names go to, its code being compared
 
@@ -488,6 +429,18 @@ export function Settings() {
       </section>
 
       <SecuritySettings />
+      <section class="card stack" aria-busy={savingRecovery}>
+        <h3>{t('settings.recoveryTitle')}</h3>
+        <Switch label={t('settings.recoveryAllowed')} hint={t('settings.recoveryHint')} checked={recoveryAllowed} onChange={(value) => {
+          if (savingRecovery) return;
+          setSavingRecovery(true);
+          void api.updateMe({recovery_allowed: value}).then(() => {
+            setRecoveryAllowed(value);
+            me.value = {...me.value!, user: {...me.value!.user, recovery_allowed: value}};
+            void loadChats();
+          }).catch((e) => showToast(errText(e))).finally(() => setSavingRecovery(false));
+        }} />
+      </section>
 
       <section class="card stack">
         <h3>{t('settings.notifications')}</h3>
@@ -504,8 +457,8 @@ export function Settings() {
       </section>
 
       <section class="card stack">
-        <h3>{t('settings.camera')}</h3>
-        <CameraCheck />
+        <h3>{t('call.deviceCheck')}</h3>
+        <DeviceCheckButton />
       </section>
 
       <section class="card stack">

@@ -30,6 +30,7 @@ export interface User {
   id: number;
   name: string;
   hide_online: boolean;
+  recovery_allowed: boolean;
   created_at: number;
   avatar_v?: number;
 }
@@ -202,7 +203,7 @@ export interface Sealed {
 
 export const api = {
   me: () => call<Me>('GET', '/me'),
-  updateMe: (p: { name?: string; hide_online?: boolean }) => call('PATCH', '/me', p),
+  updateMe: (p: { name?: string; hide_online?: boolean; recovery_allowed?: boolean }) => call('PATCH', '/me', p),
   challenge: () => call<{ nonce: string }>('POST', '/auth/challenge', {}),
   login: (p: { password: string; device_id?: number; nonce?: string; sig?: string; device?: NewDevice }) =>
     call<{ device_id: number; status: 'pending' | 'active' }>('POST', '/auth/login', p),

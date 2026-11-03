@@ -1,3 +1,4 @@
+import { DeviceCheck } from './DeviceCheck';
 import { useEffect, useLayoutEffect, useRef, useState } from 'preact/hooks';
 import { errText, fmtDay, fmtLastSeen, fmtTime, t } from '../lib/i18n';
 import { jumbo } from '../lib/emoji';
@@ -77,14 +78,21 @@ export function ChatView(props: { id: number }) {
   const [search, setSearch] = useState<string | null>(null);
   const [hit, setHit] = useState(0);
   const [digging, setDigging] = useState(false);
+  const [deviceCheck, setDeviceCheck] = useState(false);
   const [trust, setTrust] = useState<Trust>('none');
   const composer = useRef<ComposerHandle>(null);
   const stick = useRef<() => void>(() => {});
+  const inCall = !!call.value || !!groupCall.value;
+
+  useEffect(() => {
+    if (inCall) setDeviceCheck(false);
+  }, [inCall]);
 
   useEffect(() => {
     setReplyTo(null);
     setEditing(null);
     setSearch(null);
+    setDeviceCheck(false);
     openChat(props.id).catch((e) => showToast(errText(e)));
   }, [props.id]);
 
@@ -211,6 +219,8 @@ export function ChatView(props: { id: number }) {
             <IconButton icon="videocam" label={t('gcall.video')} onClick={() => void startGroupCall(c.id, true)} />
           </>
         )}
+        {search === null && !inCall && <IconButton icon="devices" label={t('call.deviceCheck')} onClick={() => setDeviceCheck(true)} />}
+        {deviceCheck && !inCall && <DeviceCheck onClose={() => setDeviceCheck(false)} />}
         {search === null && <IconButton icon="search" label={t('search.open')} onClick={openSearch} />}
       </header>
       {running && search === null && groupCall.value?.chat !== c.id && (

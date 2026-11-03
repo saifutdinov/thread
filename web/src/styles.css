@@ -1393,7 +1393,7 @@ textarea,
 
 /* Photo or video without caption: time sits on the picture. */
 .bubble > .gallery + .meta,
-.bubble > .clip + .meta {
+.bubble > :is(.clip, .media-holder) + .meta {
   position: absolute;
   right: 0.6rem;
   bottom: 0.6rem;
@@ -2150,7 +2150,7 @@ img.blur {
 }
 
 /* Up top, clear of the player's own controls. */
-.bubble > .clip + .meta {
+.bubble > :is(.clip, .media-holder) + .meta {
   top: 0.6rem;
   bottom: auto;
 }
@@ -3026,6 +3026,17 @@ img.blur {
   background: rgba(0, 0, 0, 0.45);
   font-size: 0.8rem;
 }
+
+.participant-volume {
+  display: grid;
+  gap: 0.25rem;
+  padding: 0.25rem 0.5rem;
+  border-radius: 0.5rem;
+  font-size: 0.75rem;
+}
+
+.participant-volume input { width: 100%; min-height: 2.75rem; }
+meter { width: 100%; min-height: 1.5rem; }
 
 .gtile-name > span:not(.sr-only) {
   overflow: hidden;

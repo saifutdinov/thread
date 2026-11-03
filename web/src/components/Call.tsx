@@ -1,3 +1,4 @@
+import { TalkButton, talkMode, talkHold, usePushToTalk } from './PushToTalk';
 import { signal } from '@preact/signals';
 import { type ComponentChildren, render } from 'preact';
 import { useEffect, useRef, useState } from 'preact/hooks';
@@ -21,8 +22,10 @@ import {
   switchCamera,
   toggleCamera,
   toggleMute,
+  setMuted,
+  exportCallDiagnostics,
 } from '../lib/call';
-import { cameras, canPickOutput, remember, remembered } from '../lib/devices';
+import { cameras, canPickOutput, canSetVolume, remember, remembered } from '../lib/devices';
 import { BACKGROUNDS, EFFECTS } from '../lib/effects';
 import { t } from '../lib/i18n';
 import { fmtDuration } from '../lib/recorder';
@@ -41,11 +44,6 @@ export const minimized = signal(false);
 // a bit under the voice at first, so talk stays on top. iPhones and iPads
 // ignore a page's volume (the buttons on the side set it): no slider there.
 const musicVolume = signal(Number(remembered('musicVolume') || 0.7));
-const canSetVolume = (() => {
-  const a = new Audio();
-  a.volume = 0.5;
-  return a.volume === 0.5;
-})();
 
 // attach sets a stream on a media element whenever the element appears:
 // the self view is a new element each time the camera comes back on.
@@ -246,7 +244,7 @@ function FloatingCall(props: { win: Window }) {
           <b>{hidden ? '' : peerName(c)}</b>
           <small>{statusOf(c)}</small>
         </span>
-        <IconButton icon={c.muted ? 'micOff' : 'mic'} label={c.muted ? t('call.unmute') : t('call.mute')} onClick={toggleMute} />
+        {talkMode.value ? <TalkButton hold={talkHold} muted={c.muted} /> : <IconButton icon={c.muted ? 'micOff' : 'mic'} label={c.muted ? t('call.unmute') : t('call.mute')} onClick={toggleMute} />}
         <IconButton icon="callEnd" label={t('call.hangup')} class="danger" onClick={() => hangup()} />
       </div>
     </div>
@@ -260,6 +258,7 @@ function FloatingCall(props: { win: Window }) {
 // echo).
 export function CallScreen() {
   const c = call.value;
+  const hold = usePushToTalk(c?.id, c?.phase === 'active', setMuted);
   const dialog = useRef<HTMLDialogElement>(null);
   const [, tick] = useState(0);
   const [picker, setPicker] = useState(false);
@@ -354,7 +353,7 @@ export function CallScreen() {
             <b>{name}</b>
             <span>{status}</span>
           </button>
-          <IconButton icon={c.muted ? 'micOff' : 'mic'} label={c.muted ? t('call.unmute') : t('call.mute')} onClick={toggleMute} />
+          {talkMode.value ? <TalkButton hold={talkHold} muted={c.muted} /> : <IconButton icon={c.muted ? 'micOff' : 'mic'} label={c.muted ? t('call.unmute') : t('call.mute')} onClick={toggleMute} />}
           <IconButton icon="callEnd" label={t('call.hangup')} class="danger" onClick={() => hangup()} />
         </div>
         {theirVideo && (
@@ -540,7 +539,7 @@ export function CallScreen() {
             </>
           ) : (
             <>
-              <Btn icon={c.muted ? 'micOff' : 'mic'} label={c.muted ? t('call.unmute') : t('call.mute')} tone={c.muted ? 'on' : undefined} onClick={toggleMute} />
+              {talkMode.value ? <TalkButton hold={hold} muted={c.muted} full /> : <Btn icon={c.muted ? 'micOff' : 'mic'} label={c.muted ? t('call.unmute') : t('call.mute')} tone={c.muted ? 'on' : undefined} onClick={toggleMute} />}
               {(c.canVideo ?? c.video) && !c.screen && (
                 <Btn
                   icon={c.camOff ? 'videocamOff' : 'videocam'}
@@ -582,6 +581,7 @@ export function CallScreen() {
             onCam={selectCamera}
             onSpeaker={selectSpeaker}
             reopen={reopenMic}
+            diagnostics={exportCallDiagnostics}
           />
         )}
       </dialog>

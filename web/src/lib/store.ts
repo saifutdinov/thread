@@ -39,6 +39,8 @@ import {
 } from './crypto';
 import { errText, t } from './i18n';
 import { latest } from './latest';
+import { latestMessage, mergeMessages as merge } from './messages';
+import { MediaCache } from './media-cache';
 import { fmtDuration } from './recorder';
 import { idbClear, idbGet, idbSet } from './idb';
 import { audioDuration, isTrack, trackInfo, trackMime } from './track';
@@ -277,6 +279,7 @@ export async function login(password: string): Promise<void> {
 // notification note still being written would put a chat back.
 let localGen = 0;
 async function forgetLocal() {
+  mediaUrls.clear();
   localGen++;
   names = null;
   vault = null;
@@ -655,8 +658,34 @@ export function loadChats(): Promise<void> {
   chatsReq = (async () => {
     do {
       chatsAgain = false;
+      const before = new Map(chats.value.map((c) => [c.id, c.lastMsg]));
       const list = await decorate(await api.chats());
       batch(() => {
+        for (const c of list) {
+          const previous = findChat(c.id);
+          const known = messages.value.get(c.id) ?? [];
+          const started = before.get(c.id);
+          const changed = previous?.lastMsg && (previous.lastMsg.id !== started?.id || previous.lastMsg.seq !== started?.seq)
+            ? previous.lastMsg : undefined;
+          c.cleared_upto = Math.max(c.cleared_upto, previous?.cleared_upto ?? 0);
+          const read = c.members.find((m) => m.id === myId())?.last_read ?? 0;
+          const previousRead = previous?.members.find((m) => m.id === myId())?.last_read ?? 0;
+          if (previous && ((previousRead > read && (c.lastMsg?.id ?? 0) <= previousRead) || (changed && !changed.deleted && changed.id > (c.lastMsg?.id ?? 0)))) {
+            c.unread = previous.unread;
+          }
+          c.members = c.members.map((m) => ({...m, last_read: Math.max(m.last_read, previous?.members.find((p) => p.id === m.id)?.last_read ?? 0)}));
+          // Keep updates that arrived during this request, and newer
+          // versions of the same message. A different, older cached last
+          // message must not override an authoritative refresh after offline.
+          const candidates = [...(c.lastMsg ? [c.lastMsg] : []), ...(changed ? [changed] : [])];
+          const ids = new Set(candidates.map((m) => m.id));
+          c.lastMsg = latestMessage([...candidates, ...known.filter((m) => ids.has(m.id))], c.cleared_upto);
+          if (!c.lastMsg) c.unread = 0;
+          if (c.pinnedMsg) {
+            const pin = known.find((m) => m.id === c.pinnedMsg!.id);
+            if (pin && pin.seq >= c.pinnedMsg.seq) c.pinnedMsg = pin.deleted ? undefined : pin;
+          }
+        }
         chats.value = list;
         const ids = new Set(list.map((c) => c.id));
         const map = new Map(messages.value);
@@ -676,19 +705,11 @@ export function loadChats(): Promise<void> {
   return chatsReq;
 }
 
-function merge(list: Msg[], incoming: Msg[]): Msg[] {
-  const byId = new Map(list.map((m) => [m.id, m]));
-  for (const m of incoming) {
-    for (const [id, x] of byId) if (x.local && x.cid === m.cid) byId.delete(id);
-    byId.set(m.id, m);
-  }
-  return [...byId.values()].sort((a, b) => a.id - b.id);
-}
-
 function putMessages(chat: number, incoming: Msg[]) {
   if (!loaded.has(chat)) return;
   const map = new Map(messages.value);
-  map.set(chat, merge(map.get(chat) ?? [], incoming));
+  const cleared = findChat(chat)?.cleared_upto ?? 0;
+  map.set(chat, merge(map.get(chat) ?? [], incoming).filter((m) => m.id > cleared));
   messages.value = map;
 }
 
@@ -697,10 +718,10 @@ export async function openChat(id: number) {
   loaded.add(id);
   try {
     const raw = await api.messages(id);
-    hasOlder.value = new Map(hasOlder.value).set(id, raw.length === 50);
-    const map = new Map(messages.value);
-    map.set(id, merge(map.get(id) ?? [], await hydrate(raw)));
-    messages.value = map;
+    const incoming = await hydrate(raw);
+    putMessages(id, incoming);
+    const cleared = findChat(id)?.cleared_upto ?? 0;
+    hasOlder.value = new Map(hasOlder.value).set(id, raw.length === 50 && raw.every((m) => m.id > cleared));
   } catch (e) {
     loaded.delete(id);
     throw e;
@@ -716,8 +737,9 @@ export function loadOlder(id: number): Promise<void> {
   if (!oldest || !hasOlder.value.get(id)) return Promise.resolve();
   olderReq = (async () => {
     const raw = await api.messages(id, oldest);
-    hasOlder.value = new Map(hasOlder.value).set(id, raw.length === 50);
     putMessages(id, await hydrate(raw));
+    const cleared = findChat(id)?.cleared_upto ?? 0;
+    hasOlder.value = new Map(hasOlder.value).set(id, raw.length === 50 && raw.every((m) => m.id > cleared));
   })().finally(() => (olderReq = null));
   return olderReq;
 }
@@ -727,6 +749,9 @@ const openChatId = () => (route.value.name === 'chat' ? route.value.id : undefin
 
 // onMessage applies one new or changed message to the list and the chat.
 function onMessage(m: Msg) {
+  const last = findChat(m.chat)?.lastMsg;
+  const previous = messages.value.get(m.chat)?.find((x) => x.id === m.id) ?? (last?.id === m.id ? last : undefined);
+  if ((previous && previous.seq > m.seq) || m.id <= (findChat(m.chat)?.cleared_upto ?? 0)) return;
   putMessages(m.chat, [m]);
   const c = findChat(m.chat);
   if (!c) {
@@ -735,10 +760,11 @@ function onMessage(m: Msg) {
   }
   const lastId = c.lastMsg?.id ?? 0;
   if (m.deleted && m.id === lastId) {
+    chats.value = chats.value.map((x) => x.id === m.chat ? {...x, lastMsg: m} : x);
     loadChats();
     return;
   }
-  if (m.deleted || m.id < lastId) return;
+  if (m.deleted || m.id < lastId || (m.id === lastId && m.seq < (c.lastMsg?.seq ?? 0))) return;
   const fresh = m.id > lastId;
   const mine = m.user === myId();
   // Read only when looked at: a window behind others neither marks the
@@ -1050,7 +1076,7 @@ export function sendTyping(chatId: number) {
 
 // ---------- media ----------
 
-const mediaUrls = new Map<string, Promise<string>>();
+const mediaUrls = new MediaCache();
 // The type comes from the sender: only media the app renders itself.
 const PLAYABLE = /^(image\/(jpeg|png|webp|gif)|audio\/(mp4|webm|ogg|mpeg)|video\/(mp4|webm|quicktime))(;[\w=.,\s-]*)?$/;
 
@@ -1069,19 +1095,13 @@ export function summary(p?: Payload | null): string {
   return `📷 ${t('list.photo')}`;
 }
 
-export function mediaUrl(a: Attachment): Promise<string> {
-  let p = mediaUrls.get(a.id);
-  if (!p) {
-    p = (async () => {
-      const key = await aesKey(fromB64(a.k));
-      const data = await open(key, 'f', await api.download(a.id));
-      const type = isTrack(a) ? trackMime(a) : PLAYABLE.test(a.m) && a.t !== 'file' ? a.m : 'application/octet-stream';
-      return URL.createObjectURL(new Blob([data], { type }));
-    })();
-    p.catch(() => mediaUrls.delete(a.id));
-    mediaUrls.set(a.id, p);
-  }
-  return p;
+export function acquireMedia(a: Attachment) {
+  return mediaUrls.acquire(a.id, async () => {
+    const key = await aesKey(fromB64(a.k));
+    const data = await open(key, 'f', await api.download(a.id));
+    const type = isTrack(a) ? trackMime(a) : PLAYABLE.test(a.m) && a.t !== 'file' ? a.m : 'application/octet-stream';
+    return new Blob([data], { type });
+  });
 }
 
 export async function mediaMessages(chatId: number, before = 0): Promise<Msg[]> {

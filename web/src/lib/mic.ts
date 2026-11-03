@@ -21,6 +21,11 @@ export const canTune = !mobile && !safari && typeof AudioWorkletNode !== 'undefi
 const windows = /Windows/.test(ua);
 const saved = remembered('micDenoise');
 export const micDenoise = signal(canTune && (saved ? saved === '1' : windows));
+export const pushToTalk = signal(remembered('pushToTalk') === '1');
+export function setPushToTalk(on: boolean) {
+  remember('pushToTalk', on ? '1' : '0');
+  pushToTalk.value = on;
+}
 
 // The gate's threshold in dB; GATE_OFF and below lets everything through.
 export const GATE_OFF = -70;
@@ -68,17 +73,20 @@ export async function openMic(raw: MediaStreamTrack): Promise<Mic> {
   }
   current = chain;
   if (watchers) chain.gate.port.postMessage(true);
+  let closed = false;
   return {
     raw,
     track: chain.out,
     close() {
+      if (closed) return;
+      closed = true;
       if (current === chain) {
         current = null;
         micLevel.value = -100; // no chain, nothing to show
       }
       chain.out.stop();
       raw.stop();
-      void chain.ctx.close();
+      void chain.ctx.close().catch(() => {});
     },
   };
 }
