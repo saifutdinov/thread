@@ -222,6 +222,7 @@ func (s *Server) revokeDevice(ctx context.Context, userID, deviceID int64) error
 			`DELETE FROM sessions WHERE device_id = ?`,
 			`DELETE FROM chat_keys WHERE device_id = ?`,
 			`DELETE FROM push_subs WHERE device_id = ?`,
+			`DELETE FROM vault_keys WHERE device_id = ?`,
 		} {
 			if _, err := tx.ExecContext(ctx, q, deviceID); err != nil {
 				return err
@@ -229,6 +230,9 @@ func (s *Server) revokeDevice(ctx context.Context, userID, deviceID int64) error
 		}
 		if !wasActive {
 			return nil
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE vaults SET rotate = 1 WHERE user_id = ?`, userID); err != nil {
+			return err // the device knew the vault's key too
 		}
 		_, err := tx.ExecContext(ctx, `UPDATE chats SET rotate = 1 WHERE id IN (SELECT chat_id FROM members WHERE user_id = ?)`, userID)
 		return err

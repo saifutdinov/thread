@@ -8,9 +8,11 @@ import { back } from '../lib/route';
 import { choices, choose, MAX_SOUND_FILE, ownSoundName, playSound, setOwnSound, type SoundKind } from '../lib/sounds';
 import { TUNES } from '../lib/tunes';
 import { hasWallPhoto, setWallPhoto } from '../lib/wallpaper';
-import { chats, devicesTick, loadChats, logout, me, myPicture, pending, setMyAvatar, showToast } from '../lib/store';
+import { chats, devicesTick, loadChats, loadVault, logout, me, myDeviceCode, myPicture, pending, setMyAvatar, shareMyNames, showToast, vaultShare } from '../lib/store';
+import { type Code, deviceCode, fromB64 } from '../lib/crypto';
+import { DeviceCode } from './Auth';
 import { SecuritySettings } from './Security';
-import { approving, Avatar, Icon, IconButton, Panel, PictureButtons, Segmented, Switch } from './ui';
+import { approving, Avatar, Icon, IconButton, Modal, Panel, PictureButtons, Segmented, Switch } from './ui';
 
 // WallpaperPicker: the chat background on this device: the theme's own,
 // a drawn one, or a photo. Each tile shows its own background.
@@ -217,6 +219,52 @@ function CameraCheck() {
   );
 }
 
+// ShareNames: my names for people go to another device of mine only after
+// I compare its code with the one that device shows (its Settings): the
+// server alone cannot make a device mine.
+function ShareNames(props: { d: { id: number; enc_pub: string; sig_pub: string }; label: string; onClose: () => void }) {
+  const [code, setCode] = useState<Code | null>(null);
+  useEffect(() => {
+    void deviceCode(fromB64(props.d.enc_pub), fromB64(props.d.sig_pub)).then(setCode);
+  }, [props.d.id]);
+  return (
+    <Modal label={t('vault.shareTitle')} onClose={props.onClose}>
+      <h2>{t('vault.shareTitle')}</h2>
+      <p>{props.label}</p>
+      <DeviceCode code={code} />
+      <p class="muted small">{t('vault.shareCheck')}</p>
+      <button
+        class="btn"
+        onClick={() =>
+          shareMyNames(props.d)
+            .then(() => showToast(t('vault.shared')))
+            .catch((e) => showToast(errText(e)))
+            .finally(props.onClose)
+        }
+      >
+        {t('vault.shareConfirm')}
+      </button>
+      <button class="btn secondary" onClick={props.onClose}>
+        {t('common.cancel')}
+      </button>
+    </Modal>
+  );
+}
+
+// ThisCode: this device's code, for another device of mine to compare.
+function ThisCode() {
+  const [code, setCode] = useState<Code | null>(null);
+  useEffect(() => {
+    void myDeviceCode().then(setCode);
+  }, []);
+  return (
+    <div class="stack">
+      <span class="label">{t('vault.thisCode')}</span>
+      <DeviceCode code={code} />
+    </div>
+  );
+}
+
 export function NotificationsRow() {
   const perm = notifPermission.value;
   if (perm === 'unsupported')
@@ -324,9 +372,11 @@ export function Settings() {
   const [name, setName] = useState(user.name);
   const [hide, setHide] = useState(user.hide_online);
   const [devices, setDevices] = useState<Device[]>([]);
+  const [sharing, setSharing] = useState<Device | null>(null); // the device my names go to, its code being compared
 
   useEffect(() => {
     api.devices().then(setDevices, () => {});
+    void loadVault().catch(() => {}); // which of my devices still wait for my names
   }, [devicesTick.value]);
 
   async function saveName() {
@@ -493,6 +543,10 @@ export function Settings() {
                   <button class="btn small" onClick={() => (approving.value = p)}>
                     {t('chat.check')}
                   </button>
+                ) : vaultShare.value.some((x) => x.id === d.id) ? (
+                  <button class="btn small" onClick={() => setSharing(d)}>
+                    {t('vault.share')}
+                  </button>
                 ) : (
                   !d.current && (
                     <button
@@ -511,6 +565,10 @@ export function Settings() {
             );
           })}
         </ul>
+        <ThisCode />
+        {sharing && vaultShare.value.find((x) => x.id === sharing.id) && (
+          <ShareNames d={vaultShare.value.find((x) => x.id === sharing.id)!} label={sharing.label} onClose={() => setSharing(null)} />
+        )}
       </section>
 
       <section class="card">

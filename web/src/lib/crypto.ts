@@ -79,22 +79,25 @@ async function kek(priv: CryptoKey, pub: CryptoKey, salt: Bytes, usage: KeyUsage
 }
 
 // wrapKey -> ephemeral pub (65) || iv (12) || ciphertext+tag (48) = 125 bytes.
-export async function wrapKey(raw: Bytes, recipientEncPub: Bytes, epoch: number): Promise<Bytes> {
+// aad says what the key is: a chat's at an epoch (`k:<epoch>`), or the
+// personal vault's (`vk:<user>:<epoch>`), so a wrap of one cannot pass for
+// the other.
+export async function wrapKey(raw: Bytes, recipientEncPub: Bytes, epoch: number, aad = `k:${epoch}`): Promise<Bytes> {
   const pub = await subtle.importKey('raw', recipientEncPub, ECDH, false, []);
   const eph = (await subtle.generateKey(ECDH, false, ['deriveBits'])) as CryptoKeyPair;
   const ephPub = new Uint8Array(await subtle.exportKey('raw', eph.publicKey));
   const iv = rand(12);
   const k = await kek(eph.privateKey, pub, ephPub, 'encrypt');
-  const ct = await subtle.encrypt({ name: 'AES-GCM', iv, additionalData: utf8(`k:${epoch}`) }, k, raw);
+  const ct = await subtle.encrypt({ name: 'AES-GCM', iv, additionalData: utf8(aad) }, k, raw);
   return concat(ephPub, iv, new Uint8Array(ct));
 }
 
-export async function unwrapKey(wrapped: Bytes, encPriv: CryptoKey, epoch: number): Promise<Bytes> {
+export async function unwrapKey(wrapped: Bytes, encPriv: CryptoKey, epoch: number, aad = `k:${epoch}`): Promise<Bytes> {
   const ephPub = wrapped.slice(0, 65);
   const pub = await subtle.importKey('raw', ephPub, ECDH, false, []);
   const k = await kek(encPriv, pub, ephPub, 'decrypt');
   const pt = await subtle.decrypt(
-    { name: 'AES-GCM', iv: wrapped.slice(65, 77), additionalData: utf8(`k:${epoch}`) },
+    { name: 'AES-GCM', iv: wrapped.slice(65, 77), additionalData: utf8(aad) },
     k,
     wrapped.slice(77),
   );

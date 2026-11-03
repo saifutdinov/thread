@@ -162,23 +162,3 @@ export function watchLevel() {
     micLevel.value = -100;
   };
 }
-
-// latest runs fn once at a time; calls while it runs make one more run
-// after it, with the settings as they are by then.
-export function latest(fn: () => Promise<void>) {
-  let busy: Promise<void> | null = null;
-  let again = false;
-  return function run(): Promise<void> {
-    if (busy) {
-      again = true;
-      return busy;
-    }
-    busy = (async () => {
-      do {
-        again = false;
-        await fn();
-      } while (again);
-    })().finally(() => (busy = null));
-    return busy;
-  };
-}

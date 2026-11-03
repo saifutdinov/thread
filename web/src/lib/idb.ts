@@ -3,7 +3,10 @@
 //   device       -> StoredDevice (non-extractable CryptoKeys)
 //   k:<chat>:<e> -> raw chat key bytes
 //   lang         -> UI language for notifications
-//   names        -> { [user id]: the name I gave them } (store.ts ownNames)
+//   names        -> { [user id]: the name I gave them } (store.ts ownNames; the vault syncs it)
+//   namesDirty   -> { [user id]: changes here not in the vault yet }
+//   namesSynced  -> true once this device's names went into the vault
+//   vaultSeen    -> { e, v }: the newest vault epoch and version read here (no rollback)
 //   push:<chat>  -> PushNote (store.ts): the chat's name and icon for notifications
 //   gjoin        -> { c, at }: "Join" tapped on a group call's notification (sw.js, group.ts)
 

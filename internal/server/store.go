@@ -155,6 +155,22 @@ var migrations = []string{
 	expires_at INTEGER NOT NULL
 )`,
 	`ALTER TABLE members ADD COLUMN since_epoch INTEGER NOT NULL DEFAULT 0`,
+	// The personal vault (vault.go): my sealed names for people, and its
+	// key wrapped for each of my devices.
+	`CREATE TABLE vaults (
+	user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+	epoch   INTEGER NOT NULL,
+	version INTEGER NOT NULL,
+	body    BLOB    NOT NULL,
+	rotate  INTEGER NOT NULL DEFAULT 0
+)`,
+	`CREATE TABLE vault_keys (
+	user_id   INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+	epoch     INTEGER NOT NULL,
+	device_id INTEGER NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+	wrapped   BLOB    NOT NULL,
+	PRIMARY KEY (user_id, epoch, device_id)
+)`,
 }
 
 func migrate(db *sql.DB) error {

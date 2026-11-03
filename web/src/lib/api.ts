@@ -116,6 +116,24 @@ export interface WrappedKey {
   wrapped: string;
 }
 
+// The personal vault (server vault.go): my sealed names for people, this
+// device's wrap of its key, and my devices still without one.
+export interface VaultView {
+  epoch: number;
+  version: number;
+  body?: string;
+  rotate?: boolean;
+  lost?: boolean; // no device of mine holds the key any more
+  key?: string;
+  missing: { id: number; enc_pub: string; sig_pub: string }[];
+  key_for: { id: number; enc_pub: string }[]; // who a new key would go to (vault.go vaultKeySet)
+}
+
+export interface VaultKey {
+  device: number;
+  wrapped: string;
+}
+
 export interface DevicePub {
   id: number;
   user: number;
@@ -232,6 +250,9 @@ export const api = {
 
   keys: () => call<WrappedKey[]>('GET', '/keys'),
   shareKeys: (keys: WrappedKey[]) => call('POST', '/keys', { keys }),
+  vault: () => call<VaultView>('GET', '/vault'),
+  putVault: (p: { version: number; epoch: number; body: string; keys?: VaultKey[] }) => call<{ version: number }>('PUT', '/vault', p),
+  shareVault: (epoch: number, keys: VaultKey[]) => call('POST', '/vault/keys', { epoch, keys }),
   devices: () => call<Device[]>('GET', '/devices'),
   devicePubs: (ids: number[]) => call<DevicePub[]>('GET', `/devices/pub?ids=${ids.join(',')}`),
   pending: () => call<PendingDevice[]>('GET', '/pending'),

@@ -8,6 +8,7 @@ import {
   type PendingDevice,
   type Member,
   type RawChat,
+  type VaultKey,
   type RawMessage,
   type WrappedKey,
 } from './api';
@@ -37,6 +38,7 @@ import {
   wrapKey,
 } from './crypto';
 import { errText, t } from './i18n';
+import { latest } from './latest';
 import { fmtDuration } from './recorder';
 import { idbClear, idbGet, idbSet } from './idb';
 import { prepareAvatar, prepareImage, prepareVideo, shrink } from './image';
@@ -196,6 +198,7 @@ export async function start() {
   seq = (await api.sync(Number.MAX_SAFE_INTEGER)).seq;
   await syncKeys(true);
   await loadChats();
+  void loadVault().catch(() => {}); // my names from my other devices
   screen.value = 'app';
   markReady();
   loadPending();
@@ -273,7 +276,8 @@ let localGen = 0;
 async function forgetLocal() {
   localGen++;
   names = null;
-  await idbClear();
+  vault = null;
+  await namesLock(idbClear); // not under a sync writing my names
 }
 
 export async function resetDevice() {
@@ -436,11 +440,16 @@ async function hydrate(raw: RawMessage[]): Promise<Msg[]> {
 
 // ---------- my names for people ----------
 
-// Names I give people, on this device only: IndexedDB `names`, which the
-// service worker reads too. The server never sees them. A member carries
-// the name to show; realName keeps the one from their profile.
+// Names I give people. IndexedDB `names` is the readable copy here, the
+// service worker's too; the personal vault carries them to my other devices
+// (loadVault). A member carries the name to show; realName keeps the one
+// from their profile.
 let names: Record<number, string> | null = null;
 const ownNames = async () => (names ??= (await idbGet<Record<number, string>>('names').catch(() => undefined)) ?? {});
+// namesLock: `names` and `namesDirty` change together, in every tab of mine
+// (they share IndexedDB); inside, read them from there, not from a cache.
+const namesLock = <T>(fn: () => Promise<T>) => navigator.locks.request('names', fn);
+const readNames = async () => (names = (await idbGet<Record<number, string>>('names')) ?? {});
 
 function named(m: Member, own: Record<number, string>): Member {
   const real = m.realName ?? m.name;
@@ -448,15 +457,163 @@ function named(m: Member, own: Record<number, string>): Member {
   return mine ? { ...m, name: mine, realName: real } : { ...m, name: real, realName: undefined };
 }
 
-export async function setOwnName(user: number, name: string) {
-  const own = { ...(await ownNames()) };
-  const v = name.trim().slice(0, 64);
-  if (v) own[user] = v;
-  else delete own[user];
+// applyNames: the names to show from now on, here and in notifications.
+async function applyNames(own: Record<number, string>) {
   await idbSet('names', own);
   names = own;
-  chats.value = chats.value.map((c) => (c.members.some((m) => m.id === user) ? { ...c, members: c.members.map((m) => named(m, own)) } : c));
-  void notePush(chats.value); // the notifications' names follow
+  chats.value = chats.value.map((c) => ({ ...c, members: c.members.map((m) => named(m, own)) }));
+  void notePush(chats.value);
+}
+
+export async function setOwnName(user: number, name: string) {
+  await namesLock(async () => {
+    const own = { ...(await readNames()) };
+    const v = name.trim().slice(0, 64);
+    if (v) own[user] = v;
+    else delete own[user];
+    // Changed here, not yet in the vault: counted per person, so a sync that
+    // started before this change does not take it as written.
+    const dirty = (await idbGet<Record<number, number>>('namesDirty')) ?? {};
+    dirty[user] = (dirty[user] ?? 0) + 1;
+    await idbSet('namesDirty', dirty);
+    await applyNames(own);
+  });
+  void loadVault().catch(() => {});
+}
+
+// ---------- the personal vault: my names on all my devices ----------
+
+// The server keeps the names sealed with a key of mine (AAD
+// `v:<me>:<epoch>:<version>`) and that key wrapped for each device of mine
+// that I let have it (AAD `vk:<me>:<epoch>`, so it never passes for a chat
+// key); see vault.go and ADR 0001. A device gets the key only by my hand:
+// approving it, or "Share my names" after checking its code, never on the
+// server's word. A device switched off makes the next writer start a new
+// key; nobody left holding it (every device lost) starts the vault anew.
+type Vault = { epoch: number; version: number; raw: Bytes | null; renew: boolean; keyFor: { id: number; enc_pub: string }[] };
+let vault: Vault | null = null;
+// vaultShare: my devices still without the key, while this one holds it.
+export const vaultShare = signal<{ id: number; enc_pub: string; sig_pub: string }[]>([]);
+// vaultWaiting: this device has no key yet, so its names stay here.
+export const vaultWaiting = signal(false);
+const vaultAad = (epoch: number, version: number) => `v:${myId()}:${epoch}:${version}`;
+const vaultKeyAad = (epoch: number) => `vk:${myId()}:${epoch}`;
+const sameNames = (a: Record<number, string>, b: Record<number, string>) =>
+  Object.keys(a).length === Object.keys(b).length && Object.entries(a).every(([k, v]) => b[Number(k)] === v);
+// newer: (epoch, version) after the newest this device has seen; older is a
+// rollback the server may try, and is not believed.
+const newer = (a: { e: number; v: number }, b: { e: number; v: number } | undefined) => !b || a.e > b.e || (a.e === b.e && a.v >= b.v);
+
+// loadVault reads my names from the vault and puts this device's changes on
+// top (namesDirty); the first time, the names kept here before the vault
+// join it (namesSynced). Written meanwhile by another device: read again.
+export const loadVault = latest(async () => {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      return await syncVault();
+    } catch (e) {
+      if (!(e instanceof ApiError) || e.status !== 409) throw e;
+    }
+  }
+});
+
+async function syncVault() {
+  if (!device || !me.value) return;
+  const dev = device;
+  const gen = localGen;
+  const v = await api.vault();
+  const seen = await idbGet<{ e: number; v: number }>('vaultSeen');
+  // A wrap that does not open: no key here.
+  const raw = v.key ? await unwrapKey(fromB64(v.key), dev.enc.privateKey, v.epoch, vaultKeyAad(v.epoch)).catch(() => null) : null;
+  let remote: Record<number, string> | null = null;
+  if (raw && v.body && newer({ e: v.epoch, v: v.version }, seen))
+    remote = await open(await aesKey(raw), vaultAad(v.epoch, v.version), fromB64(v.body))
+      .then((b) => JSON.parse(fromUtf8(b)) as Record<number, string>)
+      .catch(() => null);
+  // With the key, a version older than one seen here (a restored backup, a
+  // server rolling back) or a body that does not open is not believed: this
+  // device writes its own names over it, under a new key.
+  const refused = !!raw && !remote;
+  if (gen !== localGen) return; // logged out meanwhile
+  const lost = v.epoch > 0 && !!v.lost;
+  vault = { epoch: v.epoch, version: v.version, raw, renew: !raw || refused || !!v.rotate, keyFor: v.key_for };
+  vaultWaiting.value = v.epoch > 0 && !raw && !lost;
+  vaultShare.value = raw ? v.missing.filter((d) => d.id !== dev.id) : [];
+  if (vaultWaiting.value) return; // no key here yet: my other device shares it (Settings, Devices)
+  const { base, dirty } = await namesLock(async () => {
+    const local = await readNames();
+    const dirty = (await idbGet<Record<number, number>>('namesDirty')) ?? {};
+    const base: Record<number, string> = remote ? ((await idbGet<boolean>('namesSynced')) ? { ...remote } : { ...local, ...remote }) : { ...local };
+    for (const id of Object.keys(dirty).map(Number)) {
+      if (local[id]) base[id] = local[id];
+      else delete base[id];
+    }
+    return { base, dirty };
+  });
+  let seenNow = remote && { e: v.epoch, v: v.version };
+  // Nothing to keep yet (no vault, no names): no empty vault either.
+  if (refused || (remote ? !sameNames(base, remote) || vault.renew : Object.keys(base).length > 0)) {
+    seenNow = await writeVault(base, gen);
+    if (!seenNow) return;
+  }
+  await namesLock(async () => {
+    if (gen !== localGen) return;
+    if (seenNow) await idbSet('vaultSeen', seenNow);
+    // Only the changes this run wrote are done: one made meanwhile stays
+    // marked, and shows on top until the next run writes it.
+    const now = (await idbGet<Record<number, number>>('namesDirty')) ?? {};
+    for (const [id, n] of Object.entries(dirty)) if (now[Number(id)] === n) delete now[Number(id)];
+    const fresh = await readNames();
+    for (const id of Object.keys(now).map(Number)) {
+      if (fresh[id]) base[id] = fresh[id];
+      else delete base[id];
+    }
+    await idbSet('namesDirty', now);
+    await idbSet('namesSynced', true);
+    await applyNames(base);
+  });
+}
+
+// writeVault seals the names; under a new key, when there is none yet,
+// none here (the vault lost), one was switched off or the vault was not
+// believed, wrapped for the devices the server names for it: those that
+// held the old key, or my ordinary devices for a first one (vault.go
+// vaultKeySet). Returns what it wrote, null when logged out meanwhile.
+async function writeVault(own: Record<number, string>, gen: number) {
+  const st = vault!;
+  let { epoch, raw } = st;
+  let keys: VaultKey[] | undefined;
+  if (!raw || st.renew) {
+    const k = rand(32);
+    const next = st.epoch + 1;
+    keys = await Promise.all(st.keyFor.map(async (d) => ({ device: d.id, wrapped: toB64(await wrapKey(k, fromB64(d.enc_pub), next, vaultKeyAad(next))) })));
+    raw = k;
+    epoch = next;
+  }
+  const version = st.version + 1;
+  const body = toB64(await seal(await aesKey(raw), vaultAad(epoch, version), utf8(JSON.stringify(own))));
+  const r = await api.putVault({ version: st.version, epoch, body, keys });
+  if (gen !== localGen) return null;
+  vault = { ...st, epoch, version: r.version, raw, renew: false };
+  return { e: epoch, v: r.version };
+}
+
+// shareMyNames hands the vault's key to a device of mine: approved here, or
+// one whose code the person has just compared (Settings, Devices). A key
+// replaced meanwhile (409 epoch): read the vault again and wrap the new one.
+export async function shareMyNames(d: { id: number; enc_pub: string }) {
+  const share = async () => {
+    const st = vault;
+    if (!st?.raw) return;
+    await api.shareVault(st.epoch, [{ device: d.id, wrapped: toB64(await wrapKey(st.raw, fromB64(d.enc_pub), st.epoch, vaultKeyAad(st.epoch))) }]);
+    vaultShare.value = vaultShare.value.filter((x) => x.id !== d.id);
+  };
+  if (!vault?.raw) await loadVault();
+  await share().catch(async (e) => {
+    if (!(e instanceof ApiError) || e.status !== 409) throw e;
+    await loadVault();
+    await share();
+  });
 }
 
 async function decorate(raw: RawChat[]): Promise<Chat[]> {
@@ -1121,6 +1278,7 @@ export async function approveDevice(p: PendingDevice) {
   await api.approve(p.id, keys);
   await loadPending();
   devicesTick.value++;
+  if (p.own) void shareMyNames(p).catch(() => {}); // its code was just checked: my names go to it
 }
 
 export async function denyDevice(p: PendingDevice) {
@@ -1247,6 +1405,7 @@ let catching = false;
 async function catchUp() {
   if (catching) return;
   catching = true;
+  void loadVault().catch(() => {}); // events missed while the socket was down (a phone in the background)
   try {
     await syncKeys(true);
     const r = await api.sync(seq);
@@ -1335,9 +1494,13 @@ async function handleEvent(e: ServerEvent) {
       await syncKeys(true);
       retryLocked();
       break;
+    case 'vault':
+      void loadVault().catch(() => {});
+      break;
     case 'device':
       loadPending();
       devicesTick.value++;
+      void loadVault().catch(() => {}); // a new device of mine may now wait for my names
       break;
     case 'peer':
       peerTick.value++;

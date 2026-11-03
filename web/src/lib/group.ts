@@ -5,7 +5,8 @@ import { rand, toB64u } from './crypto';
 import { remember, remembered } from './devices';
 import { errText, t } from './i18n';
 import { idbGet, idbSet } from './idb';
-import { latest, micConstraints, type Mic, openMic, wantsProcessing } from './mic';
+import { latest } from './latest';
+import { micConstraints, type Mic, openMic, wantsProcessing } from './mic';
 import { hangupTone, playSound } from './sounds';
 import { me, openSignal, releaseSocket, sealSignal, sendCallLog, setGroupHandler, showToast, socketHold } from './store';
 

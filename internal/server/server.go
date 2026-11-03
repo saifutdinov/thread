@@ -163,6 +163,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/sync", s.active(s.handleSync))
 
 	mux.HandleFunc("GET /api/keys", s.active(s.handleKeys))
+	mux.HandleFunc("GET /api/vault", s.active(s.handleVault))
+	mux.HandleFunc("PUT /api/vault", s.active(s.handlePutVault))
+	mux.HandleFunc("POST /api/vault/keys", s.active(s.handleVaultKeys))
 	mux.HandleFunc("POST /api/keys", s.active(s.handleShareKeys))
 	mux.HandleFunc("GET /api/devices", s.anyDevice(s.handleDevices))
 	mux.HandleFunc("GET /api/devices/pub", s.active(s.handleDevicePubs))

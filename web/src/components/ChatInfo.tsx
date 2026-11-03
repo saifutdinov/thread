@@ -16,6 +16,7 @@ import {
   partner,
   picture,
   setOwnName,
+  vaultWaiting,
   setGroupPhoto,
   showToast,
 } from '../lib/store';
@@ -29,7 +30,7 @@ import { Avatar, EncImage, Icon, lightbox, Modal, Panel, PictureButtons } from '
 type Invite = { id: string; max_uses: number; uses: number; expires_at: number };
 
 // OwnName: what I call this person, instead of the name from their profile.
-// Only on this device (store.ts setOwnName); empty brings their own back.
+// On all my devices (store.ts setOwnName, the vault); empty brings their own back.
 function OwnName(props: { m: Member }) {
   const { m } = props;
   const [draft, setDraft] = useState(m.realName ? m.name : '');
@@ -53,6 +54,7 @@ function OwnName(props: { m: Member }) {
         {m.realName && t('info.ownNameReal', { name: m.realName }) + ' '}
         {t('info.ownNameHint')}
       </p>
+      {vaultWaiting.value && <p class="muted small">{t('vault.waiting')}</p>}
     </section>
   );
 }
