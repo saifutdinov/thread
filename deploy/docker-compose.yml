@@ -6,8 +6,6 @@
 #   turn   coturn, relays calls when two devices cannot reach each other
 #   sfu    LiveKit, forwards group calls (up to 10 people, end-to-end
 #          encrypted frames: it forwards ciphertext)
-#   music  optional and off unless enabled: spotDL for music from a link
-#          (docs/adr/0004-music.md; read the warning in README first)
 #
 # Data lives in the named volumes below; the secrets in ../.env.
 
@@ -33,9 +31,6 @@ services:
       LIVEKIT_URL: http://sfu:7880
       LIVEKIT_KEY: thread
       LIVEKIT_SECRET: ${LIVEKIT_SECRET:?set LIVEKIT_SECRET in .env}
-      # Optional, off unless set (README, "Music from a link"):
-      # http://music:8090 together with COMPOSE_PROFILES=music.
-      MUSIC_URL: ${MUSIC_URL:-}
       # Optional, see README: Prometheus metrics and encrypted backups.
       METRICS_ADDR: ${METRICS_ADDR:-}
       BACKUP_RECIPIENT: ${BACKUP_RECIPIENT:-}
@@ -146,33 +141,6 @@ services:
           departure_timeout: 20
         logging:
           level: info
-
-  # Music from a link (docs/adr/0004-music.md, deploy/music): spotDL behind
-  # one route, for the app only. Started only with COMPOSE_PROFILES=music in
-  # .env. It fetches the sound from YouTube Music, which breaks the terms of
-  # YouTube and Spotify and may break copyright law: your own risk.
-  music:
-    profiles: ["music"]
-    build:
-      context: music
-    image: thread-music:local
-    restart: unless-stopped
-    environment:
-      MUSIC_PROXY: ${MUSIC_PROXY:-}
-      SPOTIFY_CLIENT_ID: ${SPOTIFY_CLIENT_ID:-}
-      SPOTIFY_CLIENT_SECRET: ${SPOTIFY_CLIENT_SECRET:-}
-    # ../music/cookies.txt, when there is one: YouTube cookies.
-    volumes:
-      - ../music:/config:ro
-    mem_limit: 1g
-    cpus: 1
-    cap_drop: [ALL]
-    security_opt: ["no-new-privileges:true"]
-    healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8090/healthz')"]
-      interval: 60s
-      timeout: 5s
-      retries: 3
 
 volumes:
   data:

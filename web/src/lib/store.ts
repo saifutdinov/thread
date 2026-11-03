@@ -67,14 +67,14 @@ export interface Attachment {
   d?: number; // duration, ms
   wf?: number[]; // voice waveform, 0..31
   n?: string; // file name
-  ti?: string; // a track's title and artist, from its tags (music by link)
+  ti?: string; // a track's title and artist, in tracks sent by the removed music by link
   ar?: string;
 }
 
 // Outgoing is something to attach before it is encrypted and uploaded.
 export type Outgoing =
   | { kind: 'image'; file: File }
-  | { kind: 'file'; file: File; ti?: string; ar?: string }
+  | { kind: 'file'; file: File }
   | { kind: 'clip'; file: File }
   | { kind: 'voice'; blob: Blob; mime: string; d: number; wf: number[] }
   | { kind: 'video'; blob: Blob; mime: string; d: number; w: number; h: number; th: string };
@@ -852,7 +852,6 @@ async function upload(chatId: number, item: Outgoing): Promise<Attachment> {
       if (isTrack(meta)) {
         const d = await audioDuration(item.file);
         if (d) meta.d = d;
-        if (item.ti) Object.assign(meta, { ti: item.ti.slice(0, 200), ar: item.ar?.slice(0, 200) || undefined });
       }
       break;
     case 'voice':
@@ -900,30 +899,6 @@ async function deliver(chatId: number, payload: Payload, media: string[], cid: s
 }
 
 let localSeq = 0;
-
-// fetchMusic gets a Spotify track through the server's music sidecar
-// (music.go, ADR 0004) and sends it to the chat as a file, encrypted like
-// any other: the server learns which track, never which chat. A download
-// can take a minute or two.
-export async function fetchMusic(chatId: number, link: string) {
-  const { id } = await api.music(link);
-  const until = Date.now() + 6 * 60_000;
-  for (;;) {
-    await new Promise((r) => setTimeout(r, 3000));
-    // A dropped connection or a proxy hiccup while it runs: ask again.
-    const got = await api.musicJob(id).catch((e) => {
-      if (e instanceof ApiError && (e.status === 0 || e.status === 502 || e.status === 503 || e.status === 504) && e.code === 'network') return null;
-      throw e;
-    });
-    if (got) {
-      const ext = { 'audio/mpeg': 'mp3', 'audio/ogg': 'ogg', 'audio/flac': 'flac', 'audio/wav': 'wav' }[got.blob.type] ?? 'm4a';
-      const name = `${got.artist ? got.artist + ' - ' : ''}${got.title || 'track'}.${ext}`.replace(/[\\/:*?"<>|]/g, '_');
-      const file = new File([got.blob], name, { type: got.blob.type || 'audio/mp4' });
-      return sendMessage(chatId, '', [{ kind: 'file', file, ti: got.title, ar: got.artist }]);
-    }
-    if (Date.now() > until) throw new ApiError(504, 'music_failed');
-  }
-}
 
 export async function sendMessage(chatId: number, text: string, items: Outgoing[], replyTo?: Msg, lp?: LinkCard) {
   const cid = toB64u(rand(12));

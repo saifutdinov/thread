@@ -1,13 +1,11 @@
-import { useState } from 'preact/hooks';
 import { call, shareMusic, stopMusic } from '../lib/call';
 import { groupCall, shareGroupMusic, stopGroupMusic } from '../lib/group';
-import { errText, t } from '../lib/i18n';
+import { t } from '../lib/i18n';
 import { musicTrack, player, playerDur, playerPos, seekTo, step, stopPlayer, togglePlay } from '../lib/player';
 import { fmtDuration } from '../lib/recorder';
 import { go } from '../lib/route';
-import { fetchMusic, showToast } from '../lib/store';
-import { isSpotifyTrack, trackInfo } from '../lib/track';
-import { IconButton, Modal } from './ui';
+import { trackInfo } from '../lib/track';
+import { IconButton } from './ui';
 
 // PlayerBar: the track that plays, on top of the app like a minimized
 // call, wherever I am. In a call it can play into the call too.
@@ -63,46 +61,5 @@ export function PlayerBar() {
         }}
       />
     </div>
-  );
-}
-
-// MusicLink: a Spotify track link, fetched by the server's music sidecar
-// (store.ts fetchMusic) and sent to this chat as a file. Only for people
-// who know what they take: the hint says so.
-export function MusicLink(props: { chat: number; onClose: () => void }) {
-  const [link, setLink] = useState('');
-  const ok = isSpotifyTrack(link);
-  const fetchIt = (e: Event) => {
-    e.preventDefault();
-    if (!ok) return showToast(t('music.badLink'));
-    props.onClose();
-    showToast(t('music.fetching'));
-    fetchMusic(props.chat, link.trim()).catch((err) => showToast(errText(err)));
-  };
-  return (
-    <Modal label={t('music.linkTitle')} onClose={props.onClose}>
-      <form onSubmit={fetchIt}>
-        <h2>{t('music.linkTitle')}</h2>
-        <label class="field">
-          <span>{t('music.link')}</span>
-          <input
-            type="url"
-            inputMode="url"
-            value={link}
-            placeholder="https://open.spotify.com/track/..."
-            onInput={(e) => setLink(e.currentTarget.value)}
-            autoFocus
-            required
-          />
-        </label>
-        <p class="muted small">{t('music.linkHint')}</p>
-        <button class="btn" type="submit" disabled={!ok}>
-          {t('music.fetch')}
-        </button>
-        <button class="btn secondary" type="button" onClick={props.onClose}>
-          {t('common.cancel')}
-        </button>
-      </form>
-    </Modal>
   );
 }

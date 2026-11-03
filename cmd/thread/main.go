@@ -58,7 +58,6 @@ func run(log *slog.Logger) error {
 	cfg.LiveKitURL = os.Getenv("LIVEKIT_URL")
 	cfg.LiveKitKey = os.Getenv("LIVEKIT_KEY")
 	cfg.LiveKitSecret = os.Getenv("LIVEKIT_SECRET")
-	cfg.MusicURL = os.Getenv("MUSIC_URL")
 	cfg.MetricsAddr = os.Getenv("METRICS_ADDR")
 	cfg.BackupTo = os.Getenv("BACKUP_RECIPIENT")
 	keep, err := strconv.Atoi(env("BACKUP_KEEP", "7"))

@@ -26,7 +26,7 @@ export function trackMime(a: TrackLike) {
   return AUDIO.test(m) ? m : (extType(a.n) ?? 'audio/mpeg');
 }
 
-// trackInfo: title and artist from the tags (music by link), otherwise
+// trackInfo: title and artist from the tags, otherwise
 // from the file name, "Artist - Title" split in two.
 export function trackInfo(a: TrackLike): { title: string; artist: string } {
   if (a.ti) return { title: a.ti, artist: a.ar ?? '' };
@@ -34,10 +34,6 @@ export function trackInfo(a: TrackLike): { title: string; artist: string } {
   const i = name.indexOf(' - ');
   return i > 0 ? { title: name.slice(i + 3), artist: name.slice(0, i) } : { title: name, artist: '' };
 }
-
-// isSpotifyTrack: what the server takes for music by link (music.go).
-export const isSpotifyTrack = (link: string) =>
-  /^(?:https:\/\/open\.spotify\.com\/(?:intl-[a-z]{2}(?:-[A-Za-z]{2})?\/)?track\/|spotify:track:)[0-9A-Za-z]{22}(?:[/?#].*)?$/.test(link.trim());
 
 // audioDuration reads a file's length in ms, 0 when the browser cannot.
 export function audioDuration(file: Blob): Promise<number> {

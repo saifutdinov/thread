@@ -412,7 +412,6 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request, a *Auth) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"user":   map[string]any{"id": a.UserID, "name": a.Name, "hide_online": hide, "created_at": created, "avatar_v": avatarV, "recovery_allowed": recoveryAllowed},
 		"device": map[string]any{"id": a.DeviceID, "status": a.Status, "recovery": recovery},
-		"music":  s.cfg.MusicURL != "", // music by link (music.go)
 	})
 }
 

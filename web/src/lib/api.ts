@@ -38,7 +38,6 @@ export interface User {
 export interface Me {
   user: User;
   device: { id: number; status: 'pending' | 'active'; recovery: boolean };
-  music?: boolean; // music by link is on (music.go)
 }
 
 export interface Member {
@@ -293,28 +292,6 @@ export const api = {
     const res = await fetch(`/api/media/${id}`, { credentials: 'same-origin' });
     if (!res.ok) throw new ApiError(res.status, 'download');
     return new Uint8Array(await res.arrayBuffer());
-  },
-
-  // Music by link (music.go): start a job, then take its file once ready
-  // (null while the sidecar is still fetching it).
-  music: (url: string) => call<{ id: string }>('POST', '/music', { url }),
-  async musicJob(id: string): Promise<{ blob: Blob; title: string; artist: string } | null> {
-    let res: Response;
-    try {
-      res = await fetch(`/api/music/${id}`, { credentials: 'same-origin' });
-    } catch {
-      throw new ApiError(0, 'network');
-    }
-    if (res.status === 202) return null;
-    if (!res.ok) throw new ApiError(res.status, (await res.json().catch(() => ({}))).error || 'network');
-    const text = (h: string) => {
-      try {
-        return decodeURIComponent(res.headers.get(h) ?? '');
-      } catch {
-        return '';
-      }
-    };
-    return { blob: await res.blob(), title: text('X-Title'), artist: text('X-Artist') };
   },
 };
 

@@ -21,7 +21,6 @@ import {
   type LinkCard,
   linkCard,
   MAX_FILE,
-  me,
   type Msg,
   myId,
   nameOf,
@@ -33,7 +32,6 @@ import {
 } from '../lib/store';
 import { EmojiPicker } from './EmojiPicker';
 import { circleShot } from './Media';
-import { MusicLink } from './Player';
 import { Icon, IconButton } from './ui';
 
 const MAX_LEN = 4096;
@@ -78,7 +76,6 @@ export function Composer(props: {
   const [emoji, setEmoji] = useState(false);
   const [hasSel, setHasSel] = useState(false);
   const [menu, setMenu] = useState(false);
-  const [musicLink, setMusicLink] = useState(false);
   const menuAt = useRef<DOMRect | null>(null); // the attach button, which the menu opens over
   // Link preview for the first link in the text (opt-in, see prefs).
   const [card, setCard] = useState<{ from: string; lp: LinkCard } | null>(null);
@@ -605,15 +602,9 @@ export function Composer(props: {
             <button type="button" role="menuitem" onClick={() => (setMenu(false), fileInput.current?.click())}>
               <Icon name="file" /> {t('att.files')}
             </button>
-            {me.value?.music && (
-              <button type="button" role="menuitem" onClick={() => (setMenu(false), setMusicLink(true))}>
-                <Icon name="music" /> {t('music.byLink')}
-              </button>
-            )}
           </div>
         </div>
       )}
-      {musicLink && <MusicLink chat={chat.id} onClose={() => setMusicLink(false)} />}
       {rec && recKind === 'circle' && (
         <div class="circle-live" aria-hidden="true">
           <div class="circle-preview mirror">
