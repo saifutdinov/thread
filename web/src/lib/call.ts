@@ -9,7 +9,7 @@ import { type BgId, type EffectId, type Effects, type Look, startEffects } from 
 import { errText, t } from './i18n';
 import { idbGet, idbSet } from './idb';
 import { latest } from './latest';
-import { micConstraints, type Mic, openMic, pushToTalk } from './mic';
+import { cancelMicRequest, type MicRequest, micConstraints, type Mic, openMic, pushToTalk } from './mic';
 import { decline as declineGroup, groupCall } from './group';
 import { clear, notifyCall, notifyHere } from './notify';
 import { type Level, preferCodecs, rate, tuneOpus, videoOrder } from './rtc';
@@ -104,6 +104,13 @@ let stopTone: (() => void) | null = null;
 let wake: WakeLockSentinel | null = null;
 let state: RTCDataChannel | null = null; // camera and microphone state, device to device
 let mic: Mic | null = null; // what the call sends: the microphone, perhaps processed
+const pendingMicrophones = new Set<MicRequest>();
+let microphoneSelection: MicRequest | null = null;
+let microphoneCommit: Promise<void> = Promise.resolve();
+function cancelMicrophone(request: MicRequest) {
+  cancelMicRequest(request);
+  pendingMicrophones.delete(request);
+}
 let history: ReturnType<typeof beginDiagnostics> | null = null;
 const ended = new Set<string>(); // calls that ended before they rang here
 const device = videoOrder(navigator.userAgent);
@@ -330,12 +337,15 @@ async function connect(local: MediaStream, id: string): Promise<RTCPeerConnectio
   // caller's reused mDNS host name), seen in Chrome 152.
   const p = new RTCPeerConnection({ iceServers, bundlePolicy: 'max-bundle' });
   let sent: Mic;
+  const request: MicRequest = { controller: new AbortController(), raw: local.getAudioTracks()[0] };
+  pendingMicrophones.add(request);
   try {
-    sent = await openMic(local.getAudioTracks()[0]);
+    sent = await openMic(request.raw!, request.controller.signal);
+    request.mic = sent;
   } catch (e) {
     p.close();
     throw e;
-  }
+  } finally { pendingMicrophones.delete(request); }
   if (call.value?.id !== id) {
     sent.close();
     p.close();
@@ -627,6 +637,8 @@ function finish() {
 }
 
 function cleanup() {
+  for (const request of pendingMicrophones) cancelMicrophone(request);
+  pendingMicrophones.clear(); microphoneSelection = null; microphoneCommit = Promise.resolve();
   if (history) {
     history.finish(pc ? pc.getStats().then((r) => [r]) : Promise.resolve([]), { connection: pc?.connectionState ?? 'closed' });
     history = null;
@@ -1014,28 +1026,47 @@ export async function selectMic(deviceId?: string) {
   const v = call.value;
   const sender = senderOf('audio');
   if (!v || !sender) return;
+  if (microphoneSelection && !microphoneSelection.committing) cancelMicrophone(microphoneSelection);
+  const request: MicRequest = { controller: new AbortController() };
+  microphoneSelection = request; pendingMicrophones.add(request);
   let next: Mic | null = null;
   try {
     const s = await navigator.mediaDevices.getUserMedia({ audio: micConstraints(deviceId ? { exact: deviceId } : undefined) });
     hint(s);
     const track = s.getAudioTracks()[0];
+    request.raw = track;
+    if (request.controller.signal.aborted || call.value?.id !== v.id) { s.getTracks().forEach((tr) => tr.stop()); return; }
     track.enabled = !v.muted;
-    next = await openMic(track);
-    if (call.value?.id !== v.id) return next.close();
-    next.raw.enabled = next.track.enabled = !call.value.muted;
-    await sender.replaceTrack(next.track);
-    if (call.value?.id !== v.id) return next.close(); // the call ended meanwhile: so does this microphone
-    const now = call.value.local;
-    now?.getAudioTracks().forEach((tr) => tr.stop());
-    mic?.close();
-    mic = next;
-    mic.raw.enabled = mic.track.enabled = !call.value.muted;
-    next = null;
-    update({ local: new MediaStream([mic.raw, ...(now?.getVideoTracks() ?? [])]) });
-    if (deviceId) remember('callMic', deviceId);
+    next = await openMic(track, request.controller.signal);
+    request.mic = next;
+    if (request.controller.signal.aborted || call.value?.id !== v.id) return next.close();
+    const candidate = next;
+    // Preparation may be superseded; adopting a valid sender input is atomic.
+    // A later failed capture must not stop the input of an in-flight swap.
+    const commit = microphoneCommit.then(async () => {
+      if (request.controller.signal.aborted || call.value?.id !== v.id) return candidate.close();
+      request.committing = true;
+      candidate.raw.enabled = candidate.track.enabled = !call.value.muted;
+      await sender.replaceTrack(candidate.track);
+      if (request.controller.signal.aborted || call.value?.id !== v.id) return candidate.close();
+      const now = call.value.local;
+      now?.getAudioTracks().forEach((tr) => tr.stop());
+      mic?.close();
+      mic = candidate;
+      mic.raw.enabled = mic.track.enabled = !call.value.muted;
+      next = null;
+      update({ local: new MediaStream([mic.raw, ...(now?.getVideoTracks() ?? [])]) });
+      if (deviceId) remember('callMic', deviceId);
+    });
+    microphoneCommit = commit.catch(() => {});
+    await commit;
   } catch (e) {
-    next?.close();
-    showToast(errText(e));
+    const cancelled = request.controller.signal.aborted;
+    cancelMicrophone(request);
+    if (!cancelled && call.value?.id === v.id) showToast(errText(e));
+  } finally {
+    pendingMicrophones.delete(request);
+    if (microphoneSelection === request) microphoneSelection = null;
   }
 }
 

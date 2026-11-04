@@ -3,12 +3,15 @@
 // the RMS of each 128-sample block in dB; at the threshold's minimum the
 // gate never closes. It opens in 5 ms, holds through the pauses between
 // words and fades out, so it neither clicks nor clips syllables.
-const HOLD_S = 0.3;
 const OFF = -100;
 
 class VoiceGate extends AudioWorkletProcessor {
   static get parameterDescriptors() {
-    return [{ name: 'threshold', defaultValue: OFF, minValue: OFF, maxValue: 0, automationRate: 'k-rate' }];
+    return [
+      { name: 'threshold', defaultValue: OFF, minValue: OFF, maxValue: 0, automationRate: 'k-rate' },
+      { name: 'hold', defaultValue: 0.3, minValue: 0, maxValue: 1, automationRate: 'k-rate' },
+      { name: 'gainDb', defaultValue: 0, minValue: -12, maxValue: 12, automationRate: 'k-rate' },
+    ];
   }
 
   constructor() {
@@ -30,14 +33,15 @@ class VoiceGate extends AudioWorkletProcessor {
     for (let i = 0; i < input.length; i++) sum += input[i] * input[i];
     const db = 10 * Math.log10(sum / input.length + 1e-12);
     const threshold = params.threshold[0];
-    if (threshold <= OFF || db > threshold) this.left = HOLD_S * sampleRate;
+    if (threshold <= OFF || db > threshold) this.left = Math.max(input.length, params.hold[0] * sampleRate);
     else this.left = Math.max(0, this.left - input.length);
     const target = this.left > 0 ? 1 : 0;
     const k = target > this.gain ? this.attack : this.release;
+    const volume = 10 ** (params.gainDb[0] / 20);
     for (let i = 0; i < input.length; i++) {
       this.gain += (target - this.gain) * k;
       if (this.gain < 1e-4 && !target) this.gain = 0; // -80 dB: cut, not a fade forever
-      output[i] = input[i] * this.gain;
+      output[i] = Math.max(-1, Math.min(1, input[i] * this.gain * volume));
     }
     if (this.watch && ++this.blocks % 8 === 0) this.port.postMessage(db);
     return true;

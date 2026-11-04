@@ -3040,6 +3040,9 @@ img.blur {
 }
 
 .participant-volume input { width: 100%; min-height: 2.75rem; }
+.stream-volume output { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.call-who .call-music { flex-wrap: wrap; justify-content: center; }
+.call-who .stream-volume { color: inherit; }
 
 /* The call screen's text is white; a menu keeps the theme's own. */
 .call-screen .menu { color: var(--text); }
@@ -3076,13 +3079,13 @@ meter { width: 100%; min-height: 1.5rem; }
   white-space: nowrap;
 }
 
-.device-picker fieldset {
+.device-picker fieldset, .device-check fieldset {
   border: 0;
   margin: 0 0 1rem;
   padding: 0;
 }
 
-.device-picker legend {
+.device-picker legend, .device-check legend {
   padding: 0;
   margin-bottom: 0.25rem;
   font-weight: 600;
@@ -3132,6 +3135,18 @@ meter { width: 100%; min-height: 1.5rem; }
 .mic-tuning .muted {
   margin: 0.25rem 0 0;
 }
+
+.mic-tuning .row, .device-check .row, .mic-tuning summary {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  min-height: 2.75rem;
+  cursor: pointer;
+}
+
+.mic-tuning summary { display: list-item; padding-block: 0.7rem; }
+.mic-tuning select { width: 100%; min-height: 2.75rem; }
+.device-check .mic-tuning { margin-block: 0.75rem; }
 
 /* The floating call window (Document Picture-in-Picture). */
 .pip-call {

@@ -3,6 +3,7 @@
 /data/
 /web/node_modules/
 /web/dist/
+/web/public/audio/
 /web/.call-test-tools/
 .env
 .DS_Store

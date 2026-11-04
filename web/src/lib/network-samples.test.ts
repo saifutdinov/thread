@@ -1,3 +1,4 @@
+import { cancelMicRequest } from './mic-request.ts';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { stripTypeScriptTypes } from 'node:module';
@@ -20,7 +21,7 @@ test('unchanged RTC counters and disconnected transport do not count as healthy 
   };
   const source = readFileSync(new URL('./call.ts', import.meta.url), 'utf8');
   const code = stripTypeScriptTypes(source.slice(source.indexOf('async function sample()'), source.indexOf('async function flushIce()')));
-  const context = vm.createContext({
+  const context = vm.createContext({ cancelMicRequest, AbortController,
     pc: peer,
     prev: null,
     rate,
@@ -61,7 +62,7 @@ test('economy changes video caps while preserving the music SDP bitrate and audi
     getSenders: () => [music],
   };
   const source = readFileSync(new URL('./call.ts', import.meta.url), 'utf8');
-  const context = vm.createContext({
+  const context = vm.createContext({ cancelMicRequest, AbortController,
     pc: peer,
     musicSlot: () => ({ sender: music }),
     call: { value: { networkReduced: true } },
@@ -113,7 +114,7 @@ test('group recovery resumes from unchanged participant quality after reconnect'
       .replaceAll("await import('livekit-client')", 'testLiveKit')
       .replace("await import('livekit-client/e2ee-worker?worker')", '({default:TestWorker})'),
   ).replace(/\bexport\s+/g, '');
-  const context = vm.createContext({
+  const context = vm.createContext({ cancelMicRequest, AbortController,
     signal: (value: unknown) => ({ value }),
     document: { createElement: () => ({}), body: { append() {} } },
     navigator: {},

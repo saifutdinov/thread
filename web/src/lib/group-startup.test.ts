@@ -1,3 +1,4 @@
+import { cancelMicRequest } from './mic-request.ts';
 import { NetworkPolicy, videoBudget } from './network-policy.ts';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -20,7 +21,7 @@ function groupCode() {
 test('a notification join survives an old running-call list until its exact room arrives', async () => {
   let note: unknown = { c: 7, id: 'new', at: Date.now() };
   const starts: number[] = [];
-  const context = vm.createContext({
+  const context = vm.createContext({ cancelMicRequest, AbortController,
     runningCalls: { value: new Map() },
     idbGet: async () => note,
     idbSet: async (_: string, value: unknown) => {
@@ -85,12 +86,12 @@ test('holding push-to-talk while the initial group microphone opens does not sta
     async setE2EEEnabled() {}
     async connect() {}
   }
-  const context = vm.createContext({
+  const context = vm.createContext({ cancelMicRequest, AbortController,
     CallPresence, queueMicrotask, playSound: () => () => {},
     signal: (value: unknown) => ({ value }),
     beginDiagnostics: () => ({ mark() {}, snapshot: () => [], finish() {} }),
     latest: (f: unknown) => f,
-    setInterval: () => 0, clearInterval() {},
+    setInterval: () => 0, clearInterval() {}, clearTimeout() {},
     NetworkPolicy, videoBudget, networkMode: {value:'auto'}, rememberNetworkMode() {},
     document: { createElement: () => ({}), body: { append() {} } },
     navigator: { mediaDevices: { getUserMedia: () => permission } },
@@ -104,7 +105,7 @@ test('holding push-to-talk while the initial group microphone opens does not sta
     testLiveKit: {
       Room,
       RoomEvent: {},
-      Track: { Source: { Microphone: 'mic' } }, VideoQuality: {LOW:0,HIGH:2},
+      Track: { Source: { Microphone: 'mic', ScreenShareAudio: 'screen_share_audio', Unknown: 'unknown' } }, VideoQuality: {LOW:0,HIGH:2},
       VideoPresets: { h540: { resolution: {} }, h180: {}, h360: {} },
       ExternalE2EEKeyProvider: class {
         async setKey() {}
@@ -145,20 +146,20 @@ test('a cancelled group microphone replacement cannot close the next call microp
     nextClosed = 0,
     candidateClosed = 0;
   const pending = new Promise<void>((resolve) => (finish = resolve));
-  const raw = { getSettings: () => ({}), addEventListener() {}, enabled: true };
+  const raw = { getSettings: () => ({}), addEventListener() {}, stop() {}, enabled: true };
   const own = {
     raw,
     track: { ...raw },
     close: () => {
-      candidateClosed++;
+      if (!candidateClosed) candidateClosed++;
     },
   };
-  const context = vm.createContext({
+  const context = vm.createContext({ cancelMicRequest, AbortController,
     CallPresence, queueMicrotask, playSound: () => () => {},
     signal: (value: unknown) => ({ value }),
     beginDiagnostics: () => ({ mark() {}, snapshot: () => [], finish() {} }),
     latest: (f: unknown) => f,
-    setInterval: () => 0, clearInterval() {},
+    setInterval: () => 0, clearInterval() {}, clearTimeout() {},
     NetworkPolicy, videoBudget, networkMode: {value:'auto'}, rememberNetworkMode() {},
     document: { createElement: () => ({}), body: { append() {} } },
     navigator: {
@@ -223,10 +224,10 @@ test('a cancelled group microphone replacement cannot close the next call microp
 
 const tick = () => new Promise<void>((resolve) => setImmediate(resolve));
 
-function startup(processing: boolean, crowded = false) {
+function startup(processing: boolean, crowded = false, preparation?: Promise<void>, plain = false) {
   const sounds: string[] = [];
   const handlers = new Map<string, ((p?: unknown) => void)[]>();
-  const events = { ParticipantConnected: 'joined', ParticipantDisconnected: 'left', Reconnecting: 'reconnecting', Reconnected: 'reconnected', SignalReconnecting: 'signal-reconnecting' };
+  const events = { ParticipantConnected: 'joined', ParticipantDisconnected: 'left', Reconnecting: 'reconnecting', Reconnected: 'reconnected', SignalReconnecting: 'signal-reconnecting', TrackSubscribed: 'subscribed' };
   let joinedRoom!: Room;
   let selected = 'old-mic';
   const tracks: {
@@ -244,6 +245,7 @@ function startup(processing: boolean, crowded = false) {
       closed: false,
       getSettings: () => ({ deviceId: tr.deviceId }),
       addEventListener() {},
+      stop() { tr.closed = true; },
     };
     tracks.push(tr);
     return tr;
@@ -291,14 +293,14 @@ function startup(processing: boolean, crowded = false) {
   }
   const state = { processing };
   const choices = { callMic: 'old-mic' };
-  const context = vm.createContext({
+  const context = vm.createContext({ cancelMicRequest, AbortController,
     CallPresence, queueMicrotask, playSound: (kind: string) => { sounds.push(kind); return () => {}; },
     signal: (value: unknown) => ({ value }),
     beginDiagnostics: () => ({ mark() {}, snapshot: () => [], finish() {} }),
     latest,
-    setInterval: () => 0, clearInterval() {},
+    setInterval: () => 0, clearInterval() {}, clearTimeout() {},
     NetworkPolicy, videoBudget, networkMode: {value:'auto'}, rememberNetworkMode() {},
-    document: { createElement: () => ({}), body: { append() {} } },
+    document: { createElement: () => ({ append() {}, replaceChildren() {} }), body: { append() {} } },
     navigator: {
       mediaDevices: {
         getUserMedia: (constraints: { audio: { deviceId?: { ideal: string } } }) =>
@@ -308,7 +310,7 @@ function startup(processing: boolean, crowded = false) {
               id,
               finish: () => {
                 const raw = track(id);
-                resolve({ getAudioTracks: () => [raw] });
+                resolve({ getAudioTracks: () => [raw], getTracks: () => [raw] });
               },
             });
           }),
@@ -323,17 +325,17 @@ function startup(processing: boolean, crowded = false) {
     pushToTalk: { value: false },
     wantsProcessing: () => state.processing,
     micConstraints: (deviceId: unknown) => ({ deviceId }),
-    openMic: async (raw: ReturnType<typeof track>) => ({
+    openMic: async (raw: ReturnType<typeof track>) => { await preparation; return ({
       raw,
-      track: { ...raw },
+      track: plain ? raw : { ...raw },
       close: () => {
         raw.closed = true;
       },
-    }),
+    }); },
     testLiveKit: {
       Room,
       RoomEvent: {},
-      Track: { Source: { Microphone: 'mic' } }, VideoQuality: {LOW:0,HIGH:2},
+      Track: { Source: { Microphone: 'mic', ScreenShareAudio: 'screen_share_audio', Unknown: 'unknown' } }, VideoQuality: {LOW:0,HIGH:2},
       VideoPresets: { h540: { resolution: {} }, h180: {}, h360: {} },
       ExternalE2EEKeyProvider: class {
         async setKey() {}
@@ -345,10 +347,13 @@ function startup(processing: boolean, crowded = false) {
     t: String,
     errText: String,
     showToast() {},
+    socketHold: { call: true }, releaseSocket() {},
   });
   Object.assign((context.testLiveKit as { RoomEvent: object }).RoomEvent, events);
   vm.runInContext(groupCode() + '\nglobalThis.subject={enter,setGroupMuted,selectGroupMic,reopenGroupMic,groupCall};', context);
   vm.runInContext('globalThis.subject.stopGroupVideo=stopGroupVideo;', context);
+  vm.runInContext('globalThis.subject.setScreenVolume=setScreenVolume;', context);
+  vm.runInContext('globalThis.subject.cancelSetup=()=>{room=null;end();};', context);
   const s = (
     context as unknown as {
       subject: {
@@ -357,6 +362,8 @@ function startup(processing: boolean, crowded = false) {
         selectGroupMic: (id: string) => Promise<void>;
         reopenGroupMic: () => Promise<void>;
         stopGroupVideo: () => Promise<void>;
+        setScreenVolume: (identity: string, value: number) => void;
+        cancelSetup: () => void;
         groupCall: {
           value: { phase: string; people: unknown[]; muted?: boolean };
         };
@@ -367,7 +374,7 @@ function startup(processing: boolean, crowded = false) {
   const joining = s.enter('/lk', 'token', 'key', true, () => false, crowded);
   return {
     s,
-    sounds, events, room: () => joinedRoom, emit: (event: string, p?: object) => handlers.get(event)?.forEach((fn) => fn(p)),
+    sounds, events, room: () => joinedRoom, emit: (event: string, ...args: object[]) => handlers.get(event)?.forEach((fn) => fn(...args)),
     joining,
     captures,
     tracks,
@@ -377,6 +384,58 @@ function startup(processing: boolean, crowded = false) {
     publication: () => publication,
   };
 }
+
+test('leaving a group stops a pending raw microphone before model preparation settles', async () => {
+  let prepared!: () => void;
+  const h = startup(true, false, new Promise<void>((resolve) => { prepared = resolve; }));
+  await tick(); h.captures[0].finish(); await tick();
+  assert.equal(h.tracks[0].closed, false);
+  h.s.cancelSetup();
+  assert.equal(h.tracks[0].closed, true, 'leave owns raw even before openMic returns');
+  prepared(); h.finishCamera(); await h.joining;
+  assert.equal(h.publication(), undefined);
+});
+
+test('an intentional native capture keeps its off/AEC/AGC settings instead of being replaced by SDK defaults', async () => {
+  const h = startup(true, false, undefined, true);
+  await tick(); h.captures[0].finish(); h.finishCamera(); await h.joining;
+  assert.equal(h.publication()?.track.mediaStreamTrack, h.tracks[0]);
+  assert.equal(h.tracks[0].closed, false);
+});
+
+test('a subscribed replacement stream receives its local volume before attachment', async () => {
+  const h = startup(false);
+  h.finishCamera(); await h.joining;
+  const order: string[] = [];
+  let voice = 1;
+  const remote = { ...h.participant, identity: '2.1', audioTrackPublications: new Map(), setVolume(value: number, source = 'mic') {
+    if (source === 'mic') voice = value;
+    else {
+      assert.equal(source, 'screen_share_audio');
+      for (const pub of remote.audioTrackPublications.values()) if (pub.source === source) pub.audioTrack?.setVolume(value);
+    }
+  } };
+  const pub = { source: 'screen_share_audio', audioTrack: undefined as unknown };
+  remote.audioTrackPublications.set('screen', pub);
+  h.room().remoteParticipants.set(remote.identity, remote);
+  h.s.setScreenVolume(remote.identity, 0.25);
+  for (let i = 0; i < 2; i++) {
+    let volume = 1;
+    const track = { kind: 'audio', source: 'screen_share_audio', setVolume(value: number) { volume = value; order.push(`volume:${value}`); }, attach() { order.push(`attach:${volume}`); return {}; } };
+    pub.audioTrack = track;
+    h.emit(h.events.TrackSubscribed, track, pub, remote);
+  }
+  assert.deepEqual(order, ['volume:0.25', 'attach:0.25', 'volume:0.25', 'attach:0.25']);
+  assert.equal(voice, 1);
+});
+
+test('a late audio subscription from a cancelled room never attaches or changes levels', async () => {
+  const h = startup(false);
+  h.finishCamera(); await h.joining;
+  h.s.cancelSetup();
+  const unexpected = () => { throw new Error('stale room must not play audio'); };
+  h.emit(h.events.TrackSubscribed, { kind: 'audio', source: 'unknown', setVolume: unexpected, attach: unexpected }, {}, { setVolume: unexpected });
+});
 
 for (const early of [true, false]) test(`all-video-off ${early ? 'before SDK creation' : 'during microphone startup'} prevents a late group camera`, async () => {
   const h = startup(true);

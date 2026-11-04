@@ -14,7 +14,7 @@ import { chromium } from 'playwright';
 const repo = fileURLToPath(new URL('../../', import.meta.url));
 const temporaryRoot = await realpath(os.tmpdir());
 const dir = await mkdtemp(path.join(temporaryRoot, 'thread-calls-'));
-const binary = path.join(dir, process.platform === 'win32' ? 'thread.exe' : 'connect');
+const binary = path.join(dir, process.platform === 'win32' ? 'thread.exe' : 'thread');
 const sfuBinary =
   process.env.LIVEKIT_BINARY ||
   fileURLToPath(new URL(`../.call-test-tools/livekit-server${process.platform === 'win32' ? '.exe' : ''}`, import.meta.url));
@@ -291,6 +291,30 @@ try {
   const chat = await create(a, 'direct');
   await register(b, chat.invite, 'Test Bob');
   await b.goto(chat.url);
+  await scenario('a cold DeepFilter download never blocks an outgoing offer', async () => {
+    const saved = await a.evaluate(() => localStorage.getItem('micSettings'));
+    let release;
+    let requested = false;
+    const held = new Promise((resolve) => { release = resolve; });
+    const route = async (r) => { requested = true; await held; await r.abort().catch(() => {}); };
+    await a.route('**/*df_bg*.wasm*', route);
+    try {
+      await a.evaluate(() => localStorage.setItem('micSettings', JSON.stringify({ model: 'deepfilter' })));
+      await a.reload();
+      await a.waitForFunction(() => callTest.opens > 0);
+      await a.getByRole('button', { name: 'Аудиозвонок', exact: true }).click();
+      await eventually(async () => requested, 'Cold DFN request was not started', 9000);
+      await b.getByRole('button', { name: 'Ответить', exact: true }).waitFor({ timeout: 9000 });
+      await b.getByRole('button', { name: 'Ответить', exact: true }).click();
+      await Promise.all([flowing(a), flowing(b)]);
+      await endDirect(a, b);
+    } finally {
+      release(); await a.unroute('**/*df_bg*.wasm*', route);
+      await a.evaluate((saved) => saved === null ? localStorage.removeItem('micSettings') : localStorage.setItem('micSettings', saved), saved);
+      await a.reload();
+      await a.waitForFunction(() => callTest.opens > 0);
+    }
+  });
   await scenario('audio/video decode and complete resource cleanup', async () => {
     await direct(a, b, true);
     await endDirect(a, b);

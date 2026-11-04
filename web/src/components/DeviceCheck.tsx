@@ -3,7 +3,8 @@ import { cameras, microphones, speakers, deviceName, refreshDevices, remember, r
 import { t } from '../lib/i18n';
 import { call, selectSpeaker } from '../lib/call';
 import { groupCall } from '../lib/group';
-import { micConstraints } from '../lib/mic';
+import { canTune, micConstraints, openMic, resumeMicContext, type Mic } from '../lib/mic';
+import { MicTuning } from './MicTuning';
 import { showToast } from '../lib/store';
 import { Modal } from './ui';
 
@@ -36,6 +37,7 @@ export function DeviceCheck(props: { onClose: () => void }) {
   const [busy, setBusy] = useState(false);
   const [level, setLevel] = useState(0);
   const [withCamera, setWithCamera] = useState(true);
+  const [listening, setListening] = useState(false);
   const [choice, setChoice] = useState({
     callMic: remembered('callMic'),
     callCam: remembered('callCam'),
@@ -44,6 +46,9 @@ export function DeviceCheck(props: { onClose: () => void }) {
   const generation = useRef(0);
   const media = useRef<MediaStream | null>(null);
   const context = useRef<AudioContext | null>(null);
+  const processed = useRef<Mic | null>(null);
+  const preparation = useRef<AbortController | null>(null);
+  const monitor = useRef<HTMLAudioElement | null>(null);
   const meter = useRef<ReturnType<typeof setInterval> | undefined>(undefined);
   const sound = useRef<{ audio: HTMLAudioElement; url: string } | null>(null);
   const video = useRef<HTMLVideoElement>(null);
@@ -55,10 +60,16 @@ export function DeviceCheck(props: { onClose: () => void }) {
       sound.current = null;
     }
   };
-  const stop = () => {
+  const stop = (keepCamera = false) => {
     generation.current++;
-    media.current?.getTracks().forEach((tr) => tr.stop());
-    media.current = null;
+    preparation.current?.abort(); preparation.current = null;
+    if (monitor.current) { monitor.current.pause(); monitor.current.srcObject = null; monitor.current = null; }
+    setListening(false);
+    processed.current?.close();
+    processed.current = null;
+    const camera = keepCamera ? media.current?.getVideoTracks()[0] : undefined;
+    media.current?.getTracks().forEach((tr) => { if (tr !== camera) tr.stop(); });
+    media.current = camera ? new MediaStream([camera]) : null;
     clearInterval(meter.current);
     void context.current?.close().catch(() => {});
     context.current = null;
@@ -73,30 +84,54 @@ export function DeviceCheck(props: { onClose: () => void }) {
   useEffect(() => {
     if (video.current) video.current.srcObject = stream;
   }, [stream]);
-  const open = async () => {
-    stop();
+  const open = async (resumeListening = false, keepCamera = false) => {
+    // Tuning the microphone must not close/reopen the camera device. It stays
+    // owned by media.current, including while the next audio permission waits.
+    stop(keepCamera);
+    const camera = media.current?.getVideoTracks()[0];
     setStream(null);
     setLevel(0);
     setBusy(true);
     const my = generation.current;
+    const controller = new AbortController(); preparation.current = controller;
     try {
       const s = await navigator.mediaDevices.getUserMedia({
         audio: micConstraints(choice.callMic ? { ideal: choice.callMic } : undefined),
-        video: withCamera ? (choice.callCam ? { deviceId: { ideal: choice.callCam } } : { facingMode: 'user' }) : false,
+        video: withCamera && !camera ? (choice.callCam ? { deviceId: { ideal: choice.callCam } } : { facingMode: 'user' }) : false,
       });
       if (generation.current !== my) {
         s.getTracks().forEach((tr) => tr.stop());
         return;
       }
+      if (camera) s.addTrack(camera);
       media.current = s;
-      setStream(s);
       void refreshDevices();
-      const ctx = new AudioContext();
+      const mic = await openMic(s.getAudioTracks()[0], controller.signal, 'preview');
+      if (generation.current !== my) { mic.close(); s.getTracks().forEach((tr) => tr.stop()); return; }
+      processed.current = mic;
+      mic.raw.addEventListener('ended', () => { if (generation.current === my) { stop(); setStream(null); setLevel(0); } }, { once: true });
+      const ctx = new AudioContext({ sampleRate: mic.sampleRate ?? mic.track.getSettings().sampleRate });
       context.current = ctx;
-      void ctx.resume().catch(() => {});
+      if (!await resumeMicContext(ctx, controller.signal)) throw new Error('audio');
+      if (generation.current !== my) return;
       const analyser = ctx.createAnalyser();
       analyser.fftSize = 256;
-      ctx.createMediaStreamSource(s).connect(analyser);
+      const source = ctx.createMediaStreamSource(new MediaStream([mic.track]));
+      source.connect(analyser);
+      const delay = ctx.createDelay(0.5); delay.delayTime.value = 0.15;
+      const destination = ctx.createMediaStreamDestination();
+      source.connect(delay).connect(destination);
+      const audio = new Audio();
+      audio.volume = 0.25;
+      audio.srcObject = destination.stream;
+      monitor.current = audio;
+      if (choice.callSpeaker && 'setSinkId' in audio) {
+        try { await audio.setSinkId(choice.callSpeaker); }
+        catch { if (generation.current === my) showToast(t('mic.outputFallback')); }
+      }
+      if (generation.current !== my) return;
+      setStream(s);
+      if (resumeListening) { await audio.play(); if (generation.current !== my) return; setListening(true); }
       const samples = new Uint8Array(analyser.fftSize);
       meter.current = setInterval(() => {
         analyser.getByteTimeDomainData(samples);
@@ -110,8 +145,17 @@ export function DeviceCheck(props: { onClose: () => void }) {
         showToast(t('call.noMedia'));
       }
     } finally {
+      if (preparation.current === controller) preparation.current = null;
       if (generation.current === my) setBusy(false);
     }
+  };
+  const listen = async () => {
+    const audio = monitor.current;
+    if (!audio) return;
+    if (listening) { audio.pause(); setListening(false); return; }
+    const my = generation.current;
+    try { await audio.play(); if (generation.current === my) setListening(true); }
+    catch { if (generation.current === my) showToast(t('call.noMedia')); }
   };
   const close = () => {
     stop();
@@ -137,7 +181,7 @@ export function DeviceCheck(props: { onClose: () => void }) {
     }
   };
   return (
-    <Modal label={t('call.deviceCheck')} onClose={close}>
+    <Modal label={t('call.deviceCheck')} onClose={close} class="device-check">
       <h2>{t('call.deviceCheck')}</h2>
       <p class="muted small">{t('call.deviceCheckHint')}</p>
       {(
@@ -201,6 +245,7 @@ export function DeviceCheck(props: { onClose: () => void }) {
         <span>{t('call.micLevel')}</span>
         <meter min="0" max="1" value={level} aria-label={t('call.micLevel')} />
       </label>
+      {canTune && <MicTuning disabled={busy} reopen={async () => { if (media.current) await open(listening, true); }} />}
       <button
         type="button"
         class="btn secondary"
@@ -209,6 +254,10 @@ export function DeviceCheck(props: { onClose: () => void }) {
       >
         {t(stream ? 'call.checkStop' : 'call.checkStart')}
       </button>
+      <button type="button" class="btn secondary" disabled={!stream || busy} aria-pressed={listening} onClick={() => void listen()}>
+        {t(listening ? 'mic.listenStop' : 'mic.listen')}
+      </button>
+      <p class="muted small" role="status">{t(listening ? 'mic.listening' : 'mic.listenHint')}</p>
       <button type="button" class="btn secondary" onClick={() => void play()}>
         {t('call.testSpeaker')}
       </button>

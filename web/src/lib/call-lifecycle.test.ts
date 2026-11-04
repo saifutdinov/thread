@@ -1,3 +1,4 @@
+import { cancelMicRequest } from './mic-request.ts';
 import { NetworkPolicy, videoBudget } from './network-policy.ts';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -105,7 +106,8 @@ function setup() {
   }
   const sounds: string[] = [];
   const no = () => {};
-  const sandbox = {
+  const sandbox = { cancelMicRequest,
+    AbortController,
     signal: (value: unknown) => ({ value }),
     beginDiagnostics: () => ({ mark() {}, snapshot: () => [], finish() {} }),
     rand: () => new Uint8Array([++next]),
@@ -172,13 +174,14 @@ function setup() {
     Uint8Array,
   };
   const context = vm.createContext(sandbox);
-  vm.runInContext(code + '\nglobalThis.subject = {startCall, accept, hangup, call, onSignal, stopOwnVideo, toggleCamera, shareScreen, prepareScreen(){camBefore=true;call.value={...call.value,phase:"active",screen:true,camOff:false};}};', context);
+  vm.runInContext(code + '\nglobalThis.subject = {startCall, accept, hangup, call, onSignal, stopOwnVideo, toggleCamera, shareScreen, selectMic, prepareScreen(){camBefore=true;call.value={...call.value,phase:"active",screen:true,camOff:false};}};', context);
   const subject = (
     context as unknown as {
       subject: {
         startCall: (chat: number, peer: number, video: boolean) => Promise<void>;
         accept: (video: boolean) => Promise<void>;
         hangup: () => void;
+        selectMic: (id?: string) => Promise<void>;
         toggleCamera: () => Promise<void>; shareScreen: () => Promise<void>;
         stopOwnVideo: () => Promise<void>; prepareScreen: () => void;
         call: { value: { id: string; phase: string } | null };
@@ -197,6 +200,55 @@ function setup() {
   };
   return { ...subject, sandbox, requests, allow, tracks, peers, sent, serviceMessages, tick: () => new Promise<void>((r) => setImmediate(r)) };
 }
+
+test('hangup stops a replacement microphone while its denoiser is still preparing', async () => {
+  const s = setup();
+  const start = s.startCall(1, 2, false); s.allow(); await start;
+  const preparation = deferred<void>();
+  s.sandbox.openMic = async (raw) => { await preparation.promise; return { raw, track: raw, close: () => raw.stop() }; };
+  const replacing = s.selectMic('new');
+  const raw = s.allow(); await s.tick();
+  assert.equal(raw.readyState, 'live');
+  s.hangup();
+  assert.equal(raw.readyState, 'ended', 'candidate capture must close before the model returns');
+  preparation.resolve(); await replacing;
+});
+
+test('a newer microphone selection cancels the older candidate and cannot be overwritten by it', async () => {
+  const s = setup();
+  const start = s.startCall(1, 2, false); s.allow(); await start;
+  let sent: unknown;
+  const sender = s.peers[0].getTransceivers().find((tr) => tr.receiver.track.kind === 'audio')!.sender as unknown as { replaceTrack: (track: unknown) => Promise<void> };
+  sender.replaceTrack = async (track) => { sent = track; };
+  const waits = [deferred<void>(), deferred<void>()]; let next = 0;
+  s.sandbox.openMic = async (raw) => { const wait = waits[next++]; await wait.promise; return { raw, track: raw, close: () => raw.stop() }; };
+  const first = s.selectMic('first'); const firstRaw = s.allow(); await s.tick();
+  const second = s.selectMic('second');
+  assert.equal(firstRaw.readyState, 'ended');
+  const secondRaw = s.allow(); await s.tick();
+  waits[1].resolve(); await second;
+  waits[0].resolve(); await first;
+  assert.equal(sent, secondRaw);
+  assert.equal(secondRaw.readyState, 'live');
+  s.hangup();
+  assert.equal(secondRaw.readyState, 'ended');
+});
+
+test('a failed newer selection does not stop a microphone whose sender swap is already committing', async () => {
+  const s = setup();
+  const start = s.startCall(1, 2, false); s.allow(); await start;
+  const replacing = deferred<void>(); let sent: unknown;
+  const sender = s.peers[0].getTransceivers().find((tr) => tr.receiver.track.kind === 'audio')!.sender as unknown as { replaceTrack: (track: unknown) => Promise<void> };
+  sender.replaceTrack = async (track) => { await replacing.promise; sent = track; };
+  const first = s.selectMic('first'); const raw = s.allow(); await s.tick();
+  const second = s.selectMic('second');
+  s.requests.at(-1)!.reject(new Error('permission denied')); await second;
+  assert.equal(raw.readyState, 'live', 'a committing sender must keep its valid input');
+  replacing.resolve(); await first;
+  assert.equal(sent, raw);
+  assert.equal(raw.readyState, 'live');
+  s.hangup();
+});
 
 test('a stale notification action cannot accept or decline a different incoming call', async () => {
   const s = setup();

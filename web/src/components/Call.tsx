@@ -29,6 +29,7 @@ import {
 } from '../lib/call';
 import { menuKey, voiceForCall, voiceVolume } from '../lib/call-menu';
 import { cameras, canPickOutput, canSetVolume, remember, remembered } from '../lib/devices';
+import { StreamVolume } from './StreamVolume';
 import { BACKGROUNDS, EFFECTS } from '../lib/effects';
 import { t } from '../lib/i18n';
 import { fmtDuration } from '../lib/recorder';
@@ -48,11 +49,13 @@ export const minimized = signal(false);
 // The other side's music plays at its own volume, remembered per device;
 // a bit under the voice at first, so talk stays on top. iPhones and iPads
 // ignore a page's volume (the buttons on the side set it): no slider there.
-const musicVolume = signal(Number(remembered('musicVolume') || 0.7));
-const setMusicVolume = (value: string) => {
-  musicVolume.value = Number(value);
-  remember('musicVolume', value);
-};
+const savedMusicVolume = Number(remembered('musicVolume') || 0.7);
+const musicVolume = signal(Number.isFinite(savedMusicVolume) ? Math.max(0, Math.min(1, savedMusicVolume)) : 0.7);
+function setMusicVolume(value: number) {
+  if (!Number.isFinite(value)) return;
+  musicVolume.value = Math.max(0, Math.min(1, value));
+  remember('musicVolume', String(musicVolume.value));
+}
 
 function Volumes(props: { name: string; music?: boolean }) {
   if (!canSetVolume) return null;
@@ -63,10 +66,7 @@ function Volumes(props: { name: string; music?: boolean }) {
         <input type="range" min="0" max="1" step="0.05" value={voiceVolume.value} onInput={(e) => (voiceVolume.value = Number(e.currentTarget.value))} />
       </label>
       {props.music && (
-        <label class="participant-volume">
-          <span>{t('call.musicVolume')}</span>
-          <input type="range" min="0" max="1" step="0.05" value={musicVolume.value} onInput={(e) => setMusicVolume(e.currentTarget.value)} />
-        </label>
+        <StreamVolume label={t('call.streamVolume')} value={musicVolume.value} onChange={setMusicVolume} />
       )}
     </>
   );
@@ -285,6 +285,9 @@ function FloatingCall(props: { win: Window }) {
 export function CallAudio() {
   const c = call.value;
   const sink = speaker.value;
+  // Playback also runs behind the app lock, with no CallScreen mounted.
+  // Reset before attaching a new call, so its first sound has its own level.
+  if (c) voiceForCall(c.id);
   const voice = voiceVolume.value;
   const music = musicVolume.value;
   if (!c) return null;
@@ -332,7 +335,6 @@ export function CallScreen() {
     setFxOpen(false);
     setMenu(null);
     setThumbSize({ w: 3, h: 4 });
-    if (c) voiceForCall(c.id);
   }, [c?.id]);
   useEffect(() => {
     if (mini || c?.phase !== 'active') setMenu(null);
@@ -533,20 +535,10 @@ export function CallScreen() {
           </p>
         )}
         {c.phase === 'active' && c.peerMusic && (
-          <label class="call-note call-music">
+          <div class="call-note call-music">
             <Icon name="music" size={16} /> {t('call.peerMusic')}
-            {canSetVolume && (
-              <input
-              type="range"
-              min="0"
-              max="1"
-              step="0.05"
-              value={musicVolume.value}
-              aria-label={t('call.musicVolume')}
-              onInput={(e) => setMusicVolume(e.currentTarget.value)}
-              />
-            )}
-          </label>
+            <StreamVolume label={t('call.streamVolume')} value={musicVolume.value} onChange={setMusicVolume} />
+          </div>
         )}
         {c.phase === 'active' && c.peerMuted && (
           <p class="call-note">

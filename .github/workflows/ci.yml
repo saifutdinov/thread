@@ -73,6 +73,8 @@ jobs:
           npx playwright install --with-deps chromium
           npm run test:calls:setup
           npm run build
+          npm run test:mic
+          npm run test:stream-volume
           npm run test:calls
       - uses: actions/upload-artifact@v4.6.2
         if: failure()
@@ -81,6 +83,39 @@ jobs:
           path: ${{ runner.temp }}/thread-calls-*/page-*.png
           if-no-files-found: ignore
           retention-days: 7
+
+  firefox-microphone:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 6
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: 22.15.0
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Install web dependencies
+        working-directory: web
+        run: npm ci
+      - uses: actions/cache@v4.3.0
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-firefox-${{ runner.os }}-${{ hashFiles('web/package-lock.json') }}
+      - name: Install browser and silent audio backend
+        working-directory: web
+        run: |
+          npx playwright install --with-deps firefox
+          sudo apt-get install -y pulseaudio pulseaudio-utils
+          pulseaudio --start --exit-idle-time=-1
+          pactl load-module module-null-sink sink_name=thread_test rate=48000 >/dev/null
+          pactl set-default-sink thread_test
+          pactl set-sink-mute thread_test 1
+      - name: Firefox microphone regression tests
+        working-directory: web
+        timeout-minutes: 3
+        env:
+          BROWSER_ENGINE: firefox
+        run: npm run test:mic
 
   windows-companion:
     runs-on: windows-2025

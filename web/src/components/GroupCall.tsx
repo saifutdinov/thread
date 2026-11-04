@@ -36,6 +36,7 @@ import { chatPicture, findChat, myId, nameOf, openDirect, picture, showToast } f
 import { chatName } from './ChatList';
 import { CallMenu } from './CallMenu';
 import { CallSettings } from './CallSettings';
+import { StreamVolume } from './StreamVolume';
 import { Avatar, Icon, IconButton, type IconName } from './ui';
 
 // A minimized group call shrinks to a strip, like a 1:1 call (Call.tsx).
@@ -135,10 +136,7 @@ function Volumes(props: { p: Person; chat: number }) {
         <input type="range" min="0" max="1" step="0.05" value={participantVolumes.value.get(p.id) ?? 1} onInput={(e) => setParticipantVolume(p.id, Number(e.currentTarget.value))} />
       </label>
       {p.screenSound && (
-        <label class="participant-volume">
-          <span>{t('gcall.screenVolumeOf', { name })}</span>
-          <input type="range" min="0" max="1" step="0.05" value={screenVolumes.value.get(p.id) ?? 1} onInput={(e) => setScreenVolume(p.id, Number(e.currentTarget.value))} />
-        </label>
+        <StreamVolume label={t('call.streamVolumeOf', { name })} value={screenVolumes.value.get(p.id) ?? 1} onChange={(value) => setScreenVolume(p.id, value)} />
       )}
     </>
   );

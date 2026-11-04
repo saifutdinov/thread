@@ -3,18 +3,23 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "predev": "node scripts/build-audio.mjs",
+    "prebuild": "node scripts/build-audio.mjs",
     "dev": "vite",
     "build": "tsc --noEmit && vite build && node scripts/brotli.mjs",
     "check": "tsc --noEmit",
     "test": "node --experimental-strip-types --no-warnings --test src/lib/*.test.ts",
     "test:proxy": "node --experimental-strip-types --no-warnings --test scripts/proxy.test.ts",
+    "test:mic": "node scripts/build-audio.mjs && node scripts/test-microphone.mjs",
+    "test:stream-volume": "node scripts/test-stream-volume.mjs",
     "test:calls:setup": "node scripts/install-livekit.mjs",
     "test:calls": "node scripts/call-failures.mjs"
   },
   "dependencies": {
     "@mediapipe/tasks-vision": "1.1.1",
     "@preact/signals": "2.11.3",
-    "@sapphi-red/web-noise-suppressor": "0.4.1",
+    "@shiguredo/rnnoise-wasm": "2025.1.5",
+    "@lofcz/deepfilternet-web": "0.1.0",
     "livekit-client": "2.23.0",
     "preact": "11.0.1",
     "unicode-emoji-json": "0.9.0"

@@ -1,5 +1,5 @@
 import { signal } from '@preact/signals';
-import type { LocalVideoTrack, Participant, RemoteParticipant, RemoteTrack, Room, VideoTrack } from 'livekit-client';
+import type { LocalVideoTrack, Participant, RemoteAudioTrack, RemoteParticipant, RemoteTrack, Room, VideoTrack } from 'livekit-client';
 import { api, ApiError, type RunningCall } from './api';
 import { rand, toB64u } from './crypto';
 import { remember, remembered } from './devices';
@@ -8,7 +8,7 @@ import { errText, t } from './i18n';
 import { idbGet, idbSet } from './idb';
 import { latest } from './latest';
 import { CallPresence } from './call-presence';
-import { micConstraints, type Mic, openMic, pushToTalk, wantsProcessing } from './mic';
+import { cancelMicRequest, type MicRequest, micConstraints, type Mic, openMic, pushToTalk, wantsProcessing } from './mic';
 import { hangupTone, playSound } from './sounds';
 import { me, openSignal, releaseSocket, sealSignal, sendCallLog, setGroupHandler, showToast, socketHold } from './store';
 
@@ -30,7 +30,7 @@ export interface Person {
   muted: boolean;
   video?: VideoTrack; // a camera that is on and reaches us
   screen?: VideoTrack; // their shared screen
-  screenSound?: boolean; // and it comes with sound
+  screenSound?: boolean; // screen sound or separately shared music
 }
 
 export interface GroupView {
@@ -64,6 +64,11 @@ let history: ReturnType<typeof beginDiagnostics> | null = null;
 let desiredMute = false;
 let micStarting: Room | null = null; // capture/publication owns microphone creation until it settles
 let micReopen: Room | null = null; // settings changed while the initial capture was pending
+const pendingMicrophones = new Set<MicRequest>();
+function cancelMicrophone(request: MicRequest) {
+  cancelMicRequest(request);
+  pendingMicrophones.delete(request);
+}
 const networkPolicy = new NetworkPolicy();
 let networkTimer: ReturnType<typeof setInterval> | undefined;
 let cameraBlocked = false;
@@ -292,7 +297,9 @@ async function enter(path: string, token: string, key: string, video: boolean, s
     r.on(ev, refresh);
   const capNewCamera = () => { if (room === r && groupCall.value?.networkReduced) applyGroupNetwork(r, true); };
   r.on(E.TrackSubscribed, capNewCamera);
-  r.on(E.TrackSubscribed, playRemote);
+  r.on(E.TrackSubscribed, (track: RemoteTrack, pub, participant) => {
+    if (room === r) playRemote(track, pub, participant);
+  });
   r.on(E.TrackUnsubscribed, (track: RemoteTrack) => track.detach().forEach((el) => el.remove()));
   // A full SDK restart removes participants before emitting Reconnecting.
   // Wait until that synchronous event batch finishes before making a sound.
@@ -332,9 +339,11 @@ async function enter(path: string, token: string, key: string, video: boolean, s
   let micReady = false;
   baseline();
   playSound('join');
+  const request: MicRequest = { controller: new AbortController() };
+  pendingMicrophones.add(request);
   try {
     trace?.mark('media-request');
-    const own = await processedMic(mic || undefined);
+    const own = await processedMic(request, mic || undefined);
     if (stale()) own?.close();
     else if (own) {
       await publishMic(r, own);
@@ -351,6 +360,8 @@ async function enter(path: string, token: string, key: string, video: boolean, s
   } catch {
     if (!stale()) showToast(t('call.noMedia')); // in the call anyway: listening works without a microphone
   } finally {
+    if (request.mic !== gmic) cancelMicrophone(request);
+    pendingMicrophones.delete(request);
     if (room === r && !stale()) {
       micStarting = null;
       if (micReopen === r) {
@@ -395,12 +406,11 @@ export async function stopGroupVideo() {
 
 function people(r: Room): Person[] {
   const all: Participant[] = [r.localParticipant, ...r.remoteParticipants.values()];
-  const { Camera, Microphone, ScreenShare, ScreenShareAudio } = lk!.Track.Source;
+  const { Camera, Microphone, ScreenShare, ScreenShareAudio, Unknown } = lk!.Track.Source;
   return all.map((p) => {
     const cam = p.getTrackPublication(Camera);
     const mic = p.getTrackPublication(Microphone);
     const scr = p.getTrackPublication(ScreenShare);
-    const sound = p.getTrackPublication(ScreenShareAudio);
     const on = cam && !cam.isMuted && cam.videoTrack;
     return {
       id: p.identity,
@@ -410,7 +420,7 @@ function people(r: Room): Person[] {
       muted: !mic || mic.isMuted,
       video: on ? cam.videoTrack : undefined,
       screen: (scr && !scr.isMuted && scr.videoTrack) || undefined,
-      screenSound: !!sound && !sound.isMuted,
+      screenSound: [...(p.audioTrackPublications?.values() ?? [])].some((pub) => (pub.source === ScreenShareAudio || pub.source === Unknown) && !pub.isMuted),
     };
   });
 }
@@ -423,14 +433,18 @@ export function decline() {
 // processes it (noise suppression, the voice gate). Null: LiveKit opens it
 // itself, as without processing, and so reopens it when it ends (a phone
 // call, an unplugged headset); a track of ours it would only mute.
-async function processedMic(deviceId?: string): Promise<Mic | null> {
+async function processedMic(request: MicRequest, deviceId?: string): Promise<Mic | null> {
   const hold = pushToTalk.value;
   if (!wantsProcessing() && !hold) return null;
   const s = await navigator.mediaDevices.getUserMedia({ audio: micConstraints(deviceId ? { ideal: deviceId } : undefined) });
-  const m = await openMic(s.getAudioTracks()[0]);
-  if (m.track !== m.raw || hold) return m;
-  m.close(); // processing failed to start
-  return null;
+  request.raw = s.getAudioTracks()[0];
+  if (request.controller.signal.aborted) { s.getTracks().forEach((track) => track.stop()); throw request.controller.signal.reason; }
+  const m = await openMic(request.raw, request.controller.signal);
+  request.mic = m;
+  if (request.controller.signal.aborted) { m.close(); throw request.controller.signal.reason; }
+  // Raw can be intentional (off/AEC/AGC) or a bounded native fallback. Keep
+  // its capture constraints instead of replacing it with LiveKit defaults.
+  return m;
 }
 
 async function publishMic(r: Room, m: Mic) {
@@ -460,10 +474,12 @@ export const reopenGroupMic = latest(async () => {
   const previousMic = gmic;
   micStarting = r;
   let own: Mic | null = null;
+  const request: MicRequest = { controller: new AbortController() };
+  pendingMicrophones.add(request);
   let opened = false;
   try {
     // The one picked in the call's settings, else the one in use.
-    own = await processedMic(remembered('callMic') || (previousMic?.raw ?? pub?.track?.mediaStreamTrack)?.getSettings().deviceId);
+    own = await processedMic(request, remembered('callMic') || (previousMic?.raw ?? pub?.track?.mediaStreamTrack)?.getSettings().deviceId);
     if (room !== r) return own?.close();
     if (!own && !gmic) {
       await r.switchActiveDevice('audioinput', remembered('callMic') || 'default');
@@ -489,6 +505,8 @@ export const reopenGroupMic = latest(async () => {
     if (gmic === own) gmic = null;
     if (room === r) showToast(errText(e));
   } finally {
+    if (request.mic !== gmic) cancelMicrophone(request);
+    pendingMicrophones.delete(request);
     if (room === r) {
       micStarting = null;
       if (opened || desiredMute) await setGroupMuted(desiredMute);
@@ -616,29 +634,48 @@ export function setGroupMuted(muted: boolean) {
 }
 
 export const participantVolumes = signal(new Map<string, number>());
+export const screenVolumes = signal(new Map<string, number>());
+function saveVolume(state: { value: Map<string, number> }, identity: string, volume: number) {
+  const next = new Map(state.value);
+  next.delete(identity);
+  next.set(identity, volume);
+  // Bound histories even if many devices join/leave one long-running call.
+  if (next.size > 100) next.delete(next.keys().next().value!);
+  state.value = next;
+}
 export function setParticipantVolume(identity: string, value: number) {
+  if (!Number.isFinite(value) || !room?.remoteParticipants.has(identity)) return;
   const volume = Math.max(0, Math.min(1, value));
-  participantVolumes.value = new Map(participantVolumes.value).set(identity, volume);
+  saveVolume(participantVolumes, identity, volume);
   room?.remoteParticipants.get(identity)?.setVolume(volume);
 }
 
-// A shared screen's sound has its own level: a film can go quiet while
-// the voice stays.
-export const screenVolumes = signal(new Map<string, number>());
+// LiveKit owns voice/screen levels and their subscription cache. The app's
+// player is published as Unknown, which the participant API does not cover.
+function applyMusicVolume(participant: RemoteParticipant) {
+  const volume = screenVolumes.value.get(participant.identity) ?? 1;
+  for (const pub of participant.audioTrackPublications.values()) {
+    if (pub.source === lk!.Track.Source.Unknown) (pub.audioTrack as RemoteAudioTrack | undefined)?.setVolume(volume);
+  }
+}
 export function setScreenVolume(identity: string, value: number) {
+  const participant = room?.remoteParticipants.get(identity);
+  if (!participant || !Number.isFinite(value)) return;
   const volume = Math.max(0, Math.min(1, value));
-  screenVolumes.value = new Map(screenVolumes.value).set(identity, volume);
-  room?.remoteParticipants.get(identity)?.setVolume(volume, lk!.Track.Source.ScreenShareAudio);
+  saveVolume(screenVolumes, identity, volume);
+  participant.setVolume(volume, lk!.Track.Source.ScreenShareAudio);
+  applyMusicVolume(participant);
 }
 
-// After a full reconnect the participant is a new object: both levels go
-// to it again.
-function playRemote(track: RemoteTrack, _pub: unknown, p: RemoteParticipant) {
+// After a full reconnect the participant is a new object: restore both SDK
+// caches, including zero, before attach. Unknown music uses the same stream level.
+function playRemote(track: RemoteTrack, _pub: unknown, participant: RemoteParticipant) {
   if (track.kind !== 'audio') return;
+  participant.setVolume(participantVolumes.value.get(participant.identity) ?? 1);
+  participant.setVolume(screenVolumes.value.get(participant.identity) ?? 1, lk!.Track.Source.ScreenShareAudio);
+  if (track.source === lk!.Track.Source.Unknown) (track as RemoteAudioTrack).setVolume(screenVolumes.value.get(participant.identity) ?? 1);
   const el = track.attach();
   audioBox.append(el);
-  p.setVolume(participantVolumes.value.get(p.identity) ?? 1);
-  p.setVolume(screenVolumes.value.get(p.identity) ?? 1, lk!.Track.Source.ScreenShareAudio);
   const sink = remembered('callSpeaker');
   if (sink && 'setSinkId' in el) (el as HTMLAudioElement).setSinkId(sink).catch(() => {});
 }
@@ -695,6 +732,8 @@ export async function leave() {
 }
 
 function end() {
+  for (const request of pendingMicrophones) cancelMicrophone(request);
+  pendingMicrophones.clear();
   clearInterval(networkTimer);
   networkTimer = undefined;
   networkPolicy.reset();

@@ -3,7 +3,7 @@ import test from 'node:test';
 
 // The worklet runs on the audio thread; here its globals are stand-ins.
 type Gate = {
-  process(i: Float32Array[][], o: Float32Array[][], p: { threshold: Float32Array }): boolean;
+  process(i: Float32Array[][], o: Float32Array[][], p: { threshold: Float32Array; hold: Float32Array; gainDb: Float32Array }): boolean;
   port: { onmessage: (e: { data: unknown }) => void; postMessage: (v: unknown) => void };
 };
 let Processor: new () => Gate;
@@ -17,11 +17,11 @@ await import('./gate-worklet.js');
 
 const block = (amp: number) => Float32Array.from({ length: 128 }, (_, i) => amp * Math.sin(i / 5));
 // run feeds n blocks at amplitude amp and returns the last output's peak.
-function run(gate: Gate, amp: number, n: number, threshold: number) {
+function run(gate: Gate, amp: number, n: number, threshold: number, hold = 0.3, gainDb = 0) {
   let out = new Float32Array(128);
   for (let i = 0; i < n; i++) {
     out = new Float32Array(128);
-    gate.process([[block(amp)]], [[out]], { threshold: Float32Array.of(threshold) });
+    gate.process([[block(amp)]], [[out]], { threshold: Float32Array.of(threshold), hold: Float32Array.of(hold), gainDb: Float32Array.of(gainDb) });
   }
   return Math.max(...out.map(Math.abs));
 }
@@ -55,4 +55,11 @@ test('the level goes to the meter only while watched', () => {
   run(gate, 0.1, 16, -100);
   assert.equal(got.length, 2);
   assert.ok(Math.abs((got[0] as number) + 23) < 1, 'about -23 dB for a 0.1 sine');
+});
+
+test('gain changes the sent signal and limits peaks; zero hold still passes speech', () => {
+  const gate = new Processor();
+  assert.ok(run(gate, 0.1, 20, -40, 0, 6) > 0.19);
+  assert.equal(run(gate, 0.5, 20, -40, 0, 12), 1);
+  assert.equal(run(gate, 0.001, 300, -40, 0, 12), 0);
 });
