@@ -1,6 +1,7 @@
 import { TalkButton, talkMode, usePushToTalk } from './PushToTalk';
 import { signal } from '@preact/signals';
 import { useEffect, useRef, useState } from 'preact/hooks';
+import { menuKey } from '../lib/call-menu';
 import { cameras, canSetVolume } from '../lib/devices';
 import {
   decline,
@@ -21,15 +22,19 @@ import {
   exportGroupDiagnostics,
   setParticipantVolume,
   participantVolumes,
+  setScreenVolume,
+  screenVolumes,
   toggleGroupScreen,
   selectGroupNetworkMode,
   stopGroupVideo,
 } from '../lib/group';
-import { t } from '../lib/i18n';
+import { errText, t } from '../lib/i18n';
 import { canShareScreen, selectSpeaker } from '../lib/call';
 import { fmtDuration } from '../lib/recorder';
-import { chatPicture, findChat, nameOf, picture } from '../lib/store';
+import { go, route } from '../lib/route';
+import { chatPicture, findChat, myId, nameOf, openDirect, picture, showToast } from '../lib/store';
 import { chatName } from './ChatList';
+import { CallMenu } from './CallMenu';
 import { CallSettings } from './CallSettings';
 import { Avatar, Icon, IconButton, type IconName } from './ui';
 
@@ -45,10 +50,24 @@ function Btn(props: { icon: IconName; label: string; onClick: () => void; tone?:
   );
 }
 
+type OpenMenu = (id: string, x: number, y: number) => void;
+
+// A tile's menu opens by the right button, a long press on Android, or
+// the keyboard on a focused tile. Our own devices have none: a person can
+// be in a call twice, and there is no profile to open for ourselves.
+function tileMenu(p: Person, open: OpenMenu) {
+  if (p.user === myId()) return {};
+  return {
+    tabIndex: 0,
+    onContextMenu: (e: MouseEvent) => open(p.id, e.clientX, e.clientY),
+    onKeyDown: menuKey((x, y) => open(p.id, x, y)),
+  };
+}
+
 // Tile: one person, their camera (LiveKit attaches it, so it knows the
 // tile is on screen and how big, and fetches that size) or their avatar.
 // Speaking is a ring around the tile and, for screen readers, a word.
-function Tile(props: { p: Person; chat: number }) {
+function Tile(props: { p: Person; chat: number; onMenu: OpenMenu }) {
   const { p } = props;
   const ref = useRef<HTMLVideoElement>(null);
   useEffect(() => {
@@ -61,7 +80,7 @@ function Tile(props: { p: Person; chat: number }) {
   const name = p.me ? t('gcall.you') : nameOf(props.chat, p.user);
   const m = findChat(props.chat)?.members.find((x) => x.id === p.user);
   return (
-    <li class={'gtile' + (p.speaking ? ' speaking' : '')}>
+    <li class={'gtile' + (p.speaking ? ' speaking' : '')} {...tileMenu(p, props.onMenu)}>
       {p.video ? (
         <video ref={ref} class={p.me ? 'mirror' : undefined} autoPlay playsInline muted />
       ) : (
@@ -72,6 +91,7 @@ function Tile(props: { p: Person; chat: number }) {
         <span>{name}</span>
         {p.speaking && <span class="sr-only">{t('gcall.speaking')}</span>}
         {p.muted && <span class="sr-only">{t('gcall.muted')}</span>}
+        {p.user !== myId() && <span class="sr-only">{t('call.menuHint')}</span>}
       </span>
     </li>
   );
@@ -79,7 +99,7 @@ function Tile(props: { p: Person; chat: number }) {
 
 // ScreenTile: someone's shared screen, whole (never cropped), across the
 // grid. Our own shows a note instead: the call inside itself is no use.
-function ScreenTile(props: { p: Person; chat: number }) {
+function ScreenTile(props: { p: Person; chat: number; onMenu: OpenMenu }) {
   const { p } = props;
   const ref = useRef<HTMLVideoElement>(null);
   useEffect(() => {
@@ -91,13 +111,56 @@ function ScreenTile(props: { p: Person; chat: number }) {
   }, [p.screen, p.me]);
   const name = p.me ? t('gcall.you') : nameOf(props.chat, p.user);
   return (
-    <li class={'gtile screen' + (p.me ? ' mine' : '')}>
+    <li class={'gtile screen' + (p.me ? ' mine' : '')} {...tileMenu(p, props.onMenu)}>
       {p.me ? <p class="gtile-note">{t('gcall.youShare')}</p> : <video ref={ref} autoPlay playsInline muted />}
       <span class="gtile-name">
         <Icon name="screen" size={14} />
         <span>{t('gcall.screenOf', { name })}</span>
+        {p.user !== myId() && <span class="sr-only">{t('call.menuHint')}</span>}
       </span>
     </li>
+  );
+}
+
+// Volumes: someone's voice and, while they share a screen with sound, that
+// sound. iPhones and iPads ignore a page's volume: no sliders there.
+function Volumes(props: { p: Person; chat: number }) {
+  const { p } = props;
+  if (!canSetVolume) return null;
+  const name = nameOf(props.chat, p.user);
+  return (
+    <>
+      <label class="participant-volume">
+        <span>{t('call.volumeOf', { name })}</span>
+        <input type="range" min="0" max="1" step="0.05" value={participantVolumes.value.get(p.id) ?? 1} onInput={(e) => setParticipantVolume(p.id, Number(e.currentTarget.value))} />
+      </label>
+      {p.screenSound && (
+        <label class="participant-volume">
+          <span>{t('gcall.screenVolumeOf', { name })}</span>
+          <input type="range" min="0" max="1" step="0.05" value={screenVolumes.value.get(p.id) ?? 1} onInput={(e) => setScreenVolume(p.id, Number(e.currentTarget.value))} />
+        </label>
+      )}
+    </>
+  );
+}
+
+// TileMenu: what a person's tile offers. Their profile is the info page of
+// their direct chat, behind the call.
+function TileMenu(props: { p: Person; chat: number; x: number; y: number; onClose: () => void }) {
+  const { p, chat } = props;
+  async function profile() {
+    minimized.value = true;
+    try {
+      await openDirect(p.user, chat);
+      go(`c/${route.value.id}/info`);
+    } catch (e) {
+      showToast(errText(e));
+    }
+  }
+  return (
+    <CallMenu label={nameOf(chat, p.user)} x={props.x} y={props.y} onClose={props.onClose} onProfile={() => void profile()}>
+      <Volumes p={p} chat={chat} />
+    </CallMenu>
   );
 }
 
@@ -109,7 +172,9 @@ export function GroupCallScreen() {
   const dialog = useRef<HTMLDialogElement>(null);
   const [, tick] = useState(0);
   const [settings, setSettings] = useState(false); // the call settings window
+  const [menu, setMenu] = useState<{ id: string; x: number; y: number } | null>(null); // a tile's menu
   const mini = !!g && minimized.value && g.phase !== 'incoming';
+  const menuFor = menu && g?.people.find((p) => p.id === menu.id);
   useEffect(() => {
     const i = setInterval(() => tick((n) => n + 1), 1000);
     return () => clearInterval(i);
@@ -121,11 +186,15 @@ export function GroupCallScreen() {
     const d = dialog.current;
     if (d && !d.open) d.showModal(); // focus moves in, the app behind turns inert
   }, [g?.chat, g?.phase === 'incoming', mini]);
+  useEffect(() => {
+    if (menu && (mini || !menuFor)) setMenu(null); // the person left, or a restart would bring it back
+  }, [mini, !menuFor]);
   if (!g) return null;
 
   const chat = findChat(g.chat);
   const title = chat ? chatName(chat) : '';
   const others = g.people.filter((p) => !p.me).length;
+  const openMenu: OpenMenu = (id, x, y) => setMenu({ id, x, y });
   const status =
     g.phase === 'connecting'
       ? t('call.connecting')
@@ -163,7 +232,13 @@ export function GroupCallScreen() {
     );
 
   return (
-    <dialog ref={dialog} class="call-screen gcall" aria-label={title} onCancel={(e) => e.preventDefault() /* Escape must not end a call */}>
+    <dialog
+      ref={dialog}
+      class="call-screen gcall"
+      aria-label={title}
+      onCancel={(e) => e.preventDefault() /* Escape must not end a call */}
+      onContextMenu={(e) => e.preventDefault() /* the browser's menu would offer to save or pause a video */}
+    >
       <IconButton icon="down" label={t('call.minimize')} class="call-minimize" onClick={() => (minimized.value = true)} />
       <IconButton icon="tune" label={t('call.settings')} class="call-settings" aria-haspopup="dialog" onClick={() => setSettings(true)} />
       <header class="gcall-head">
@@ -178,10 +253,10 @@ export function GroupCallScreen() {
         {g.people
           .filter((p) => p.screen)
           .map((p) => (
-            <ScreenTile key={p.id + '-screen'} p={p} chat={g.chat} />
+            <ScreenTile key={p.id + '-screen'} p={p} chat={g.chat} onMenu={openMenu} />
           ))}
         {g.people.map((p) => (
-          <Tile key={p.id} p={p} chat={g.chat} />
+          <Tile key={p.id} p={p} chat={g.chat} onMenu={openMenu} />
         ))}
       </ul>
       {g.phase === 'active' && others === 0 && <p class="call-note gcall-alone">{t('gcall.alone')}</p>}
@@ -225,12 +300,10 @@ export function GroupCallScreen() {
           networkReduced={!!g.networkReduced}
           onVideoOff={stopGroupVideo}
         >
-          {canSetVolume && g.people.filter((p) => !p.me).map((p) => <label key={p.id} class="participant-volume">
-            <span>{t('call.volumeOf', {name: nameOf(g.chat, p.user)})}</span>
-            <input type="range" min="0" max="1" step="0.05" value={participantVolumes.value.get(p.id) ?? 1} onInput={(e) => setParticipantVolume(p.id, Number(e.currentTarget.value))} />
-          </label>)}
+          {g.people.filter((p) => !p.me).map((p) => <Volumes key={p.id} p={p} chat={g.chat} />)}
         </CallSettings>
       )}
+      {menu && menuFor && <TileMenu p={menuFor} chat={g.chat} x={menu.x} y={menu.y} onClose={() => setMenu(null)} />}
     </dialog>
   );
 }

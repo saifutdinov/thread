@@ -26,6 +26,7 @@ For any coding agent working on this repository. Read `AGENTS.md` first: its rul
 - Whatever is cleared on `Reconnecting` is read again on `Reconnected`. LiveKit emits quality and similar events only on a change.
 - Use one definition of "bad" and "good" samples. No packets in an interval is no data, not a good sample.
 - The sound slot (`musicSlot`) carries a screen's sound and the player's music. Stopping a screen share must not stop the player's music, and sender limits must not cut music unless the UI says so.
+- The app lock and the invite screen replace all of `Main`. What must outlive them sits at the root of the app, as `CallAudio` does: a running call stays audible behind the lock.
 - Group media stays frame-encrypted. No names or content in LiveKit metadata. The server never gets the call key, so no server-side participant may hold it.
 
 ### Notifications and the service worker

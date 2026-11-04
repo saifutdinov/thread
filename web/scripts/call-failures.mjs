@@ -137,6 +137,7 @@ async function page() {
       '--use-fake-device-for-media-stream',
       '--use-fake-ui-for-media-stream',
       '--autoplay-policy=no-user-gesture-required',
+      '--mute-audio', // the fake microphone's tone must never reach the speakers
       '--disable-renderer-backgrounding',
       '--disable-background-timer-throttling',
       '--disable-backgrounding-occluded-windows',
@@ -229,6 +230,22 @@ async function endDirect(a, b) {
   await b.locator('dialog.call-screen').waitFor({ state: 'detached' });
   await Promise.all([clean(a), clean(b)]);
 }
+// Sound is playing: an <audio> with a live track whose clock moves.
+const audible = (p) =>
+  p.evaluate(async () => {
+    const el = [...document.querySelectorAll('audio')].find((a) => a.srcObject?.getAudioTracks().some((t) => t.readyState === 'live'));
+    if (!el || el.paused) return false;
+    const at = el.currentTime;
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    return el.currentTime > at;
+  });
+const backgrounded = (p) =>
+  p.evaluate(() => {
+    for (const state of ['hidden', 'visible']) {
+      Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => state });
+      document.dispatchEvent(new Event('visibilitychange'));
+    }
+  });
 async function encryptedTracks(p) {
   const { calls } = await p.evaluate(async () => (await fetch('/api/calls/group')).json());
   const c = calls[0];
@@ -329,6 +346,29 @@ try {
       await delay(holdMs);
       await endDirect(a, b);
     }
+  });
+  await scenario('the app lock keeps a direct call audible', async () => {
+    const lock = b.getByRole('switch', { name: 'Блокировка приложения' });
+    await b.goto(`${base}/#/settings`);
+    await lock.click(); // stays off until the PIN is saved
+    await b.getByLabel('PIN-код: от 4 до 8 цифр', { exact: true }).fill('1234');
+    await b.getByLabel('Повторите PIN-код', { exact: true }).fill('1234');
+    await b.getByRole('button', { name: 'Включить блокировку', exact: true }).click();
+    await b.getByRole('radio', { name: 'Сразу', exact: true }).click();
+    await b.goto(chat.url);
+    await direct(a, b);
+    assert.ok(await audible(b), 'No sound before the lock');
+    await backgrounded(b);
+    await b.getByRole('heading', { name: 'Нитка заблокирована', exact: true }).waitFor();
+    assert.ok(await audible(b), 'The app lock silenced the call');
+    await b.getByLabel('PIN-код', { exact: true }).fill('1234');
+    await b.getByRole('button', { name: 'Разблокировать', exact: true }).click();
+    await b.locator('dialog.call-screen').waitFor();
+    assert.ok(await audible(b), 'No sound after the unlock');
+    await endDirect(a, b);
+    await b.goto(`${base}/#/settings`);
+    await lock.uncheck();
+    await b.goto(chat.url);
   });
   const group = await create(a, 'group');
   await b.goto(group.invite);

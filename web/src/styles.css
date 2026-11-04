@@ -3000,6 +3000,10 @@ img.blur {
   outline-color: #4ade80;
 }
 
+.gtile:focus-visible {
+  outline-color: var(--accent);
+}
+
 .gtile video {
   position: absolute;
   inset: 0;
@@ -3036,6 +3040,15 @@ img.blur {
 }
 
 .participant-volume input { width: 100%; min-height: 2.75rem; }
+
+/* The call screen's text is white; a menu keeps the theme's own. */
+.call-screen .menu { color: var(--text); }
+
+.call-menu {
+  width: min(16.25rem, calc(100vw - 1rem));
+  max-height: calc(100dvh - 1rem);
+  overflow: auto;
+}
 meter { width: 100%; min-height: 1.5rem; }
 
 .gtile-name > span:not(.sr-only) {

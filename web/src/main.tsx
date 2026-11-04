@@ -1,5 +1,6 @@
 import { render } from 'preact';
 import { InviteScreen, LoginScreen, LostScreen, PasswordScreen, PendingScreen, RecoverScreen } from './components/Auth';
+import { CallAudio } from './components/Call';
 import { Main } from './components/Main';
 import { LockScreen } from './components/Security';
 import { initLock, locked } from './lib/lock';
@@ -49,7 +50,13 @@ initPrefs();
 void loadWallPhoto();
 trackViewport();
 registerSW();
-render(<App />, document.getElementById('root')!);
+render(
+  <>
+    <App />
+    <CallAudio />
+  </>,
+  document.getElementById('root')!,
+);
 // The lock state is read before the app shows anything.
 initLock()
   .catch(() => {})

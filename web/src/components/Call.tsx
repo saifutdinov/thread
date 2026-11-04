@@ -27,14 +27,17 @@ import {
   selectNetworkMode,
   stopOwnVideo,
 } from '../lib/call';
+import { menuKey, voiceForCall, voiceVolume } from '../lib/call-menu';
 import { cameras, canPickOutput, canSetVolume, remember, remembered } from '../lib/devices';
 import { BACKGROUNDS, EFFECTS } from '../lib/effects';
 import { t } from '../lib/i18n';
 import { fmtDuration } from '../lib/recorder';
 import { locked } from '../lib/lock';
 import { callFit } from '../lib/prefs';
+import { go } from '../lib/route';
 import { isDoubleTap, placeTile, type Tap, tileWidth } from '../lib/tap';
 import { type CallLog, chatPicture, findChat, showToast } from '../lib/store';
+import { CallMenu } from './CallMenu';
 import { CallSettings } from './CallSettings';
 import { Avatar, Icon, IconButton, type IconName } from './ui';
 
@@ -46,6 +49,28 @@ export const minimized = signal(false);
 // a bit under the voice at first, so talk stays on top. iPhones and iPads
 // ignore a page's volume (the buttons on the side set it): no slider there.
 const musicVolume = signal(Number(remembered('musicVolume') || 0.7));
+const setMusicVolume = (value: string) => {
+  musicVolume.value = Number(value);
+  remember('musicVolume', value);
+};
+
+function Volumes(props: { name: string; music?: boolean }) {
+  if (!canSetVolume) return null;
+  return (
+    <>
+      <label class="participant-volume">
+        <span>{t('call.volumeOf', { name: props.name })}</span>
+        <input type="range" min="0" max="1" step="0.05" value={voiceVolume.value} onInput={(e) => (voiceVolume.value = Number(e.currentTarget.value))} />
+      </label>
+      {props.music && (
+        <label class="participant-volume">
+          <span>{t('call.musicVolume')}</span>
+          <input type="range" min="0" max="1" step="0.05" value={musicVolume.value} onInput={(e) => setMusicVolume(e.currentTarget.value)} />
+        </label>
+      )}
+    </>
+  );
+}
 
 // attach sets a stream on a media element whenever the element appears:
 // the self view is a new element each time the camera comes back on.
@@ -253,11 +278,32 @@ function FloatingCall(props: { win: Window }) {
   );
 }
 
+// CallAudio plays a call: the voice, and the other side's music at its own
+// volume. Remote <video> elements are muted (no echo). It sits at the root of
+// the app, outside CallScreen: the app lock takes all of Main away, and the
+// call must stay audible behind it.
+export function CallAudio() {
+  const c = call.value;
+  const sink = speaker.value;
+  const voice = voiceVolume.value;
+  const music = musicVolume.value;
+  if (!c) return null;
+  const play = (stream: MediaStream | undefined, volume: number) => (el: HTMLAudioElement | null) => {
+    attach(stream)(el);
+    if (!el) return;
+    el.volume = volume;
+    if (canPickOutput && el.sinkId !== sink) el.setSinkId(sink).catch(() => {});
+  };
+  return (
+    <>
+      <audio ref={play(c.remote, voice)} autoPlay />
+      <audio ref={play(c.musicIn, music)} autoPlay />
+    </>
+  );
+}
+
 // CallScreen covers the app while a call rings or runs, or shrinks to a
-// strip when minimized. Sound plays through two <audio> elements (the call,
-// and the other side's music at its own volume), first in both layouts so
-// they stay mounted across them; remote <video> elements are muted (no
-// echo).
+// strip when minimized.
 export function CallScreen() {
   const c = call.value;
   const hold = usePushToTalk(c?.id, c?.phase === 'active', setMuted);
@@ -266,6 +312,7 @@ export function CallScreen() {
   const [picker, setPicker] = useState(false);
   const [tileRatio, setTileRatio] = useState('3 / 4'); // the minimized tile takes the picture's own shape
   const [fxOpen, setFxOpen] = useState(false);
+  const [menu, setMenu] = useState<{ x: number; y: number } | null>(null); // the call's own menu
   // The big picture is theirs; a double tap on the small one swaps them.
   const [swapped, setSwapped] = useState(false);
   const [thumbSize, setThumbSize] = useState({ w: 3, h: 4 }); // the small picture's own shape, rotations too
@@ -283,8 +330,13 @@ export function CallScreen() {
     setSwapped(false);
     setPicker(false);
     setFxOpen(false);
+    setMenu(null);
     setThumbSize({ w: 3, h: 4 });
+    if (c) voiceForCall(c.id);
   }, [c?.id]);
+  useEffect(() => {
+    if (mini || c?.phase !== 'active') setMenu(null);
+  }, [mini, c?.phase]);
   // Chrome 142+ opens the floating window by itself when the person
   // switches tabs mid-call (the camera or microphone in use).
   useEffect(() => {
@@ -307,11 +359,6 @@ export function CallScreen() {
   const chat = findChat(c.chat);
   const name = peerName(c);
   const theirVideo = remoteShown(c);
-  const sink = speaker.value;
-  const audioRef = (el: HTMLAudioElement | null) => {
-    attach(c.remote)(el);
-    if (el && canPickOutput && el.sinkId !== sink) el.setSinkId(sink).catch(() => {});
-  };
   const status = statusOf(c);
   // The big and the small picture: theirs big unless swapped, which needs
   // both. The self view is mirrored like a mirror, except for the back
@@ -332,23 +379,15 @@ export function CallScreen() {
   };
 
   const expand = () => (minimized.value = false);
-  const musicRef = (el: HTMLAudioElement | null) => {
-    attach(c.musicIn)(el);
-    if (!el) return;
-    el.volume = musicVolume.value;
-    if (canPickOutput && el.sinkId !== sink) el.setSinkId(sink).catch(() => {});
+  // Their profile is this chat's info page, behind the call.
+  const profile = () => {
+    minimized.value = true;
+    go(`c/${c.chat}/info`);
   };
-  const audio = (
-    <>
-      <audio ref={audioRef} autoPlay />
-      <audio ref={musicRef} autoPlay />
-    </>
-  );
 
   if (mini)
     return (
       <>
-        {audio}
         <div class="call-bar" role="region" aria-label={t('call.ongoing', { name })}>
           <button type="button" class="call-bar-main" onClick={expand} aria-label={t('call.expand')}>
             <Icon name={c.video ? 'videocam' : 'phone'} size={18} />
@@ -377,220 +416,226 @@ export function CallScreen() {
     );
 
   return (
-    <>
-      {audio}
-      <dialog
-        ref={dialog}
-        class={'call-screen' + (theirVideo ? ' has-video' : '')}
-        aria-label={name}
-        onCancel={(e) => e.preventDefault() /* Escape must not end a call */}
-      >
-        {c.phase !== 'incoming' && (
+    <dialog
+      ref={dialog}
+      class={'call-screen' + (theirVideo ? ' has-video' : '')}
+      aria-label={name}
+      onCancel={(e) => e.preventDefault() /* Escape must not end a call */}
+      onContextMenu={(e) => {
+        e.preventDefault(); // the browser's menu would offer to save or pause a video
+        if (c.phase === 'active' && !(e.target as Element).closest('button, input, .modal, .menu-layer')) setMenu({ x: e.clientX, y: e.clientY });
+      }}
+    >
+      {c.phase !== 'incoming' && (
+        <>
+          <IconButton icon="down" label={t('call.minimize')} class="call-minimize" onClick={() => (minimized.value = true)} />
+          <IconButton icon="tune" label={t('call.settings')} class="call-settings" aria-haspopup="dialog" onClick={() => setPicker(true)} />
+        </>
+      )}
+      {big && (
+        <video
+          ref={attach(big)}
+          class={'call-remote' + (swap && mirror ? ' mirror' : '')}
+          style={{ objectFit: bigScreen ? 'contain' : callFit.value }}
+          data-remote={!swap || undefined}
+          autoPlay
+          playsInline
+          muted
+        />
+      )}
+      {big && !bigScreen && (
+        <IconButton
+          icon={callFit.value === 'contain' ? 'fill' : 'fit'}
+          label={callFit.value === 'contain' ? t('call.fill') : t('call.fit')}
+          class="call-fit"
+          onClick={() => (callFit.value = callFit.value === 'contain' ? 'cover' : 'contain')}
+        />
+      )}
+      {small && (
+        // A button: a double tap or click swaps; a keyboard or screen
+        // reader's click (no pointer, detail 0) swaps at once. Dragged, it
+        // moves within .call-room (selfPos). Not `disabled` with nothing to
+        // swap: a disabled button gets no pointer events, nor a drag.
+        <div class="call-room">
+          <button
+            type="button"
+            class={'call-local' + (!swap && mirror ? ' mirror' : '') + (dragging ? ' dragging' : '')}
+            style={{
+              aspectRatio: `${thumbSize.w} / ${thumbSize.h}`,
+              width: tileWidth(thumbSize.w, thumbSize.h),
+              left: `${selfPos.value[0] * 100}%`,
+              top: `${selfPos.value[1] * 100}%`,
+              translate: `${-selfPos.value[0] * 100}% ${-selfPos.value[1] * 100}%`,
+            }}
+            aria-disabled={!canSwap || undefined}
+            aria-label={t('call.swap')}
+            title={canSwap ? t('call.swap') : undefined}
+            onPointerDown={(e) => {
+              if (e.button !== 0) return;
+              const el = e.currentTarget;
+              const r = el.getBoundingClientRect();
+              const box = el.parentElement!.getBoundingClientRect();
+              drag.current = { px: e.clientX, py: e.clientY, left: r.left - box.left, top: r.top - box.top, moved: false };
+              el.setPointerCapture(e.pointerId);
+            }}
+            onPointerMove={(e) => {
+              const d = drag.current;
+              if (!d) return;
+              const dx = e.clientX - d.px;
+              const dy = e.clientY - d.py;
+              if (!d.moved && Math.hypot(dx, dy) < 6) return; // a tap jitters, a drag moves
+              if (!d.moved) setDragging(true);
+              d.moved = true;
+              const el = e.currentTarget;
+              const room = el.parentElement!.getBoundingClientRect();
+              selfPos.value = placeTile({ w: room.width, h: room.height }, { w: el.offsetWidth, h: el.offsetHeight }, d.left + dx, d.top + dy);
+            }}
+            onPointerUp={(e) => {
+              const d = drag.current;
+              drag.current = null;
+              setDragging(false);
+              if (d?.moved) return remember('selfTile', selfPos.value.join(','));
+              if (e.button !== 0 || !canSwap) return;
+              const now = { t: e.timeStamp, x: e.clientX, y: e.clientY };
+              if (isDoubleTap(lastTap.current, now)) {
+                lastTap.current = null;
+                toggleSwap();
+              } else lastTap.current = now;
+            }}
+            onPointerCancel={() => {
+              drag.current = null;
+              setDragging(false);
+            }}
+            onClick={(e) => e.detail === 0 && canSwap && toggleSwap()}
+          >
+            <video
+              ref={attach(small)}
+              data-remote={swap || undefined}
+              autoPlay
+              playsInline
+              muted
+              onResize={(e) => {
+                const v = e.currentTarget;
+                if (v.videoWidth && v.videoHeight) setThumbSize({ w: v.videoWidth, h: v.videoHeight });
+              }}
+            />
+          </button>
+        </div>
+      )}
+      {c.phase === 'active' && c.q && <QualityBadge q={c.q} />}
+      <div class="call-who" {...(c.phase === 'active' ? { tabIndex: 0, onKeyDown: menuKey((x, y) => setMenu({ x, y })) } : {})}>
+        {!theirVideo && <Avatar id={c.peer} name={name} size={120} src={chat && chatPicture(chat)} />}
+        <h2>{name}</h2>
+        <p>{status}</p>
+        {c.phase === 'active' && c.peerScreen && theirVideo && (
+          <p class="call-note">
+            <Icon name="screen" size={16} /> {t('call.peerScreen')}
+          </p>
+        )}
+        {c.phase === 'active' && c.peerMusic && (
+          <label class="call-note call-music">
+            <Icon name="music" size={16} /> {t('call.peerMusic')}
+            {canSetVolume && (
+              <input
+              type="range"
+              min="0"
+              max="1"
+              step="0.05"
+              value={musicVolume.value}
+              aria-label={t('call.musicVolume')}
+              onInput={(e) => setMusicVolume(e.currentTarget.value)}
+              />
+            )}
+          </label>
+        )}
+        {c.phase === 'active' && c.peerMuted && (
+          <p class="call-note">
+            <Icon name="micOff" size={16} /> {t('call.peerMuted')}
+          </p>
+        )}
+        {c.phase === 'active' && c.peerBattery && <BatteryNote b={c.peerBattery} />}
+        {c.phase === 'active' && <span class="sr-only">{t('call.menuHint')}</span>}
+        {/* Announces phase changes only, not every tick of the timer. */}
+        <p class="sr-only" aria-live="polite">
+          {c.phase === 'active' ? (c.reconnecting ? t('call.reconnecting') : t('call.connected')) : status}
+        </p>
+      </div>
+      {fxOpen && c.video && !c.camOff && !c.screen && (
+        <div class="fx-tray">
+          <FxRow label={t('call.effects')} none={t('fx.none')} items={EFFECTS} on={c.effect} names="fx" busy={c.effectLoading} pick={setEffect} />
+          <FxRow label={t('call.background')} none={t('bg.none')} items={BACKGROUNDS} on={c.bg} names="bg" busy={c.effectLoading} pick={setBackground} />
+        </div>
+      )}
+      {c.effectLoading && (
+        <p class="fx-loading" role="status">
+          {t('fx.loading')}
+        </p>
+      )}
+      <div class="call-controls">
+        {c.phase === 'incoming' ? (
           <>
-            <IconButton icon="down" label={t('call.minimize')} class="call-minimize" onClick={() => (minimized.value = true)} />
-            <IconButton icon="tune" label={t('call.settings')} class="call-settings" aria-haspopup="dialog" onClick={() => setPicker(true)} />
+            <Btn icon="callEnd" label={t('call.decline')} tone="red" onClick={decline} />
+            <Btn icon="phone" label={t('call.accept')} tone="green" onClick={() => accept(false)} />
+            {c.video && <Btn icon="videocam" label={t('call.acceptVideo')} tone="green" onClick={() => accept(true)} />}
+          </>
+        ) : (
+          <>
+            {talkMode.value ? <TalkButton hold={hold} muted={c.muted} full /> : <Btn icon={c.muted ? 'micOff' : 'mic'} label={c.muted ? t('call.unmute') : t('call.mute')} tone={c.muted ? 'on' : undefined} onClick={toggleMute} />}
+            {(c.canVideo ?? c.video) && !c.screen && (
+              <Btn
+                icon={c.camOff ? 'videocamOff' : 'videocam'}
+                label={c.camOff ? t('call.camOn') : t('call.camOff')}
+                tone={c.camOff ? 'on' : undefined}
+                onClick={toggleCamera}
+              />
+            )}
+            {c.video && !c.camOff && !c.screen && cameras().length > 1 && <Btn icon="flip" label={t('call.switch')} onClick={switchCamera} />}
+            {canShareScreen && c.phase === 'active' && (c.canVideo ?? c.video) && (
+              <Btn
+                icon={c.screen ? 'screenStop' : 'screen'}
+                label={c.screen ? t('call.screenStop') : t('call.screen')}
+                tone={c.screen ? 'on' : undefined}
+                onClick={() => void (c.screen ? stopScreen() : shareScreen())}
+              />
+            )}
+            {c.video && !c.camOff && !c.screen && (
+              <Btn
+                icon="sparkle"
+                label={t('call.effects')}
+                tone={c.effect || fxOpen ? 'on' : undefined}
+                expanded={fxOpen}
+                onClick={() => setFxOpen(!fxOpen)}
+              />
+            )}
+            {canFloat(c) && <Btn icon="pip" label={t('call.pip')} onClick={() => void floatCall().catch(() => showToast(t('call.pipFailed')))} />}
+            <Btn icon="callEnd" label={t('call.hangup')} tone="red" onClick={() => hangup()} />
           </>
         )}
-        {big && (
-          <video
-            ref={attach(big)}
-            class={'call-remote' + (swap && mirror ? ' mirror' : '')}
-            style={{ objectFit: bigScreen ? 'contain' : callFit.value }}
-            data-remote={!swap || undefined}
-            autoPlay
-            playsInline
-            muted
-          />
-        )}
-        {big && !bigScreen && (
-          <IconButton
-            icon={callFit.value === 'contain' ? 'fill' : 'fit'}
-            label={callFit.value === 'contain' ? t('call.fill') : t('call.fit')}
-            class="call-fit"
-            onClick={() => (callFit.value = callFit.value === 'contain' ? 'cover' : 'contain')}
-          />
-        )}
-        {small && (
-          // A button: a double tap or click swaps; a keyboard or screen
-          // reader's click (no pointer, detail 0) swaps at once. Dragged, it
-          // moves within .call-room (selfPos). Not `disabled` with nothing to
-          // swap: a disabled button gets no pointer events, nor a drag.
-          <div class="call-room">
-            <button
-              type="button"
-              class={'call-local' + (!swap && mirror ? ' mirror' : '') + (dragging ? ' dragging' : '')}
-              style={{
-                aspectRatio: `${thumbSize.w} / ${thumbSize.h}`,
-                width: tileWidth(thumbSize.w, thumbSize.h),
-                left: `${selfPos.value[0] * 100}%`,
-                top: `${selfPos.value[1] * 100}%`,
-                translate: `${-selfPos.value[0] * 100}% ${-selfPos.value[1] * 100}%`,
-              }}
-              aria-disabled={!canSwap || undefined}
-              aria-label={t('call.swap')}
-              title={canSwap ? t('call.swap') : undefined}
-              onPointerDown={(e) => {
-                if (e.button !== 0) return;
-                const el = e.currentTarget;
-                const r = el.getBoundingClientRect();
-                const box = el.parentElement!.getBoundingClientRect();
-                drag.current = { px: e.clientX, py: e.clientY, left: r.left - box.left, top: r.top - box.top, moved: false };
-                el.setPointerCapture(e.pointerId);
-              }}
-              onPointerMove={(e) => {
-                const d = drag.current;
-                if (!d) return;
-                const dx = e.clientX - d.px;
-                const dy = e.clientY - d.py;
-                if (!d.moved && Math.hypot(dx, dy) < 6) return; // a tap jitters, a drag moves
-                if (!d.moved) setDragging(true);
-                d.moved = true;
-                const el = e.currentTarget;
-                const room = el.parentElement!.getBoundingClientRect();
-                selfPos.value = placeTile({ w: room.width, h: room.height }, { w: el.offsetWidth, h: el.offsetHeight }, d.left + dx, d.top + dy);
-              }}
-              onPointerUp={(e) => {
-                const d = drag.current;
-                drag.current = null;
-                setDragging(false);
-                if (d?.moved) return remember('selfTile', selfPos.value.join(','));
-                if (e.button !== 0 || !canSwap) return;
-                const now = { t: e.timeStamp, x: e.clientX, y: e.clientY };
-                if (isDoubleTap(lastTap.current, now)) {
-                  lastTap.current = null;
-                  toggleSwap();
-                } else lastTap.current = now;
-              }}
-              onPointerCancel={() => {
-                drag.current = null;
-                setDragging(false);
-              }}
-              onClick={(e) => e.detail === 0 && canSwap && toggleSwap()}
-            >
-              <video
-                ref={attach(small)}
-                data-remote={swap || undefined}
-                autoPlay
-                playsInline
-                muted
-                onResize={(e) => {
-                  const v = e.currentTarget;
-                  if (v.videoWidth && v.videoHeight) setThumbSize({ w: v.videoWidth, h: v.videoHeight });
-                }}
-              />
-            </button>
-          </div>
-        )}
-        {c.phase === 'active' && c.q && <QualityBadge q={c.q} />}
-        <div class="call-who">
-          {!theirVideo && <Avatar id={c.peer} name={name} size={120} src={chat && chatPicture(chat)} />}
-          <h2>{name}</h2>
-          <p>{status}</p>
-          {c.phase === 'active' && c.peerScreen && theirVideo && (
-            <p class="call-note">
-              <Icon name="screen" size={16} /> {t('call.peerScreen')}
-            </p>
-          )}
-          {c.phase === 'active' && c.peerMusic && (
-            <label class="call-note call-music">
-              <Icon name="music" size={16} /> {t('call.peerMusic')}
-              {canSetVolume && (
-                <input
-                type="range"
-                min="0"
-                max="1"
-                step="0.05"
-                value={musicVolume.value}
-                aria-label={t('call.musicVolume')}
-                onInput={(e) => {
-                  musicVolume.value = Number(e.currentTarget.value);
-                  remember('musicVolume', e.currentTarget.value);
-                }}
-                />
-              )}
-            </label>
-          )}
-          {c.phase === 'active' && c.peerMuted && (
-            <p class="call-note">
-              <Icon name="micOff" size={16} /> {t('call.peerMuted')}
-            </p>
-          )}
-          {c.phase === 'active' && c.peerBattery && <BatteryNote b={c.peerBattery} />}
-          {/* Announces phase changes only, not every tick of the timer. */}
-          <p class="sr-only" aria-live="polite">
-            {c.phase === 'active' ? (c.reconnecting ? t('call.reconnecting') : t('call.connected')) : status}
-          </p>
-        </div>
-        {fxOpen && c.video && !c.camOff && !c.screen && (
-          <div class="fx-tray">
-            <FxRow label={t('call.effects')} none={t('fx.none')} items={EFFECTS} on={c.effect} names="fx" busy={c.effectLoading} pick={setEffect} />
-            <FxRow label={t('call.background')} none={t('bg.none')} items={BACKGROUNDS} on={c.bg} names="bg" busy={c.effectLoading} pick={setBackground} />
-          </div>
-        )}
-        {c.effectLoading && (
-          <p class="fx-loading" role="status">
-            {t('fx.loading')}
-          </p>
-        )}
-        <div class="call-controls">
-          {c.phase === 'incoming' ? (
-            <>
-              <Btn icon="callEnd" label={t('call.decline')} tone="red" onClick={decline} />
-              <Btn icon="phone" label={t('call.accept')} tone="green" onClick={() => accept(false)} />
-              {c.video && <Btn icon="videocam" label={t('call.acceptVideo')} tone="green" onClick={() => accept(true)} />}
-            </>
-          ) : (
-            <>
-              {talkMode.value ? <TalkButton hold={hold} muted={c.muted} full /> : <Btn icon={c.muted ? 'micOff' : 'mic'} label={c.muted ? t('call.unmute') : t('call.mute')} tone={c.muted ? 'on' : undefined} onClick={toggleMute} />}
-              {(c.canVideo ?? c.video) && !c.screen && (
-                <Btn
-                  icon={c.camOff ? 'videocamOff' : 'videocam'}
-                  label={c.camOff ? t('call.camOn') : t('call.camOff')}
-                  tone={c.camOff ? 'on' : undefined}
-                  onClick={toggleCamera}
-                />
-              )}
-              {c.video && !c.camOff && !c.screen && cameras().length > 1 && <Btn icon="flip" label={t('call.switch')} onClick={switchCamera} />}
-              {canShareScreen && c.phase === 'active' && (c.canVideo ?? c.video) && (
-                <Btn
-                  icon={c.screen ? 'screenStop' : 'screen'}
-                  label={c.screen ? t('call.screenStop') : t('call.screen')}
-                  tone={c.screen ? 'on' : undefined}
-                  onClick={() => void (c.screen ? stopScreen() : shareScreen())}
-                />
-              )}
-              {c.video && !c.camOff && !c.screen && (
-                <Btn
-                  icon="sparkle"
-                  label={t('call.effects')}
-                  tone={c.effect || fxOpen ? 'on' : undefined}
-                  expanded={fxOpen}
-                  onClick={() => setFxOpen(!fxOpen)}
-                />
-              )}
-              {canFloat(c) && <Btn icon="pip" label={t('call.pip')} onClick={() => void floatCall().catch(() => showToast(t('call.pipFailed')))} />}
-              <Btn icon="callEnd" label={t('call.hangup')} tone="red" onClick={() => hangup()} />
-            </>
-          )}
-        </div>
-        {picker && (
-          <CallSettings
-            onClose={() => setPicker(false)}
-            mic={c.local?.getAudioTracks()[0]?.getSettings().deviceId}
-            // The camera in use, or (off, or the screen shown) the one that comes back.
-            cam={(!c.camOff && !c.screen && c.local?.getVideoTracks()[0]?.getSettings().deviceId) || remembered('callCam')}
-            onMic={selectMic}
-            onCam={selectCamera}
-            onSpeaker={selectSpeaker}
-            reopen={reopenMic}
-            diagnostics={exportCallDiagnostics}
-            onNetwork={selectNetworkMode}
-            networkReduced={!!c.networkReduced}
-            onVideoOff={stopOwnVideo}
-          />
-        )}
-      </dialog>
-    </>
+      </div>
+      {picker && (
+        <CallSettings
+          onClose={() => setPicker(false)}
+          mic={c.local?.getAudioTracks()[0]?.getSettings().deviceId}
+          // The camera in use, or (off, or the screen shown) the one that comes back.
+          cam={(!c.camOff && !c.screen && c.local?.getVideoTracks()[0]?.getSettings().deviceId) || remembered('callCam')}
+          onMic={selectMic}
+          onCam={selectCamera}
+          onSpeaker={selectSpeaker}
+          reopen={reopenMic}
+          diagnostics={exportCallDiagnostics}
+          onNetwork={selectNetworkMode}
+          networkReduced={!!c.networkReduced}
+          onVideoOff={stopOwnVideo}
+        >
+          <Volumes name={name} music={c.peerMusic} />
+        </CallSettings>
+      )}
+      {menu && (
+        <CallMenu label={name} x={menu.x} y={menu.y} onClose={() => setMenu(null)} onProfile={profile}>
+          <Volumes name={name} music={c.peerMusic} />
+        </CallMenu>
+      )}
+    </dialog>
   );
 }
 

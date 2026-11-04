@@ -34,7 +34,7 @@ export function usePushToTalk(id: string | undefined, active: boolean, mute: (mu
       if (talkCapture.value || e.repeat || e.isComposing || e.getModifierState?.('AltGraph')) return;
       if (
         e.type === 'keydown' &&
-        (e.target as HTMLElement)?.closest?.('input,textarea,select,button,[contenteditable="true"],[role="textbox"]')
+        (e.target as HTMLElement)?.closest?.('input:not([type=range]),textarea,select,button,[contenteditable="true"],[role="textbox"]')
       )
         return;
       e.preventDefault();
@@ -60,7 +60,7 @@ export function usePushToTalk(id: string | undefined, active: boolean, mute: (mu
       if (e.data.type !== 'state' || e.data.session !== session || typeof e.data.down !== 'boolean') return;
       last = performance.now();
       const editing =
-        document.hasFocus() && document.activeElement?.closest('input,textarea,select,[contenteditable="true"],[role="textbox"]');
+        document.hasFocus() && document.activeElement?.closest('input:not([type=range]),textarea,select,[contenteditable="true"],[role="textbox"]');
       h.set('global', e.data.down && !editing && !talkCapture.value && !suspended);
     };
     const freeze = () => {

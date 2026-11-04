@@ -77,7 +77,7 @@ web/                   Preact + Vite PWA
   src/components/*     screens: Auth, Main (layout, approval, onboarding), ChatList, ChatView, Composer,
                        EmojiPicker, ChatInfo, NewChat, Settings, Media (voice, circles, files),
                        Security (lock screen, lock settings, safety codes), Call (call screen),
-                       GroupCall (group call: ring, tiles, strip), CallSettings (devices and microphone, both call kinds), MicTuning (noise suppression, sensitivity),
+                       CallAudio (the 1:1 call's sound, at the root of the app so that the app lock does not silence it), GroupCall (group call: ring, tiles, strip), CallMenu (the call's own right-click menu in both call kinds: voice and screen sound levels, the person's profile), CallSettings (devices and microphone, both call kinds), MicTuning (noise suppression, sensitivity),
                        Player (the player bar),
                        ui (icons, Modal, Avatar, PictureButtons)
   public/sw.js         app-shell cache, push decrypt + notification, click-to-open (asks an open app to route, else navigates)

@@ -1,5 +1,5 @@
 import { signal } from '@preact/signals';
-import type { LocalVideoTrack, Participant, RemoteTrack, Room, VideoTrack } from 'livekit-client';
+import type { LocalVideoTrack, Participant, RemoteParticipant, RemoteTrack, Room, VideoTrack } from 'livekit-client';
 import { api, ApiError, type RunningCall } from './api';
 import { rand, toB64u } from './crypto';
 import { remember, remembered } from './devices';
@@ -30,6 +30,7 @@ export interface Person {
   muted: boolean;
   video?: VideoTrack; // a camera that is on and reaches us
   screen?: VideoTrack; // their shared screen
+  screenSound?: boolean; // and it comes with sound
 }
 
 export interface GroupView {
@@ -291,14 +292,7 @@ async function enter(path: string, token: string, key: string, video: boolean, s
     r.on(ev, refresh);
   const capNewCamera = () => { if (room === r && groupCall.value?.networkReduced) applyGroupNetwork(r, true); };
   r.on(E.TrackSubscribed, capNewCamera);
-  r.on(E.TrackSubscribed, (track: RemoteTrack, _pub, participant) => {
-    if (track.kind !== 'audio') return;
-    const el = track.attach();
-    audioBox.append(el);
-    participant.setVolume(participantVolumes.value.get(participant.identity) ?? 1);
-    const sink = remembered('callSpeaker');
-    if (sink && 'setSinkId' in el) (el as HTMLAudioElement).setSinkId(sink).catch(() => {});
-  });
+  r.on(E.TrackSubscribed, playRemote);
   r.on(E.TrackUnsubscribed, (track: RemoteTrack) => track.detach().forEach((el) => el.remove()));
   // A full SDK restart removes participants before emitting Reconnecting.
   // Wait until that synchronous event batch finishes before making a sound.
@@ -401,11 +395,12 @@ export async function stopGroupVideo() {
 
 function people(r: Room): Person[] {
   const all: Participant[] = [r.localParticipant, ...r.remoteParticipants.values()];
-  const { Camera, Microphone, ScreenShare } = lk!.Track.Source;
+  const { Camera, Microphone, ScreenShare, ScreenShareAudio } = lk!.Track.Source;
   return all.map((p) => {
     const cam = p.getTrackPublication(Camera);
     const mic = p.getTrackPublication(Microphone);
     const scr = p.getTrackPublication(ScreenShare);
+    const sound = p.getTrackPublication(ScreenShareAudio);
     const on = cam && !cam.isMuted && cam.videoTrack;
     return {
       id: p.identity,
@@ -415,6 +410,7 @@ function people(r: Room): Person[] {
       muted: !mic || mic.isMuted,
       video: on ? cam.videoTrack : undefined,
       screen: (scr && !scr.isMuted && scr.videoTrack) || undefined,
+      screenSound: !!sound && !sound.isMuted,
     };
   });
 }
@@ -626,6 +622,27 @@ export function setParticipantVolume(identity: string, value: number) {
   room?.remoteParticipants.get(identity)?.setVolume(volume);
 }
 
+// A shared screen's sound has its own level: a film can go quiet while
+// the voice stays.
+export const screenVolumes = signal(new Map<string, number>());
+export function setScreenVolume(identity: string, value: number) {
+  const volume = Math.max(0, Math.min(1, value));
+  screenVolumes.value = new Map(screenVolumes.value).set(identity, volume);
+  room?.remoteParticipants.get(identity)?.setVolume(volume, lk!.Track.Source.ScreenShareAudio);
+}
+
+// After a full reconnect the participant is a new object: both levels go
+// to it again.
+function playRemote(track: RemoteTrack, _pub: unknown, p: RemoteParticipant) {
+  if (track.kind !== 'audio') return;
+  const el = track.attach();
+  audioBox.append(el);
+  p.setVolume(participantVolumes.value.get(p.identity) ?? 1);
+  p.setVolume(screenVolumes.value.get(p.identity) ?? 1, lk!.Track.Source.ScreenShareAudio);
+  const sink = remembered('callSpeaker');
+  if (sink && 'setSinkId' in el) (el as HTMLAudioElement).setSinkId(sink).catch(() => {});
+}
+
 export async function exportGroupDiagnostics() {
   const r = room;
   if (!r) return;
@@ -693,6 +710,7 @@ function end() {
   music = null;
   audioBox.replaceChildren();
   participantVolumes.value = new Map();
+  screenVolumes.value = new Map();
   const was = !!groupCall.value && groupCall.value.phase !== 'incoming';
   groupCall.value = null;
   if (was) {
