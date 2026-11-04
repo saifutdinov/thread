@@ -38,10 +38,10 @@ function subject(active = true, userAgent = 'Chrome/150 Linux') {
     .replace(/^import[\s\S]*?from ['"][^'"]+['"];\s*/gm, '')
     .replace(/^export \{[^}]+\} from [^;]+;\s*/gm, '')
     .replaceAll('import.meta.env.BASE_URL', "'/'");
-  vm.runInContext(stripTypeScriptTypes(source).replace(/\bexport\s+/g, '') + '\nglobalThis.subject={openMic,setMicSettings,micConstraints,wantsProcessing,micFailure,resumeMicContext};', context);
+  vm.runInContext(stripTypeScriptTypes(source).replace(/\bexport\s+/g, '') + '\nglobalThis.subject={openMic,setMicSettings,warmMic,micConstraints,wantsProcessing,micFailure,resumeMicContext};', context);
   const s = context.subject as {
     openMic: (raw: ReturnType<typeof raw>, signal?: AbortSignal, purpose?: 'call' | 'preview') => Promise<{ raw: unknown; track: unknown; sampleRate?: number; close(): void }>;
-    setMicSettings: (s: object) => boolean; micConstraints: () => { sampleRate?: number; noiseSuppression: boolean };
+    warmMic: () => void; setMicSettings: (s: object) => boolean; micConstraints: () => { sampleRate?: number; noiseSuppression: boolean };
     wantsProcessing: () => boolean; micFailure: { value: boolean };
     resumeMicContext: (ctx: unknown, signal?: AbortSignal) => Promise<boolean>;
   };
@@ -95,6 +95,18 @@ test('Firefox uses native suppression for a non-48 kHz capture without an incomp
   assert.equal(mic.sampleRate, 44100);
   assert.equal(raw.getConstraints().noiseSuppression, true);
   assert.deepEqual(h.toasts, []); mic.close();
+});
+
+test('the chosen model is fetched ahead of a call, once per choice', () => {
+  const h = subject();
+  h.s.warmMic();
+  assert.equal(h.downloads(), 0, 'nothing to fetch for the browser model');
+  h.s.setMicSettings({ model: 'rnnoise' });
+  assert.equal(h.downloads(), 1);
+  h.s.setMicSettings({ gain: 3 });
+  assert.equal(h.downloads(), 1, 'a slider fetches nothing');
+  h.s.warmMic();
+  assert.equal(h.downloads(), 2, 'a new page warms the cache again');
 });
 
 test('a cold model is prefetched and setup deadline keeps raw alive for native fallback', async () => {

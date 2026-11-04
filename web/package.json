@@ -12,6 +12,7 @@
     "test:proxy": "node --experimental-strip-types --no-warnings --test scripts/proxy.test.ts",
     "test:mic": "node scripts/build-audio.mjs && node scripts/test-microphone.mjs",
     "test:stream-volume": "node scripts/test-stream-volume.mjs",
+    "test:fullscreen": "node --experimental-strip-types --no-warnings scripts/test-fullscreen.mjs",
     "test:calls:setup": "node scripts/install-livekit.mjs",
     "test:calls": "node scripts/call-failures.mjs"
   },

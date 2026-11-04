@@ -3,6 +3,7 @@ import { signal } from '@preact/signals';
 import { useEffect, useRef, useState } from 'preact/hooks';
 import { menuKey } from '../lib/call-menu';
 import { cameras, canSetVolume } from '../lib/devices';
+import { fullscreen, setFullscreen } from '../lib/fullscreen';
 import {
   decline,
   flipGroupCamera,
@@ -99,8 +100,9 @@ function Tile(props: { p: Person; chat: number; onMenu: OpenMenu }) {
 }
 
 // ScreenTile: someone's shared screen, whole (never cropped), across the
-// grid. Our own shows a note instead: the call inside itself is no use.
-function ScreenTile(props: { p: Person; chat: number; onMenu: OpenMenu }) {
+// grid. Our own shows a note instead: the call inside itself is no use. The
+// button or a double click fills the whole display with it.
+function ScreenTile(props: { p: Person; chat: number; onMenu: OpenMenu; full: boolean; onFull: () => void }) {
   const { p } = props;
   const ref = useRef<HTMLVideoElement>(null);
   useEffect(() => {
@@ -112,13 +114,20 @@ function ScreenTile(props: { p: Person; chat: number; onMenu: OpenMenu }) {
   }, [p.screen, p.me]);
   const name = p.me ? t('gcall.you') : nameOf(props.chat, p.user);
   return (
-    <li class={'gtile screen' + (p.me ? ' mine' : '')} {...tileMenu(p, props.onMenu)}>
+    <li
+      class={'gtile screen' + (p.me ? ' mine' : '') + (props.full ? ' full' : '')}
+      {...tileMenu(p, props.onMenu)}
+      onDblClick={(e) => !p.me && !(e.target as Element).closest('button') && props.onFull()}
+    >
       {p.me ? <p class="gtile-note">{t('gcall.youShare')}</p> : <video ref={ref} autoPlay playsInline muted />}
       <span class="gtile-name">
         <Icon name="screen" size={14} />
         <span>{t('gcall.screenOf', { name })}</span>
         {p.user !== myId() && <span class="sr-only">{t('call.menuHint')}</span>}
       </span>
+      {!p.me && (
+        <IconButton icon={props.full ? 'shrink' : 'fill'} label={t(props.full ? 'call.fullscreenExit' : 'call.fullscreen')} class="gtile-full" onClick={props.onFull} />
+      )}
     </li>
   );
 }
@@ -173,6 +182,8 @@ export function GroupCallScreen() {
   const [menu, setMenu] = useState<{ id: string; x: number; y: number } | null>(null); // a tile's menu
   const mini = !!g && minimized.value && g.phase !== 'incoming';
   const menuFor = menu && g?.people.find((p) => p.id === menu.id);
+  const [wide, setWide] = useState(''); // the person whose shared screen fills the display
+  const wideOn = !!wide && !mini && !!g?.people.some((p) => p.id === wide && p.screen);
   useEffect(() => {
     const i = setInterval(() => tick((n) => n + 1), 1000);
     return () => clearInterval(i);
@@ -187,6 +198,19 @@ export function GroupCallScreen() {
   useEffect(() => {
     if (menu && (mini || !menuFor)) setMenu(null); // the person left, or a restart would bring it back
   }, [mini, !menuFor]);
+  useEffect(() => {
+    if (!wideOn) {
+      setWide(''); // they stopped sharing or left, or the call shrank
+      return;
+    }
+    return () => setFullscreen(false);
+  }, [wideOn]);
+  // Escape leaves the browser's full screen: the tile goes back with it.
+  const wasFull = useRef(false);
+  useEffect(() => {
+    if (wasFull.current && !fullscreen.value) setWide('');
+    wasFull.current = fullscreen.value;
+  }, [fullscreen.value]);
   if (!g) return null;
 
   const chat = findChat(g.chat);
@@ -232,7 +256,7 @@ export function GroupCallScreen() {
   return (
     <dialog
       ref={dialog}
-      class="call-screen gcall"
+      class={'call-screen gcall' + (wideOn ? ' stream-full' : '')}
       aria-label={title}
       onCancel={(e) => e.preventDefault() /* Escape must not end a call */}
       onContextMenu={(e) => e.preventDefault() /* the browser's menu would offer to save or pause a video */}
@@ -251,7 +275,17 @@ export function GroupCallScreen() {
         {g.people
           .filter((p) => p.screen)
           .map((p) => (
-            <ScreenTile key={p.id + '-screen'} p={p} chat={g.chat} onMenu={openMenu} />
+            <ScreenTile
+              key={p.id + '-screen'}
+              p={p}
+              chat={g.chat}
+              onMenu={openMenu}
+              full={wideOn && wide === p.id}
+              onFull={() => {
+                setWide(wide === p.id ? '' : p.id);
+                if (!wide) setFullscreen(true); // in the click: Safari allows it nowhere else
+              }}
+            />
           ))}
         {g.people.map((p) => (
           <Tile key={p.id} p={p} chat={g.chat} onMenu={openMenu} />

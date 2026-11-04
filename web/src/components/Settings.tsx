@@ -12,6 +12,7 @@ import { hasWallPhoto, setWallPhoto } from '../lib/wallpaper';
 import { chats, devicesTick, loadChats, loadVault, logout, me, myDeviceCode, myPicture, pending, setMyAvatar, shareMyNames, showToast, vaultShare } from '../lib/store';
 import { type Code, deviceCode, fromB64 } from '../lib/crypto';
 import { DeviceCode } from './Auth';
+import { PatchNotes } from './PatchNotes';
 import { SecuritySettings } from './Security';
 import { PushToTalkSettings } from './PushToTalkSettings';
 import { approving, Avatar, Icon, IconButton, Modal, Panel, PictureButtons, Segmented, Switch } from './ui';
@@ -485,6 +486,8 @@ export function Settings() {
         </button>
         <p class="muted small">{t('settings.version', { v: appVersion })}</p>
       </section>
+
+      <PatchNotes />
 
       <section class="card">
         <h3>{t('settings.devices')}</h3>

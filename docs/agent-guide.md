@@ -27,6 +27,7 @@ For any coding agent working on this repository. Read `AGENTS.md` first: its rul
 - Use one definition of "bad" and "good" samples. No packets in an interval is no data, not a good sample.
 - The sound slot (`musicSlot`) carries a screen's sound and the player's music. Stopping a screen share must not stop the player's music, and sender limits must not cut music unless the UI says so.
 - The app lock and the invite screen replace all of `Main`. What must outlive them sits at the root of the app, as `CallAudio` does: a running call stays audible behind the lock.
+- Fullscreen goes on the page, never on the call's `<dialog>`: a dialog cannot be a fullscreen element, and the menus must stay above the stream.
 - Group media stays frame-encrypted. No names or content in LiveKit metadata. The server never gets the call key, so no server-side participant may hold it.
 
 ### Notifications and the service worker
@@ -68,6 +69,7 @@ For any coding agent working on this repository. Read `AGENTS.md` first: its rul
 
 ### CI and dependencies
 
+- A release tag needs its entry in `web/src/lib/patch-notes.ts`: what a person notices, not the code.
 - Pin exact versions of tools, images and CI actions (`actions/cache@v4.3.0`, not `@v4`).
 - A new dependency needs a reason in the PR. Test tools stay out of the image and the bundle.
 

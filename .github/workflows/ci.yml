@@ -75,6 +75,7 @@ jobs:
           npm run build
           npm run test:mic
           npm run test:stream-volume
+          npm run test:fullscreen
           npm run test:calls
       - uses: actions/upload-artifact@v4.6.2
         if: failure()

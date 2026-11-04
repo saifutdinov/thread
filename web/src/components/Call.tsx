@@ -31,6 +31,7 @@ import { menuKey, voiceForCall, voiceVolume } from '../lib/call-menu';
 import { cameras, canPickOutput, canSetVolume, remember, remembered } from '../lib/devices';
 import { StreamVolume } from './StreamVolume';
 import { BACKGROUNDS, EFFECTS } from '../lib/effects';
+import { canFullscreen, fullscreen, setFullscreen } from '../lib/fullscreen';
 import { t } from '../lib/i18n';
 import { fmtDuration } from '../lib/recorder';
 import { locked } from '../lib/lock';
@@ -278,6 +279,20 @@ function FloatingCall(props: { win: Window }) {
   );
 }
 
+// FullscreenButton lives as long as a screen is the big picture: when it goes,
+// whatever the reason, the display has nothing left to show.
+function FullscreenButton() {
+  useEffect(() => () => setFullscreen(false), []);
+  return (
+    <IconButton
+      icon={fullscreen.value ? 'shrink' : 'fill'}
+      label={t(fullscreen.value ? 'call.fullscreenExit' : 'call.fullscreen')}
+      class="call-fit"
+      onClick={() => setFullscreen(!fullscreen.value)}
+    />
+  );
+}
+
 // CallAudio plays a call: the voice, and the other side's music at its own
 // volume. Remote <video> elements are muted (no echo). It sits at the root of
 // the app, outside CallScreen: the app lock takes all of Main away, and the
@@ -453,6 +468,7 @@ export function CallScreen() {
           onClick={() => (callFit.value = callFit.value === 'contain' ? 'cover' : 'contain')}
         />
       )}
+      {big && bigScreen && canFullscreen && <FullscreenButton />}
       {small && (
         // A button: a double tap or click swaps; a keyboard or screen
         // reader's click (no pointer, detail 0) swaps at once. Dragged, it

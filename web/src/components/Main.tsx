@@ -7,6 +7,7 @@ import { fromB64 } from '../lib/crypto';
 import { remember, remembered } from '../lib/devices';
 import { deviceCode } from '../lib/crypto';
 import { errText, t } from '../lib/i18n';
+import { warmMic } from '../lib/mic';
 import { enablePush, isIOS, notifPermission, pushSupported, standalone, updateReady } from '../lib/pwa';
 import { go, route } from '../lib/route';
 import { approveDevice, denyDevice, pending, showToast, toast } from '../lib/store';
@@ -14,6 +15,7 @@ import { DeviceCode } from './Auth';
 import { CallScreen, minimized } from './Call';
 import { GroupCallScreen, minimized as groupMinimized } from './GroupCall';
 import { ChatInfo } from './ChatInfo';
+import { PatchBanner } from './PatchNotes';
 import { ChatList } from './ChatList';
 import { ChatView } from './ChatView';
 import { NewChat } from './NewChat';
@@ -257,6 +259,12 @@ export function Main() {
   const r = route.value;
   const chatId = r.name === 'chat' || r.name === 'info' ? r.id : undefined;
 
+  // After the first paint, not with it: the model is not needed until a call.
+  useEffect(() => {
+    const id = setTimeout(warmMic, 1000);
+    return () => clearTimeout(id);
+  }, []);
+
   // Pop the approval dialog for my own new device as soon as it shows up.
   useEffect(() => {
     const own = pending.value.find((p) => p.own);
@@ -267,6 +275,7 @@ export function Main() {
     <div class={'app' + (chatId ? ' in-chat' : '') + (r.name === 'info' ? ' in-info' : '') + ((call.value && minimized.value) || (groupCall.value && groupMinimized.value) ? ' with-call-bar' : '') + (player.value ? ' with-player' : '')}>
       <aside class="sidebar">
         <UpdateBanner />
+        <PatchBanner />
         <NotifBanner />
         <ChatList />
         {r.name === 'settings' && <Settings />}

@@ -829,6 +829,21 @@ textarea,
   color: var(--accent);
 }
 
+.patch-note {
+  margin: 0.25rem 0 0.75rem;
+  padding-left: 1.25rem;
+}
+
+.patch-note li + li {
+  margin-top: 0.4rem;
+}
+
+.patch-notes summary {
+  min-height: 2.75rem;
+  padding-block: 0.7rem;
+  cursor: pointer;
+}
+
 .notif-banner p {
   margin: 0;
   font-size: 0.875rem;
@@ -2988,6 +3003,34 @@ img.blur {
   object-fit: contain;
 }
 
+.gtile.screen.full {
+  position: fixed;
+  inset: 0;
+  z-index: 20; /* over the call's buttons, under its menu */
+  border-radius: 0;
+  background: #000;
+}
+
+.call-screen .gtile-full {
+  position: absolute;
+  top: 0.4rem;
+  right: 0.4rem;
+  color: #fff;
+  background: rgba(0, 0, 0, 0.45);
+}
+
+.call-screen .gtile.full .gtile-full {
+  top: max(0.4rem, env(safe-area-inset-top));
+  right: max(0.4rem, env(safe-area-inset-right));
+}
+
+/* What the stream covers leaves the tab order too: Enter on an unseen Leave
+   would end the call. */
+.gcall.stream-full > :not(.gtiles, .gcall-tap, dialog, .menu-layer),
+.gcall.stream-full .gtile:not(.full) {
+  visibility: hidden;
+}
+
 .gtile-note {
   margin: 0;
   padding: 1rem;
@@ -3066,6 +3109,8 @@ meter { width: 100%; min-height: 1.5rem; }
 }
 
 .gcall-tap {
+  position: relative;
+  z-index: 21; /* a stream on the whole display still needs its sound */
   margin-bottom: 0.75rem;
   display: inline-flex;
   align-items: center;

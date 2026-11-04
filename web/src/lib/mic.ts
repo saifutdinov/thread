@@ -68,6 +68,14 @@ export function loadDeepfilter() {
   });
 }
 
+// A call gives the microphone seconds, and neither model fits into them on a
+// cold cache. Fetch the chosen one while nothing waits for it: the browser
+// keeps the worklet, this page keeps the compiled model.
+export function warmMic() {
+  if (model() === 'deepfilter') void loadDeepfilter().catch(() => {});
+  if (model() === 'rnnoise') void fetch(audioUrl('rnnoise-worklet.js')).then((response) => response.arrayBuffer()).catch(() => {});
+}
+
 function checkCancelled(signal?: AbortSignal) {
   if (signal?.aborted) throw signal.reason ?? Object.assign(new Error('Microphone setup cancelled'), { name: 'AbortError' });
 }
@@ -107,7 +115,7 @@ export function setMicSettings(patch: Partial<MicSettings>): boolean {
   const next = readMicSettings(JSON.stringify({ ...previous, ...patch }), { denoise: '', gate: '' }, canTune);
   micSettings.value = next;
   remember('micSettings', JSON.stringify(next));
-  if (canTune && next.model === 'deepfilter') void loadDeepfilter().catch(() => {});
+  if (previous.model !== next.model) warmMic();
   for (const chain of chains) configure(chain);
   return previous.model !== next.model || previous.agc !== next.agc || previous.echo !== next.echo ||
     previousGraph !== needsGraph() || previousCapture !== wantsProcessing() ||

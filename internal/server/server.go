@@ -326,31 +326,44 @@ func (s *Server) static() http.Handler {
 		}
 		if strings.HasPrefix(r.URL.Path, "/assets/") {
 			w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
-			// The face detector's 13.5 MB WebAssembly comes with a brotli copy
-			// (web/scripts/brotli.mjs): the proxies in front compress text only.
-			if strings.HasSuffix(p, ".wasm") {
-				w.Header().Add("Vary", "Accept-Encoding")
-				if acceptsBrotli(r) {
-					if f, err := os.Open(p + ".br"); err == nil {
-						defer f.Close()
-						if st, err := f.Stat(); err == nil {
-							// Whole files only: ranges of the compressed bytes mean
-							// nothing to a browser, and the length helps its progress.
-							r.Header.Del("Range")
-							w.Header().Set("Content-Encoding", "br")
-							w.Header().Set("Content-Type", "application/wasm")
-							w.Header().Set("Content-Length", strconv.FormatInt(st.Size(), 10))
-							http.ServeContent(w, r, "", st.ModTime(), f)
-							return
-						}
-					}
-				}
-			}
 		} else {
 			w.Header().Set("Cache-Control", "no-cache")
 		}
+		// The big files come with a brotli copy (web/scripts/brotli.mjs): the
+		// proxies in front do not compress them.
+		if typ := brotliType(r.URL.Path); typ != "" {
+			w.Header().Add("Vary", "Accept-Encoding")
+			if acceptsBrotli(r) {
+				if f, err := os.Open(p + ".br"); err == nil {
+					defer f.Close()
+					if st, err := f.Stat(); err == nil {
+						// Whole files only: ranges of the compressed bytes mean
+						// nothing to a browser, and the length helps its progress.
+						r.Header.Del("Range")
+						w.Header().Set("Content-Encoding", "br")
+						w.Header().Set("Content-Type", typ)
+						w.Header().Set("Content-Length", strconv.FormatInt(st.Size(), 10))
+						http.ServeContent(w, r, "", st.ModTime(), f)
+						return
+					}
+				}
+			}
+		}
 		fs.ServeHTTP(w, r)
 	})
+}
+
+// brotliType: the content type of a static file that has a brotli copy, or
+// "". WebAssembly: the face detector and the microphone model. Worklets: one
+// of them carries RNNoise, and a call waits for it.
+func brotliType(path string) string {
+	switch {
+	case strings.HasPrefix(path, "/assets/") && strings.HasSuffix(path, ".wasm"):
+		return "application/wasm"
+	case strings.HasPrefix(path, "/audio/") && strings.HasSuffix(path, ".js"):
+		return "text/javascript; charset=utf-8"
+	}
+	return ""
 }
 
 // acceptsBrotli: the request lists br with a weight above zero.
