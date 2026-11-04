@@ -4,6 +4,10 @@
 
 ```
 cmd/thread             env config, pepper, `healthcheck` subcommand, wiring
+cmd/thread-hotkeys     Windows native messaging entry, physical key state, per-user install/uninstall with ownership checks (ADR 0005)
+internal/hotkeys       bounded native frames, one configured chord, rate-limited changes, release/rearm gate and heartbeat
+desktop/extension      Chrome/Edge bridge for the one origin set in its manifest, one tab owner, reconnect and cross-host binding rate limit
+desktop/make-dev-extension.mjs explicitly generates an ignored localhost dev build, separate from the distributed extension
 internal/server        the whole backend, one package
   server.go            Server, routes, security headers (CSP, Origin check), static PWA, cleanup loop
   store.go             SQLite schema (WAL, _txlock=immediate), seq counter, small query helpers
@@ -18,6 +22,7 @@ internal/server        the whole backend, one package
   push.go              Web Push (VAPID) with ciphertext payloads, silent read/call-end clears, test push, delivery counters
   calls.go             1:1 call signaling (sealed SDP/ICE), TURN REST credentials
   call_state.go        pending calls, first answering tab/device, late-signal guards and expiry
+                       exact-id call-status check for notification freshness (active chat members only)
   group.go             group calls: LiveKit tokens (HS256), who is in which call, ringing the chat, /lk signaling proxy
   profiles.go          sealed avatars (per chat) and group photos, versioned
   preview.go           opt-in link preview fetcher with a dialer-level SSRF guard
@@ -32,7 +37,11 @@ web/                   Preact + Vite PWA
   src/lib/messages.ts  monotonic message versions and chat previews
   src/lib/media-cache.ts reference-counted Blob URL LRU; use-media.ts loads nearby media and retains it until unmount
   src/lib/diagnostics.ts allowlisted local RTC diagnostics, without addresses, identities or content
+                        bounded 120-second event history, immediate final report and generation-guarded stats enrichment
   src/lib/hold.ts      push-to-talk input sources, release and focus-loss reset
+  src/lib/hotkey.ts    physical key binding validation, exact modifiers and labels; navigation keys stay available
+  src/lib/ptt-prefs.ts device-local chord/global preference, companion discovery
+  src/components/PushToTalk.tsx browser/native holds, native state sessions, heartbeat and safe release outside browser focus
   src/lib/route.ts     hash router on real history entries; in memory in iOS home-screen apps (WebKit 215884)
   src/lib/i18n.ts      ru/en strings, plurals, date formats
   src/lib/prefs.ts     theme, text size, language effects
@@ -47,11 +56,17 @@ web/                   Preact + Vite PWA
   src/lib/player.ts    the music player: one <audio> for the app, next/previous in the chat, Media Session, its sound into a call
   src/lib/track.ts     which files are tracks, their title, artist and audio type (pure)
   src/lib/sounds.ts    plays the sound this device chose (a tune or an own file in IndexedDB) through one shared AudioContext
+                       1.5-second message cooldown, call opt-in, natural preview completion; cached one-shot PCM limited to five seconds
+  src/lib/call-presence.ts participant identity tracker; join/leave sounds without duplicate reconnect chimes
   scripts/brotli.mjs   brotli copies of the build's WebAssembly (served by static())
+  scripts/call-failures.mjs real-browser call failures with isolated Thread/LiveKit processes, signal cleanup and screenshots on failure
+  scripts/install-livekit.mjs pinned, checksum-verified test SFU; LIVEKIT_BINARY bypass for other platforms
   src/lib/emoji.ts     emoji-only messages drawn large
   src/lib/call.ts      WebRTC call state machine, tones, sealed signaling, ICE restart, quality stats
   src/lib/group.ts     group calls through LiveKit (lazy chunk): sealed call key, frame encryption, people, ringing, banners
   src/lib/rtc.ts       call tuning without the DOM: Opus SDP params (voice, music slot), codec order per device, quality level
+  src/lib/network-policy.ts hysteresis and camera/screen video budgets; music keeps its stereo 128 kbit/s SDP and medium priority
+  src/lib/network.ts   per-device automatic/normal/economy preference, shared by personal and group calls
   src/lib/tap.ts       the call screen's pure touch helpers: double tap, the small tile's width, where a dragged tile lands
   src/lib/mic.ts       the calls' microphone on computers: RNNoise (lazy) and the voice gate through Web Audio, settings, level meter
   src/lib/gate-worklet.js the voice gate on the audio thread (live threshold, hold, fade)
@@ -67,7 +82,7 @@ web/                   Preact + Vite PWA
                        ui (icons, Modal, Avatar, PictureButtons)
   public/sw.js         app-shell cache, push decrypt + notification, click-to-open (asks an open app to route, else navigates)
 deploy/                docker compose: app, Caddy (automatic HTTPS), coturn (host network), LiveKit SFU (one UDP port)
-scripts/               server setup, install, update, status (see scripts/README.md)
+scripts/               server setup, install, update, status (see scripts/README.md), check.sh (everything to run before a review)
 ```
 
 Dependencies: Go `modernc.org/sqlite` (pure Go, CGO-free static binary), `coder/websocket`, `golang.org/x/crypto/argon2`, `golang.org/x/time/rate`, `SherClockHolmes/webpush-go`, `filippo.io/age` (backup encryption; restore with the stock age CLI). Web: `preact`, `@preact/signals`, `unicode-emoji-json` (lazy chunk), `livekit-client` (lazy chunk, group calls only). Container: `livekit/livekit-server` (pinned by digest).

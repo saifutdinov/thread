@@ -1,9 +1,11 @@
+import { NetworkPolicy, videoBudget } from './network-policy.ts';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { stripTypeScriptTypes } from 'node:module';
 import { test } from 'node:test';
 import vm from 'node:vm';
 import { latest } from './latest.ts';
+import { CallPresence } from './call-presence.ts';
 
 function groupCode() {
   const source = readFileSync(new URL('./group.ts', import.meta.url), 'utf8');
@@ -14,6 +16,35 @@ function groupCode() {
       .replace("await import('livekit-client/e2ee-worker?worker')", '({default: TestWorker})'),
   ).replace(/\bexport\s+/g, '');
 }
+
+test('a notification join survives an old running-call list until its exact room arrives', async () => {
+  let note: unknown = { c: 7, id: 'new', at: Date.now() };
+  const starts: number[] = [];
+  const context = vm.createContext({
+    runningCalls: { value: new Map() },
+    idbGet: async () => note,
+    idbSet: async (_: string, value: unknown) => {
+      note = value;
+    },
+    startGroupCall: async (chat: number) => {
+      starts.push(chat);
+    },
+  });
+  const source = readFileSync(new URL('./group.ts', import.meta.url), 'utf8');
+  const pending = stripTypeScriptTypes(source.slice(source.indexOf('let joining = false;'), source.indexOf('navigator.serviceWorker?.addEventListener')));
+  vm.runInContext(pending + '\nglobalThis.subject={pendingJoin,runningCalls};', context);
+  const s = context.subject as { pendingJoin: (c?: number) => Promise<void>; runningCalls: { value: Map<number, unknown> } };
+  s.runningCalls.value.set(7, { id: 'old' });
+  await s.pendingJoin(7);
+  assert.ok(note, 'stale list must not consume the new room intent');
+  assert.deepEqual(starts, []);
+  s.runningCalls.value.set(7, { id: 'new' });
+  await s.pendingJoin();
+  assert.equal(note, null);
+  assert.deepEqual(starts, [7]);
+  await s.pendingJoin();
+  assert.deepEqual(starts, [7], 'intent is consumed once');
+});
 
 test('holding push-to-talk while the initial group microphone opens does not start a second capture or mute the held microphone', async () => {
   let allow!: (stream: unknown) => void;
@@ -55,8 +86,12 @@ test('holding push-to-talk while the initial group microphone opens does not sta
     async connect() {}
   }
   const context = vm.createContext({
+    CallPresence, queueMicrotask, playSound: () => () => {},
     signal: (value: unknown) => ({ value }),
+    beginDiagnostics: () => ({ mark() {}, snapshot: () => [], finish() {} }),
     latest: (f: unknown) => f,
+    setInterval: () => 0, clearInterval() {},
+    NetworkPolicy, videoBudget, networkMode: {value:'auto'}, rememberNetworkMode() {},
     document: { createElement: () => ({}), body: { append() {} } },
     navigator: { mediaDevices: { getUserMedia: () => permission } },
     location: { protocol: 'http:', host: 'localhost' },
@@ -69,7 +104,7 @@ test('holding push-to-talk while the initial group microphone opens does not sta
     testLiveKit: {
       Room,
       RoomEvent: {},
-      Track: { Source: { Microphone: 'mic' } },
+      Track: { Source: { Microphone: 'mic' } }, VideoQuality: {LOW:0,HIGH:2},
       VideoPresets: { h540: { resolution: {} }, h180: {}, h360: {} },
       ExternalE2EEKeyProvider: class {
         async setKey() {}
@@ -119,8 +154,12 @@ test('a cancelled group microphone replacement cannot close the next call microp
     },
   };
   const context = vm.createContext({
+    CallPresence, queueMicrotask, playSound: () => () => {},
     signal: (value: unknown) => ({ value }),
+    beginDiagnostics: () => ({ mark() {}, snapshot: () => [], finish() {} }),
     latest: (f: unknown) => f,
+    setInterval: () => 0, clearInterval() {},
+    NetworkPolicy, videoBudget, networkMode: {value:'auto'}, rememberNetworkMode() {},
     document: { createElement: () => ({}), body: { append() {} } },
     navigator: {
       mediaDevices: {
@@ -146,6 +185,7 @@ test('a cancelled group microphone replacement cannot close the next call microp
       subject: {
         init: (r: unknown, m: unknown) => void;
         reopenGroupMic: () => Promise<void>;
+        stopGroupVideo: () => Promise<void>;
       };
     }
   ).subject;
@@ -184,6 +224,10 @@ test('a cancelled group microphone replacement cannot close the next call microp
 const tick = () => new Promise<void>((resolve) => setImmediate(resolve));
 
 function startup(processing: boolean, crowded = false) {
+  const sounds: string[] = [];
+  const handlers = new Map<string, ((p?: unknown) => void)[]>();
+  const events = { ParticipantConnected: 'joined', ParticipantDisconnected: 'left', Reconnecting: 'reconnecting', Reconnected: 'reconnected', SignalReconnecting: 'signal-reconnecting' };
+  let joinedRoom!: Room;
   let selected = 'old-mic';
   const tracks: {
     deviceId: string;
@@ -227,13 +271,15 @@ function startup(processing: boolean, crowded = false) {
       participant.isMicrophoneEnabled = on;
       if (publication) publication.track.mediaStreamTrack.enabled = on;
     },
-    setCameraEnabled: () => camera,
+    setCameraEnabled: (_on: boolean) => camera,
   };
   class Room {
+    constructor() { joinedRoom = this; }
     localParticipant = participant;
     remoteParticipants = new Map();
     canPlaybackAudio = true;
-    on() {
+    on(event: string, fn: (p?: unknown) => void) {
+      handlers.set(event, [...(handlers.get(event) ?? []), fn]);
       return this;
     }
     async setE2EEEnabled() {}
@@ -246,8 +292,12 @@ function startup(processing: boolean, crowded = false) {
   const state = { processing };
   const choices = { callMic: 'old-mic' };
   const context = vm.createContext({
+    CallPresence, queueMicrotask, playSound: (kind: string) => { sounds.push(kind); return () => {}; },
     signal: (value: unknown) => ({ value }),
+    beginDiagnostics: () => ({ mark() {}, snapshot: () => [], finish() {} }),
     latest,
+    setInterval: () => 0, clearInterval() {},
+    NetworkPolicy, videoBudget, networkMode: {value:'auto'}, rememberNetworkMode() {},
     document: { createElement: () => ({}), body: { append() {} } },
     navigator: {
       mediaDevices: {
@@ -283,7 +333,7 @@ function startup(processing: boolean, crowded = false) {
     testLiveKit: {
       Room,
       RoomEvent: {},
-      Track: { Source: { Microphone: 'mic' } },
+      Track: { Source: { Microphone: 'mic' } }, VideoQuality: {LOW:0,HIGH:2},
       VideoPresets: { h540: { resolution: {} }, h180: {}, h360: {} },
       ExternalE2EEKeyProvider: class {
         async setKey() {}
@@ -296,7 +346,9 @@ function startup(processing: boolean, crowded = false) {
     errText: String,
     showToast() {},
   });
+  Object.assign((context.testLiveKit as { RoomEvent: object }).RoomEvent, events);
   vm.runInContext(groupCode() + '\nglobalThis.subject={enter,setGroupMuted,selectGroupMic,reopenGroupMic,groupCall};', context);
+  vm.runInContext('globalThis.subject.stopGroupVideo=stopGroupVideo;', context);
   const s = (
     context as unknown as {
       subject: {
@@ -304,6 +356,7 @@ function startup(processing: boolean, crowded = false) {
         setGroupMuted: (v: boolean) => Promise<void>;
         selectGroupMic: (id: string) => Promise<void>;
         reopenGroupMic: () => Promise<void>;
+        stopGroupVideo: () => Promise<void>;
         groupCall: {
           value: { phase: string; people: unknown[]; muted?: boolean };
         };
@@ -314,6 +367,7 @@ function startup(processing: boolean, crowded = false) {
   const joining = s.enter('/lk', 'token', 'key', true, () => false, crowded);
   return {
     s,
+    sounds, events, room: () => joinedRoom, emit: (event: string, p?: object) => handlers.get(event)?.forEach((fn) => fn(p)),
     joining,
     captures,
     tracks,
@@ -323,6 +377,18 @@ function startup(processing: boolean, crowded = false) {
     publication: () => publication,
   };
 }
+
+for (const early of [true, false]) test(`all-video-off ${early ? 'before SDK creation' : 'during microphone startup'} prevents a late group camera`, async () => {
+  const h = startup(true);
+  if (!early) await tick();
+  const cameraRequests: boolean[] = [];
+  h.participant.setCameraEnabled = async (on: boolean) => { cameraRequests.push(on); };
+  Object.assign(h.participant, { setScreenShareEnabled: async () => {} });
+  await h.s.stopGroupVideo();
+  await tick();
+  h.captures[0].finish(); h.finishCamera(); await h.joining;
+  assert.deepEqual(cameraRequests, early ? [] : [false]);
+});
 
 test('unmute during camera startup is applied when a crowded join skipped initial microphone capture', async () => {
   const h = startup(false, true);
@@ -365,4 +431,25 @@ test('disabling processing during initial capture uses the latest device and mut
   await h.s.setGroupMuted(false);
   assert.equal(h.publication()?.track.mediaStreamTrack.deviceId, 'new-mic');
   assert.equal(h.captures.length, 1, 'disabled processing must use the SDK capture');
+});
+
+
+test('SDK full restart disconnect events before Reconnecting do not replay participant sounds', async () => {
+  const h = startup(false);
+  h.finishCamera(); await h.joining;
+  const remote = { ...h.participant, identity: '2.1.other' };
+  h.room().remoteParticipants.set(remote.identity, remote);
+  h.emit(h.events.ParticipantConnected, remote); await tick();
+  assert.deepEqual(h.sounds, ['join', 'join']);
+  h.room().remoteParticipants.delete(remote.identity);
+  h.emit(h.events.ParticipantDisconnected, remote);
+  h.emit(h.events.Reconnecting);
+  await tick();
+  assert.deepEqual(h.sounds, ['join', 'join']);
+  h.room().remoteParticipants.set(remote.identity, remote);
+  h.emit(h.events.Reconnected); h.emit(h.events.ParticipantConnected, remote); await tick();
+  assert.deepEqual(h.sounds, ['join', 'join']);
+  h.room().remoteParticipants.delete(remote.identity);
+  h.emit(h.events.ParticipantDisconnected, remote); await tick();
+  assert.deepEqual(h.sounds, ['join', 'join', 'leave']);
 });

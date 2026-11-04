@@ -4,7 +4,7 @@
 // marimba, otherwise it holds steady like a phone line. `every` repeats
 // the tune (s), 0 plays it once. Kept pure for tests.
 
-export type SoundKind = 'ring' | 'dial' | 'message';
+export type SoundKind = 'ring' | 'dial' | 'message' | 'join' | 'leave';
 
 export interface Note {
   f: number;
@@ -59,12 +59,21 @@ export const TUNES: Record<SoundKind, Record<string, Tune | null>> = {
     chirp: { notes: [{ f: C6, to: E6, at: 0, len: 0.08 }, { f: E6, to: 1568, at: 0.11, len: 0.09 }], every: 0, gain: 0.08 },
     off: null,
   },
+  join: {
+    rise: { notes: bells([C5, E5, G5], 0.1, 0.28), every: 0, gain: 0.065 },
+    bell: { notes: bells([E6], 0, 0.7), every: 0, gain: 0.06 },
+    off: null,
+  },
+  leave: {
+    fall: { notes: bells([G5, C5], 0.16, 0.4), every: 0, gain: 0.065 },
+    pop: { notes: [{ f: 600, to: 300, at: 0, len: 0.09, wave: 'triangle' }], every: 0, gain: 0.1 },
+    off: null,
+  },
 };
 
-export const DEFAULT_TUNE: Record<SoundKind, string> = { ring: 'marimba', dial: 'line', message: 'drop' };
+export const DEFAULT_TUNE: Record<SoundKind, string> = { ring: 'marimba', dial: 'line', message: 'drop', join: 'rise', leave: 'fall' };
 
-// The call is over: two falling notes (not a choice).
-export const END_TUNE: Tune = { notes: [{ f: G5, at: 0, len: 0.4, bell: true }, { f: C5, at: 0.16, len: 0.7, bell: true }], every: 0, gain: 0.07 };
+export const repeats = (kind: SoundKind) => kind === 'ring' || kind === 'dial';
 
 // length: when the last note of one round has died away.
 export const length = (t: Tune) => Math.max(...t.notes.map((n) => n.at + n.len));

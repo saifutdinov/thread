@@ -143,6 +143,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /api/invites/{id}", s.active(s.handleDeleteInvite))
 
 	mux.HandleFunc("GET /api/chats", s.active(s.handleChats))
+	mux.HandleFunc("GET /api/chats/{id}/call-status", s.active(s.handleCallStatus))
 	mux.HandleFunc("POST /api/chats", s.active(s.handleCreateChat))
 	mux.HandleFunc("POST /api/chats/direct", s.active(s.handleDirectChat))
 	mux.HandleFunc("DELETE /api/chats/{id}", s.active(s.handleLeaveChat))

@@ -4,27 +4,37 @@ export { pushToTalk as talkMode, setPushToTalk as setTalkMode } from '../lib/mic
 import { Hold } from '../lib/hold';
 import { t } from '../lib/i18n';
 import { Icon } from './ui';
+import { talkHotkey, globalTalk, talkCapture, probeCompanion } from '../lib/ptt-prefs';
+import { hotkeyMatches, hotkeyReleased } from '../lib/hotkey';
 
 export const talkHold: { current: Hold | null } = { current: null };
 
 export function usePushToTalk(id: string | undefined, active: boolean, mute: (muted: boolean) => unknown) {
   const hold = talkHold;
   const enabled = talkMode.value;
+  const binding = talkHotkey.value;
+  const global = globalTalk.value;
+  const capturing = talkCapture.value;
   useEffect(() => {
-    if (!id || !enabled || !active) return;
+    if (!id || !enabled || !active || capturing) return;
     const h = new Hold((down) => {
       void mute(!down);
     });
     hold.current = h;
     h.reset();
     const key = (e: KeyboardEvent) => {
-      if (e.code !== 'Space' || e.repeat) return;
+      if (e.type === 'keyup') {
+        if (hotkeyReleased(binding, e)) h.set('key', false);
+        return;
+      }
+      if (!hotkeyMatches(binding, e)) {
+        if (hotkeyReleased(binding, e)) h.set('key', false);
+        return;
+      }
+      if (talkCapture.value || e.repeat || e.isComposing || e.getModifierState?.('AltGraph')) return;
       if (
         e.type === 'keydown' &&
-        ((e.target as HTMLElement)?.closest?.('input,textarea,select,button,[contenteditable="true"],[role="textbox"]') ||
-          e.altKey ||
-          e.ctrlKey ||
-          e.metaKey)
+        (e.target as HTMLElement)?.closest?.('input,textarea,select,button,[contenteditable="true"],[role="textbox"]')
       )
         return;
       e.preventDefault();
@@ -33,6 +43,54 @@ export function usePushToTalk(id: string | undefined, active: boolean, mute: (mu
     // Buttons release through their owning window, including Document PiP.
     // Main-window blur only owns the main-window keyboard shortcut.
     const reset = () => h.set('key', false);
+    let session = global ? crypto.randomUUID() : '';
+    let last: number | null = null;
+    let suspended = false;
+    const configure = (on: boolean, connect = global) =>
+      window.postMessage({ source: 'thread-ptt', type: 'configure', binding, enabled: on, connect, session }, location.origin);
+    const message = (e: MessageEvent) => {
+      if (!global || e.source !== window || e.origin !== location.origin || e.data?.source !== 'thread-ptt-extension') return;
+      if (e.data.status === 'error' || e.data.status === 'busy') {
+        last = null;
+        suspended = true;
+        session = crypto.randomUUID();
+        h.set('global', false);
+        return;
+      }
+      if (e.data.type !== 'state' || e.data.session !== session || typeof e.data.down !== 'boolean') return;
+      last = performance.now();
+      const editing =
+        document.hasFocus() && document.activeElement?.closest('input,textarea,select,[contenteditable="true"],[role="textbox"]');
+      h.set('global', e.data.down && !editing && !talkCapture.value && !suspended);
+    };
+    const freeze = () => {
+      h.reset();
+      suspended = true;
+      last = null;
+      if (global) configure(false, false);
+    };
+    const retry = () => {
+      if (global) {
+        h.set('global', false);
+        last = null;
+        suspended = false;
+        session = crypto.randomUUID();
+        configure(true);
+      }
+    };
+    const watchdog = global
+      ? setInterval(() => {
+          if (last !== null && performance.now() - last > 1500) retry();
+        }, 250)
+      : undefined;
+    window.addEventListener('message', message);
+    window.addEventListener('thread-ptt-retry', retry);
+    window.addEventListener('pagehide', freeze);
+    window.addEventListener('pageshow', retry);
+    document.addEventListener('freeze', freeze);
+    document.addEventListener('resume', retry);
+    probeCompanion();
+    if (global) configure(true);
     window.addEventListener('keydown', key);
     window.addEventListener('keyup', key);
     window.addEventListener('blur', reset);
@@ -40,12 +98,20 @@ export function usePushToTalk(id: string | undefined, active: boolean, mute: (mu
     return () => {
       h.reset();
       hold.current = null;
+      clearInterval(watchdog);
+      if (global) configure(false, false);
+      window.removeEventListener('message', message);
+      window.removeEventListener('thread-ptt-retry', retry);
+      window.removeEventListener('pagehide', freeze);
+      window.removeEventListener('pageshow', retry);
+      document.removeEventListener('freeze', freeze);
+      document.removeEventListener('resume', retry);
       window.removeEventListener('keydown', key);
       window.removeEventListener('keyup', key);
       window.removeEventListener('blur', reset);
       document.removeEventListener('visibilitychange', reset);
     };
-  }, [id, enabled, active, mute]);
+  }, [id, enabled, active, mute, binding, global, capturing]);
   return hold;
 }
 

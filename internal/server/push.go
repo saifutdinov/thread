@@ -189,10 +189,10 @@ func (p *pusher) notifyRead(ctx context.Context, userID, chatID, upTo int64) {
 // notifyCallEnd takes back the ring on the callee's other devices: the
 // call was answered or declined somewhere. Topic "call" replaces a ring
 // still waiting for an offline phone.
-func (p *pusher) notifyCallEnd(ctx context.Context, callee int64, group bool) {
+func (p *pusher) notifyCallEnd(ctx context.Context, callee int64, group bool, id string) {
 	subs := p.targets(ctx, `SELECT p.device_id, p.endpoint, p.p256dh, p.auth FROM push_subs p JOIN devices d ON d.id = p.device_id
 		WHERE d.user_id = ? AND d.status = 'active'`, callee)
-	body, _ := json.Marshal(map[string]any{"t": "callEnd", "g": group})
+	body, _ := json.Marshal(map[string]any{"t": "callEnd", "g": group, "id": id})
 	for _, s := range subs {
 		if !p.connected(s.device) && silentOK(s.endpoint) {
 			go p.deliver(s, body, callTopic(group), int(ringFor.Seconds()))

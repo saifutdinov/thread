@@ -1,0 +1,26 @@
+{
+  "manifest_version": 3,
+  "name": "__MSG_name__",
+  "description": "__MSG_description__",
+  "default_locale": "en",
+  "version": "0.1.0",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAvECK0qz2qfFV42EiqX6MdsAO33ZqBuoP6C2eez3YcuC0+6NavWh5B50tXnTwkQD78eCgIBbEEctaAe7XfPp5z9Y1l4OLHeXeTCTKvvWrS86XdI3kOipgbixPk5AxDlMNO6Ol960tG6n0YFNl8+oba1abJU90pRBSLNhox7fFZLr3Sx2hoo5Mg8ahFVZx9Zf1jGQa8Li67yG328QH3kTUutd5ZizOIZCvC9WGdqqYFuAeV4cph8zjfEpgJDry4e65gkgabjRBsslGD5lWPHXB8GeNYwBNTkm7jlnWaB8kRPaZ2JhUiZUaZRp0Xc3pIvYewIAY2VR2ELQTC4yvse9kKQIDAQAB",
+  "permissions": [
+    "nativeMessaging"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://chat.example.org/*"
+      ],
+      "js": [
+        "origins.js",
+        "content.js"
+      ],
+      "run_at": "document_start"
+    }
+  ]
+}

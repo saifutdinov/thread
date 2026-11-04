@@ -3,15 +3,17 @@ import { api, type Device } from '../lib/api';
 import { errText, fmtListTime, lang, t } from '../lib/i18n';
 import { design, linkPreviews, textSize, theme, WALLPAPERS, wallpaper } from '../lib/prefs';
 import { DeviceCheckButton } from './DeviceCheck';
+import { lastDiagnostics, downloadLastDiagnostics } from '../lib/diagnostics';
 import { appVersion, enablePush, install, installPrompt, isIOS, notifPermission, standalone } from '../lib/pwa';
 import { back } from '../lib/route';
-import { choices, choose, MAX_SOUND_FILE, ownSoundName, playSound, setOwnSound, type SoundKind } from '../lib/sounds';
+import { choices, choose, MAX_SOUND_FILE, messagesDuringCalls, setMessagesDuringCalls, ownSoundName, playSound, setOwnSound, type SoundKind } from '../lib/sounds';
 import { TUNES } from '../lib/tunes';
 import { hasWallPhoto, setWallPhoto } from '../lib/wallpaper';
 import { chats, devicesTick, loadChats, loadVault, logout, me, myDeviceCode, myPicture, pending, setMyAvatar, shareMyNames, showToast, vaultShare } from '../lib/store';
 import { type Code, deviceCode, fromB64 } from '../lib/crypto';
 import { DeviceCode } from './Auth';
 import { SecuritySettings } from './Security';
+import { PushToTalkSettings } from './PushToTalkSettings';
 import { approving, Avatar, Icon, IconButton, Modal, Panel, PictureButtons, Segmented, Switch } from './ui';
 
 // WallpaperPicker: the chat background on this device: the theme's own,
@@ -101,13 +103,15 @@ function SoundRow(props: { kind: SoundKind }) {
   useEffect(() => () => stop?.(), [stop]); // leaving the page stops the preview
   const listen = () => {
     if (stop) return setStop(null);
-    const end = playSound(kind);
+    const end = playSound(kind, { preview: true, ended: () => setStop((s) => s === end ? null : s) });
     setStop(() => end);
-    // A ring repeats: a few seconds are enough to hear it.
-    setTimeout(() => setStop((s) => (s === end ? null : s)), kind === 'message' ? 1500 : 6000);
+    // A preview plays once, with a six-second upper bound for long files.
+    setTimeout(() => setStop((s) => (s === end ? null : s)), 6000);
   };
   const pickFile = async (f: File | undefined) => {
     if (!f) return;
+    stop?.();
+    setStop(null);
     try {
       await setOwnSound(kind, f);
       setFile(f.name);
@@ -121,6 +125,7 @@ function SoundRow(props: { kind: SoundKind }) {
       <label class="field">
         <span>{t(`sound.${kind}`)}</span>
         <select
+          aria-label={t(`sound.${kind}`)}
           value={pending ? 'file' : id}
           onChange={(e) => {
             const v = e.currentTarget.value;
@@ -453,12 +458,21 @@ export function Settings() {
         <SoundRow kind="ring" />
         <SoundRow kind="dial" />
         <SoundRow kind="message" />
+        <Switch label={t('sound.messagesDuringCalls')} hint={t('sound.messagesDuringCallsHint')} checked={messagesDuringCalls.value} onChange={setMessagesDuringCalls} />
+        <SoundRow kind="join" />
+        <SoundRow kind="leave" />
         <p class="muted small">{t('settings.soundsHint')}</p>
+      </section>
+
+      <section class="card stack">
+        <h3>{t('call.pushToTalk')}</h3>
+        <PushToTalkSettings />
       </section>
 
       <section class="card stack">
         <h3>{t('call.deviceCheck')}</h3>
         <DeviceCheckButton />
+        {lastDiagnostics.value && <><button type="button" class="btn secondary" onClick={downloadLastDiagnostics}>{t('call.lastDiagnostics')}</button><p class="muted small">{t('call.lastDiagnosticsHint')}</p></>}
       </section>
 
       <section class="card stack">

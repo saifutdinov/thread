@@ -1,3 +1,4 @@
+import { NetworkPolicy, videoBudget } from './network-policy.ts';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { stripTypeScriptTypes } from 'node:module';
@@ -24,7 +25,10 @@ test('releasing group push-to-talk during an async unmute keeps the new track si
   };
   const context = vm.createContext({
     signal: (value: unknown) => ({ value }),
+    beginDiagnostics: () => ({ mark() {}, snapshot: () => [], finish() {} }),
     latest: (f: unknown) => f,
+    setInterval: () => 0, clearInterval() {},
+    NetworkPolicy, videoBudget, networkMode: {value:'auto'}, rememberNetworkMode() {},
     document: { createElement: () => ({ replaceChildren: () => {} }), body: { append: () => {} } },
     clearTimeout: () => {},
     socketHold: { call: true },

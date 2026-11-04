@@ -1,4 +1,5 @@
 import { batch, signal } from '@preact/signals';
+import { clearDiagnostics } from './diagnostics';
 import {
   api,
   ApiError,
@@ -48,7 +49,7 @@ import { prepareAvatar, prepareImage, prepareVideo, shrink } from './image';
 import { plain } from './markup';
 import { away, clear, notifyHere, notifyMessage } from './notify';
 import { checkUpdate, mobile, pushOn, subscribe, unsubscribe } from './pwa';
-import { playSound } from './sounds';
+import { messageSoundAllowed, playSound } from './sounds';
 import { go, parse, replace, route } from './route';
 
 // ---------- types ----------
@@ -279,6 +280,7 @@ export async function login(password: string): Promise<void> {
 // notification note still being written would put a chat back.
 let localGen = 0;
 async function forgetLocal() {
+  clearDiagnostics();
   mediaUrls.clear();
   localGen++;
   names = null;
@@ -779,13 +781,14 @@ function onMessage(m: Msg) {
   // the service worker says it.
   const cl = m.p?.cl;
   const missed = cl?.s === 'missed' || cl?.s === 'busy';
-  // The chosen message sound, unless the chat is in front, a call is on, or
-  // the page is hidden and a push brings the system's own sound.
-  if (fresh && !mine && !reading && (!cl || missed) && !socketHold.call && (document.visibilityState === 'visible' || !pushOn)) playSound('message');
+  // A hidden page with push leaves sound to the system. In-app message
+  // sounds are rate-limited, and during calls require an explicit opt-in.
+  const sound = fresh && !mine && (!cl || missed) && (document.visibilityState === 'visible' || !pushOn) && messageSoundAllowed(socketHold.call);
+  if (sound) playSound('message');
   if (fresh && !mine && notifyHere() && (!cl || missed)) {
     const from = nameOf(m.chat, m.user);
     const text = cl ? `📞 ${t('call.missed')}` : summary(m.p);
-    void notifyMessage(m.chat, m.id, from, text, t('notify.message'), t('notify.read'));
+    void notifyMessage(m.chat, m.id, from, text, t('notify.message'), t('notify.read'), !sound);
   }
 }
 
@@ -1366,6 +1369,7 @@ function connect() {
   const sock = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/api/ws`);
   ws = sock;
   sock.onopen = () => {
+    if (ws === sock) callHandler?.({ t: 'open' });
     backoff = 1000;
     connected.value = true;
     clearTimeout(offlineTimer);
@@ -1383,6 +1387,7 @@ function connect() {
     }
   };
   sock.onclose = () => {
+    if (ws === sock) { callHandler?.({ t: 'close' }); groupHandler?.({ t: 'close' }); }
     if (ws === sock) ws = null;
     connected.value = false;
     clearTimeout(offlineTimer);

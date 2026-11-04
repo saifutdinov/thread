@@ -45,17 +45,17 @@ const quiet = (kind: 'message' | 'ring') => audible() || choices.value[kind] ===
 // A new message: who wrote and what, unless the app lock hides previews,
 // laid out like the service worker's (sw.js): a group's title on top and
 // "Name: text" under it, the chat's picture, "Mark as read" (Chromium).
-export function notifyMessage(chat: number, id: number, from: string, text: string, fallback: string, read: string) {
+export function notifyMessage(chat: number, id: number, from: string, text: string, fallback: string, read: string, silent = false) {
   return inOrder(async () => {
     const hide = await idbGet<boolean>('hidePreview');
-    if (hide || !from) return display(fallback, { tag: 'c' + chat, renotify: true, silent: quiet('message'), data: { url: '/#/c/' + chat, c: chat, m: id } });
+    if (hide || !from) return display(fallback, { tag: 'c' + chat, renotify: true, silent: silent || quiet('message'), data: { url: '/#/c/' + chat, c: chat, m: id } });
     const note = await idbGet<PushNote>('push:' + chat).catch(() => undefined);
     await display(note?.g && note.t ? note.t : from, {
       body: note?.g ? `${from}: ${text}` : text,
       icon: note?.i ?? '/icon-192.png',
       tag: 'c' + chat,
       renotify: true,
-      silent: quiet('message'),
+      silent: silent || quiet('message'),
       timestamp: Date.now(),
       data: { url: '/#/c/' + chat, c: chat, m: id },
       actions: [{ action: 'read', title: read }],

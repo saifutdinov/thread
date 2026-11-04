@@ -22,6 +22,8 @@ import {
   setParticipantVolume,
   participantVolumes,
   toggleGroupScreen,
+  selectGroupNetworkMode,
+  stopGroupVideo,
 } from '../lib/group';
 import { t } from '../lib/i18n';
 import { canShareScreen, selectSpeaker } from '../lib/call';
@@ -219,6 +221,9 @@ export function GroupCallScreen() {
           }}
           reopen={reopenGroupMic}
           diagnostics={exportGroupDiagnostics}
+          onNetwork={selectGroupNetworkMode}
+          networkReduced={!!g.networkReduced}
+          onVideoOff={stopGroupVideo}
         >
           {canSetVolume && g.people.filter((p) => !p.me).map((p) => <label key={p.id} class="participant-volume">
             <span>{t('call.volumeOf', {name: nameOf(g.chat, p.user)})}</span>

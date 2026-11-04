@@ -25,6 +25,12 @@ jobs:
       - name: Go lint
         # Same version as mise.toml.
         run: go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.14.0 run
+      - name: Windows companion cross-build
+        env:
+          GOOS: windows
+          GOARCH: amd64
+          CGO_ENABLED: 0
+        run: go build -ldflags '-H=windowsgui' -o "$RUNNER_TEMP/thread-hotkeys.exe" ./cmd/thread-hotkeys
       - uses: actions/setup-node@v7.1.0
         with:
           node-version: 22.15.0
@@ -37,6 +43,57 @@ jobs:
           npm test
           npm run test:proxy
           npm run build
+
+  call-failures:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-go@v7.0.0
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: 22.15.0
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Install web dependencies
+        working-directory: web
+        run: npm ci
+      - uses: actions/cache@v4.3.0
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('web/package-lock.json') }}
+      - name: Browser call failure tests
+        working-directory: web
+        timeout-minutes: 12
+        env:
+          TMPDIR: ${{ runner.temp }}
+        run: |
+          npx playwright install --with-deps chromium
+          npm run test:calls:setup
+          npm run build
+          npm run test:calls
+      - uses: actions/upload-artifact@v4.6.2
+        if: failure()
+        with:
+          name: call-failure-screenshots
+          path: ${{ runner.temp }}/thread-calls-*/page-*.png
+          if-no-files-found: ignore
+          retention-days: 7
+
+  windows-companion:
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-go@v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: Native protocol, installation and build
+        run: |
+          go test ./internal/hotkeys ./cmd/thread-hotkeys
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          go build -ldflags '-H=windowsgui' -o "$env:RUNNER_TEMP/thread-hotkeys.exe" ./cmd/thread-hotkeys
 
   deploy-files:
     # The server builds from source with these files: keep them valid.

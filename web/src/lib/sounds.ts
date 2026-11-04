@@ -1,12 +1,12 @@
 // Sounds the app plays itself: the incoming call, the line while calling,
-// a new message while the app is open, the end of a call. Each kind plays
+// a new message while the app is open, joining and leaving a call. Each kind plays
 // a built-in tune (tunes.ts) or a sound file of the person's own; the
 // choice is kept on this device only (localStorage, the file in IndexedDB).
 // A closed app's notifications sound as the system decides.
 import { signal } from '@preact/signals';
 import { remember, remembered } from './devices';
 import { idbGet, idbSet } from './idb';
-import { DEFAULT_TUNE, END_TUNE, length, type Note, type SoundKind, type Tune, TUNES } from './tunes';
+import { DEFAULT_TUNE, length, repeats, type Note, type SoundKind, type Tune, TUNES } from './tunes';
 
 export type { SoundKind };
 
@@ -25,7 +25,22 @@ function chosen(kind: SoundKind): string {
 }
 
 // The choice per kind: a tune id from tunes.ts, or 'file'.
-export const choices = signal<Record<SoundKind, string>>({ ring: chosen('ring'), dial: chosen('dial'), message: chosen('message') });
+export const choices = signal<Record<SoundKind, string>>({
+  ring: chosen('ring'), dial: chosen('dial'), message: chosen('message'), join: chosen('join'), leave: chosen('leave'),
+});
+
+export const messagesDuringCalls = signal(remembered('messagesDuringCalls') === '1');
+export function setMessagesDuringCalls(enabled: boolean) {
+  messagesDuringCalls.value = enabled;
+  remember('messagesDuringCalls', enabled ? '1' : '0');
+}
+let lastMessageAt: number | null = null;
+export function messageSoundAllowed(inCall: boolean, now = performance.now()) {
+  if (choices.value.message === 'off' || (inCall && !messagesDuringCalls.value)) return false;
+  if (lastMessageAt !== null && now - lastMessageAt < 1500) return false;
+  lastMessageAt = now;
+  return true;
+}
 
 export function choose(kind: SoundKind, id: string) {
   remember(key(kind), id);
@@ -44,9 +59,10 @@ export async function ownSoundName(kind: SoundKind): Promise<string | null> {
 // browser cannot decode is refused here, not at the next call.
 export async function setOwnSound(kind: SoundKind, file: File) {
   if (file.size > MAX_SOUND_FILE) throw new Error('too_large');
-  await new OfflineAudioContext(1, 1, 44100).decodeAudioData(await file.arrayBuffer());
+  const decoder = new OfflineAudioContext(1, 1, 44100);
+  const buffer = await decoder.decodeAudioData(await file.arrayBuffer());
   await idbSet(key(kind), { name: file.name, blob: file } satisfies OwnSound);
-  decoded.delete(kind);
+  decoded.set(kind, retainedBuffer(decoder, kind, buffer));
   choose(kind, 'file');
 }
 
@@ -68,7 +84,8 @@ const idle = () => {
 // worth playing late).
 const wake = () => {
   clearTimeout(sleep);
-  const ac = audio();
+  let ac: AudioContext;
+  try { ac = audio(); } catch { return Promise.resolve(); }
   const started = ac
     .resume()
     .then(() => void (unlocked ||= ac.state === 'running'))
@@ -84,7 +101,9 @@ export const audible = () => unlocked;
 
 // play repeats a tune every `every` seconds (once when 0) until stopped.
 // Each note fades in and out, so nothing clicks.
-function play(t: Tune): () => void {
+interface Playback { preview?: boolean; ended?: () => void }
+
+function play(t: Tune, ended?: () => void): () => void {
   const ac = audio();
   const out = ac.createGain();
   out.connect(ac.destination);
@@ -122,7 +141,6 @@ function play(t: Tune): () => void {
     }
     if (t.every) timer = setTimeout(once, t.every * 1000);
   };
-  void wake().then(once);
   const stop = () => {
     if (stopped) return;
     stopped = true;
@@ -130,7 +148,9 @@ function play(t: Tune): () => void {
     out.disconnect();
     playing--;
     idle();
+    ended?.();
   };
+  void wake().then(once).catch(stop);
   if (!t.every) setTimeout(stop, (length(t) + 0.3) * 1000);
   return stop;
 }
@@ -141,7 +161,15 @@ function play(t: Tune): () => void {
 // a file of up to 3 MB every time.
 const decoded = new Map<SoundKind, AudioBuffer>();
 
-function playOwn(kind: SoundKind): () => void {
+function retainedBuffer(ac: BaseAudioContext, kind: SoundKind, buffer: AudioBuffer) {
+  if (repeats(kind) || buffer.duration <= 5) return buffer;
+  const frames = Math.min(buffer.length, Math.ceil(5 * buffer.sampleRate));
+  const short = ac.createBuffer(buffer.numberOfChannels, frames, buffer.sampleRate);
+  for (let channel = 0; channel < buffer.numberOfChannels; channel++) short.copyToChannel(buffer.getChannelData(channel).subarray(0, frames), channel);
+  return short;
+}
+
+function playOwn(kind: SoundKind, options: Playback): () => void {
   const ac = audio();
   const out = ac.createGain();
   out.gain.value = 0.8;
@@ -149,6 +177,7 @@ function playOwn(kind: SoundKind): () => void {
   let stopped = false;
   let fallback: (() => void) | null = null;
   let src: AudioBufferSourceNode | null = null;
+  const loop = repeats(kind) && !options.preview;
   playing++;
   const stop = () => {
     if (stopped) return;
@@ -162,6 +191,7 @@ function playOwn(kind: SoundKind): () => void {
     out.disconnect();
     playing--;
     idle();
+    options.ended?.();
   };
   void (async () => {
     try {
@@ -169,35 +199,48 @@ function playOwn(kind: SoundKind): () => void {
       if (!buf) {
         const own = await idbGet<OwnSound>(key(kind));
         if (!own) throw new Error('no file');
-        buf = await ac.decodeAudioData(await own.blob.arrayBuffer());
+        const loaded = await ac.decodeAudioData(await own.blob.arrayBuffer());
+        buf = decoded.get(kind) ?? retainedBuffer(ac, kind, loaded);
+        if (stopped) return;
         decoded.set(kind, buf);
       }
       await wake();
       // Not heard now (no tap yet): a message is skipped, not saved up.
-      if (stopped || (ac.state !== 'running' && kind === 'message')) return stop();
+      if (stopped || (ac.state !== 'running' && !loop)) return stop();
       src = ac.createBufferSource();
       src.buffer = buf;
-      src.loop = kind !== 'message';
+      src.loop = loop;
+      src.onended = stop;
       src.connect(out);
       src.start();
-      if (kind === 'message') setTimeout(stop, Math.min(buf.duration, 5) * 1000 + 100); // a long file is cut short
+      if (!loop) setTimeout(stop, Math.min(buf.duration, options.preview ? 6 : 5) * 1000 + 100);
     } catch {
-      if (!stopped) fallback = playTune(kind, DEFAULT_TUNE[kind]);
+      if (!stopped) {
+        fallback = playTune(kind, DEFAULT_TUNE[kind], { preview: options.preview });
+        if (!loop) setTimeout(stop, (length(TUNES[kind][DEFAULT_TUNE[kind]]!) + 0.3) * 1000);
+      }
     }
-  })();
+  })().catch(stop);
   return stop;
 }
 
-function playTune(kind: SoundKind, id: string): () => void {
+function playTune(kind: SoundKind, id: string, options: Playback = {}): () => void {
   const tune = Object.hasOwn(TUNES[kind], id) ? TUNES[kind][id] : TUNES[kind][DEFAULT_TUNE[kind]];
-  return tune ? play(tune) : () => {};
+  if (tune) return play(options.preview ? { ...tune, every: 0 } : tune, options.ended);
+  if (options.ended) queueMicrotask(options.ended);
+  return () => {};
 }
 
 // playSound starts this kind's chosen sound: a ring and the line repeat
 // until stopped, a message plays once. The returned function stops it.
-export function playSound(kind: SoundKind): () => void {
-  const id = choices.value[kind];
-  return id === 'file' ? playOwn(kind) : playTune(kind, id);
+export function playSound(kind: SoundKind, options: Playback = {}): () => void {
+  try {
+    const id = choices.value[kind];
+    return id === 'file' ? playOwn(kind, options) : playTune(kind, id, options);
+  } catch {
+    if (options.ended) queueMicrotask(options.ended);
+    return () => {}; // audio failure must not fail a message or a call
+  }
 }
 
-export const hangupTone = () => play(END_TUNE);
+export const hangupTone = () => playSound('leave');

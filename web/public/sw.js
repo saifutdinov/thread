@@ -97,8 +97,8 @@ function fromB64(s) {
 }
 
 const TEXT = {
-  ru: { app: 'Нитка', call: 'Входящий звонок', callVideo: 'Входящий видеозвонок', groupCall: 'Зовёт в групповой звонок', groupCallVideo: 'Зовёт в групповой видеозвонок', answer: 'Ответить', decline: 'Отклонить', join: 'Присоединиться', read: 'Прочитано', more: 'новых: {n}', test: 'Уведомления работают', testBody: 'Так будут выглядеть сообщения и звонки.', msg: 'Новое сообщение', photo: '📷 Фото', voice: '🎤 Голосовое сообщение', video: '📹 Видеосообщение', clip: '🎬 Видео', callLog: '📞 Звонок', missed: '📞 Пропущенный звонок', file: '📎 Файл', login: 'Новый вход в аккаунт: {label}. Откройте Нитку, чтобы разрешить или запретить.' },
-  en: { app: 'Thread', call: 'Incoming call', callVideo: 'Incoming video call', groupCall: 'Invites you to a group call', groupCallVideo: 'Invites you to a group video call', answer: 'Answer', decline: 'Decline', join: 'Join', read: 'Mark as read', more: '{n} new', test: 'Notifications work', testBody: 'This is how messages and calls will look.', msg: 'New message', photo: '📷 Photo', voice: '🎤 Voice message', video: '📹 Video message', clip: '🎬 Video', callLog: '📞 Call', missed: '📞 Missed call', file: '📎 File', login: 'New sign-in to your account: {label}. Open Thread to allow or deny it.' },
+  ru: { app: 'Нитка', callEnded: 'Этот вызов больше не ожидает ответа', callCheck: 'Откройте Нитку, чтобы проверить звонок', call: 'Входящий звонок', callVideo: 'Входящий видеозвонок', groupCall: 'Зовёт в групповой звонок', groupCallVideo: 'Зовёт в групповой видеозвонок', answer: 'Ответить', decline: 'Отклонить', join: 'Присоединиться', read: 'Прочитано', more: 'новых: {n}', test: 'Уведомления работают', testBody: 'Так будут выглядеть сообщения и звонки.', msg: 'Новое сообщение', photo: '📷 Фото', voice: '🎤 Голосовое сообщение', video: '📹 Видеосообщение', clip: '🎬 Видео', callLog: '📞 Звонок', missed: '📞 Пропущенный звонок', file: '📎 Файл', login: 'Новый вход в аккаунт: {label}. Откройте Нитку, чтобы разрешить или запретить.' },
+  en: { app: 'Thread', callEnded: 'This call is no longer ringing', callCheck: 'Open Thread to check the call', call: 'Incoming call', callVideo: 'Incoming video call', groupCall: 'Invites you to a group call', groupCallVideo: 'Invites you to a group video call', answer: 'Answer', decline: 'Decline', join: 'Join', read: 'Mark as read', more: '{n} new', test: 'Notifications work', testBody: 'This is how messages and calls will look.', msg: 'New message', photo: '📷 Photo', voice: '🎤 Voice message', video: '📹 Video message', clip: '🎬 Video', callLog: '📞 Call', missed: '📞 Missed call', file: '📎 File', login: 'New sign-in to your account: {label}. Open Thread to allow or deny it.' },
 };
 
 async function decryptText(d) {
@@ -123,6 +123,38 @@ async function close(tag, upTo) {
   }
 }
 
+async function closeCall(id, group) {
+  if (!id) return; // an old, unscoped end must not erase a newer call
+  for (const n of await self.registration.getNotifications({ tag: group ? 'gcall' : 'call' })) {
+    if (n.data?.id === id) n.close();
+  }
+}
+
+async function callStatus(data) {
+  if (!Number.isSafeInteger(data.c) || data.c <= 0 || typeof data.id !== 'string' || !data.id || data.id.length > 64) return false;
+  try {
+    const res = await fetch(`/api/chats/${data.c}/call-status?call=${encodeURIComponent(data.id)}`, { cache: 'no-store', signal: AbortSignal.timeout(2500) });
+    if (!res.ok) return null;
+    const status = await res.json();
+    return typeof status.ringing === 'boolean' ? status.ringing : null;
+  } catch { return null; }
+}
+
+async function inactiveCall(data, L) {
+  await closeCall(data.id, !!data.g);
+  const existing = (await self.registration.getNotifications()).find((n) =>
+    (n.tag === 'call' || n.tag === 'gcall' || n.tag === 'c' + data.c) &&
+    !((n.tag === 'call' || n.tag === 'gcall') && n.data?.id === data.id));
+  // Safari/Firefox require a visible notification for push. Reuse an
+  // existing newer note quietly instead of replacing it with an old ring.
+  if (existing) return self.registration.showNotification(existing.title, {
+    body: existing.body, tag: existing.tag, icon: existing.icon, badge: existing.badge,
+    data: existing.data, actions: existing.actions, requireInteraction: existing.requireInteraction, silent: true, renotify: false,
+  });
+  return self.registration.showNotification(L.app, { body: L.callEnded, tag: 'call-ended', silent: true,
+    icon: '/icon-192.png', data: { url: '/#/c/' + data.c, c: data.c, id: data.id } });
+}
+
 // What the app left for this chat (store.ts notePush): its name, a group
 // or not, and its picture. Who wrote, by the name I gave them (`names`).
 const BADGE = '/badge-96.png'; // Android's status bar: drawn from its alpha
@@ -138,7 +170,7 @@ async function onPush(d) {
   // Silent pushes (never through Apple or Mozilla, see push.go): the chat
   // was read on another device, the call answered or declined there.
   if (d.t === 'read') return close('c' + d.c, d.id);
-  if (d.t === 'callEnd') return close(d.g ? 'gcall' : 'call');
+  if (d.t === 'callEnd') return closeCall(d.id, !!d.g);
   if (d.t === 'test') {
     return self.registration.showNotification(L.test, { body: L.testBody, tag: 'test', icon: '/icon-192.png', data: { url: '/#/settings' } });
   }
@@ -149,6 +181,11 @@ async function onPush(d) {
       icon: '/icon-192.png',
       data: { url: '/#/settings' },
     });
+  }
+  if (d.t === 'call') {
+    const active = await callStatus(d);
+    if (active === false) return inactiveCall(d, L);
+    await close('call-ended');
   }
   if (d.t === 'call' && d.g) {
     // A group call: a tap opens the chat, whose banner joins it; "Join"
@@ -162,7 +199,7 @@ async function onPush(d) {
       vibrate: [400, 200, 400],
       icon: (!hide && note.i) || '/icon-192.png',
       badge: BADGE,
-      data: { url: '/#/c/' + d.c, gcall: true, c: d.c },
+      data: { url: '/#/c/' + d.c, gcall: true, c: d.c, id: d.id },
       actions: [{ action: 'join', title: L.join }],
     });
   }
@@ -190,7 +227,14 @@ async function onPush(d) {
   } catch {
     /* no key on this device yet: generic text */
   }
-  if (p && p.cl) await close('call'); // the ring is over: the call log takes its place
+  if (p && p.cl) {
+    await close('call-ended');
+    // Encrypted call summaries have no call id and can arrive late. Only
+    // dismiss this chat's ring when its exact call is confirmed inactive.
+    for (const n of await self.registration.getNotifications({ tag: 'call' })) {
+      if (n.data?.c === d.c && await callStatus(n.data) === false) n.close();
+    }
+  }
   // App lock with hidden previews: say nothing about who or what.
   if (await idbGet('hidePreview')) {
     return self.registration.showNotification(L.app, { body: L.msg, tag: 'c' + d.c, icon: '/icon-192.png', badge: BADGE, data: { url: '/#/c/' + d.c, c: d.c, m: d.m } });
@@ -223,6 +267,7 @@ async function onPush(d) {
   });
 }
 
+let pushQueue = Promise.resolve();
 self.addEventListener('push', (e) => {
   let d = {};
   try {
@@ -230,7 +275,9 @@ self.addEventListener('push', (e) => {
   } catch {
     /* unreadable payload: show the generic notification */
   }
-  e.waitUntil(onPush(d));
+  const task = pushQueue.catch(() => {}).then(() => onPush(d));
+  pushQueue = task;
+  e.waitUntil(task);
 });
 
 self.addEventListener('notificationclick', (e) => {
@@ -238,18 +285,35 @@ self.addEventListener('notificationclick', (e) => {
   const data = e.notification.data || {};
   const url = data.url || '/';
   e.waitUntil(
-    self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((list) => {
+    self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then(async (list) => {
       // The call notification's buttons (here and notify.ts): a tab that
       // is ringing acts at once. Decline also goes to the server, for a
       // phone with no page awake; answer is left for a page that gets the
       // call only once it opens (call.ts reads it), and needs one in front.
-      if (data.call && e.action) {
-        list.forEach((c) => c.postMessage({ t: 'call', k: e.action }));
-        if (e.action === 'decline') {
-          return fetch('/api/calls/decline', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ c: data.c, id: data.id }) }).catch(() => {});
-        }
+      if (data.call && e.action === 'decline') {
+        // The server and pages validate the exact id. An unavailable status
+        // endpoint must not prevent declining or open an unwanted window.
+        list.forEach((c) => c.postMessage({ t: 'call', k: 'decline', id: data.id, c: data.c }));
+        return fetch('/api/calls/decline', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ c: data.c, id: data.id }) }).catch(() => {});
+      }
+      if ((data.call && e.action === 'answer') || (data.gcall && e.action === 'join')) {
         const c = list.find((x) => 'focus' in x);
-        return idbSet('answer', { id: data.id, at: Date.now() }).then(() => (c ? c.focus() : self.clients.openWindow(url)));
+        // Spend the notification-click activation before the network wait
+        // (Firefox expires it quickly). Keep the intent for a sleeping page.
+        const foreground = (c ? c.focus() : self.clients.openWindow(url)).catch(() => null);
+        if (await callStatus(data) === false) {
+          (await foreground)?.postMessage({ t: 'open', url });
+          return;
+        }
+        if (data.call) await idbSet('answer', { id: data.id, at: Date.now() });
+        else await idbSet('gjoin', { c: data.c, id: data.id, at: Date.now() });
+        await foreground;
+        // Also include the page just opened above: its initial offer may
+        // already have arrived before the status check or IDB write finished.
+        for (const client of await self.clients.matchAll({ type: 'window', includeUncontrolled: true })) {
+          client.postMessage(data.call ? { t: 'call', k: 'answer', id: data.id, c: data.c } : { t: 'gjoin', c: data.c });
+        }
+        return;
       }
       // "Mark as read": the server learns it as if the chat were opened up to
       // this message (the other devices' notifications close too), no app.
@@ -263,16 +327,6 @@ self.addEventListener('notificationclick', (e) => {
               ? self.registration.getNotifications().then((left) => !left.length && self.navigator.clearAppBadge && self.navigator.clearAppBadge().catch(() => {}))
               : self.registration.showNotification(n.title, { body: n.body, tag: n.tag, icon: n.icon, badge: n.badge, data: n.data, actions: n.actions }),
           );
-      }
-      // "Join" on a group call: left in IndexedDB first for an app this
-      // opens (group.ts reads it once it knows the running calls), then an
-      // open one joins at once.
-      if (data.gcall && e.action === 'join') {
-        return idbSet('gjoin', { c: data.c, at: Date.now() }).then(() => {
-          list.forEach((c) => c.postMessage({ t: 'gjoin', c: data.c }));
-          const c = list.find((x) => 'focus' in x);
-          return c ? c.focus() : self.clients.openWindow(url);
-        });
       }
       for (const c of list) {
         if ('focus' in c) {

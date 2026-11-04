@@ -2,7 +2,9 @@
 data
 web/node_modules
 web/dist
+web/.call-test-tools
 deploy
 docs
+desktop
 *.md
 .env*

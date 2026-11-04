@@ -262,7 +262,7 @@ func (s *Server) handleGroupCall(w http.ResponseWriter, r *http.Request, a *Auth
 			s.push.notifyCall(r.Context(), chat, m, a.UserID, name, c.video, c.id, true)
 		}
 	} else if !started {
-		s.push.notifyCallEnd(r.Context(), a.UserID, true) // picked up here: the ring on my sleeping devices goes
+		s.push.notifyCallEnd(r.Context(), a.UserID, true, c.id) // picked up here: the ring on my sleeping devices goes
 	}
 	s.announceGroupCall(members, chat, c)
 	// The room is the chat's own: a call id someone kept from another chat
@@ -299,7 +299,7 @@ func (s *Server) groupCallsLeft(ctx context.Context, changed map[int64]groupCall
 		s.announceGroupCall(ids, chat, c)
 		if len(c.devices) == 0 {
 			for _, u := range ids {
-				s.push.notifyCallEnd(ctx, u, true)
+				s.push.notifyCallEnd(ctx, u, true, c.id)
 			}
 		}
 	}

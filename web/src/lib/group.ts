@@ -3,13 +3,17 @@ import type { LocalVideoTrack, Participant, RemoteTrack, Room, VideoTrack } from
 import { api, ApiError, type RunningCall } from './api';
 import { rand, toB64u } from './crypto';
 import { remember, remembered } from './devices';
-import { downloadDiagnostics } from './diagnostics';
+import { beginDiagnostics, downloadDiagnostics } from './diagnostics';
 import { errText, t } from './i18n';
 import { idbGet, idbSet } from './idb';
 import { latest } from './latest';
+import { CallPresence } from './call-presence';
 import { micConstraints, type Mic, openMic, pushToTalk, wantsProcessing } from './mic';
 import { hangupTone, playSound } from './sounds';
 import { me, openSignal, releaseSocket, sealSignal, sendCallLog, setGroupHandler, showToast, socketHold } from './store';
+
+import { NetworkPolicy, type NetworkMode, type NetworkQuality } from './network-policy';
+import { networkMode, rememberNetworkMode } from './network';
 
 // Group calls (docs/adr/0002-group-calls.md): up to 10 people through the
 // LiveKit SFU next to the server. Every frame is encrypted here with the
@@ -39,6 +43,7 @@ export interface GroupView {
   people: Person[];
   since?: number;
   reconnecting?: boolean;
+  networkReduced?: boolean;
   needsTap?: boolean; // the browser holds the sound back until a tap
   sharing?: boolean; // my screen is shared
   playerMusic?: boolean; // the app's player plays into the call (shareGroupMusic)
@@ -54,9 +59,14 @@ let lk: typeof import('livekit-client') | null = null; // loaded on the first gr
 let room: Room | null = null;
 let worker: Worker | null = null; // LiveKit's E2EE worker holds the call key: ours to stop
 let gmic: Mic | null = null; // the microphone we publish, perhaps processed
+let history: ReturnType<typeof beginDiagnostics> | null = null;
 let desiredMute = false;
 let micStarting: Room | null = null; // capture/publication owns microphone creation until it settles
 let micReopen: Room | null = null; // settings changed while the initial capture was pending
+const networkPolicy = new NetworkPolicy();
+let networkTimer: ReturnType<typeof setInterval> | undefined;
+let cameraBlocked = false;
+let screenBlocked = false;
 // Every join and every end bumps it: a join that sees another number by
 // the time its await returns was cancelled (a hang-up while connecting).
 let attempt = 0;
@@ -89,7 +99,8 @@ function setRunning(c: RunningCall) {
 }
 
 setGroupHandler((e) => {
-  if (e.t === 'open') return void reopen();
+  if (e.t === 'open') { history?.mark('signaling-open'); return void reopen(); }
+  if (e.t === 'close') { history?.mark('signaling-close'); return; }
   const chat = e.c as number;
   if (e.k === 'state') {
     const users = (e.users as number[]) ?? [];
@@ -119,8 +130,9 @@ async function pendingJoin(chat?: number) {
   if (joining) return; // both ways at once: one join
   joining = true;
   try {
-    const j = await idbGet<{ c: number; at: number } | null>('gjoin').catch(() => null);
+    const j = await idbGet<{ c: number; id?: string; at: number } | null>('gjoin').catch(() => null);
     if (!j || Date.now() - j.at > 60_000 || (chat !== undefined && j.c !== chat) || !runningCalls.value.has(j.c)) return;
+    if (j.id !== runningCalls.value.get(j.c)?.id) return;
     await idbSet('gjoin', null).catch(() => {});
     await startGroupCall(j.c, false);
   } finally {
@@ -162,8 +174,11 @@ export async function startGroupCall(chat: number, video: boolean) {
   if (!isE2EESupported()) return void showToast(t('gcall.unsupported'));
   quiet();
   const my = ++attempt;
+  history = beginDiagnostics('group');
+  history.mark('starting');
   const stale = () => my !== attempt;
   socketHold.call = true;
+  cameraBlocked = screenBlocked = false;
   groupCall.value = { chat, id: '', phase: 'connecting', video, muted: false, camOff: !video, people: [] };
   try {
     let body: Parameters<typeof api.joinGroupCall>[1] = {};
@@ -194,6 +209,7 @@ export async function startGroupCall(chat: number, video: boolean) {
 // enter connects to LiveKit with frame encryption on. Every await may be
 // a hang-up: a cancelled attempt opens nothing and closes what it opened.
 async function enter(path: string, token: string, key: string, video: boolean, stale: () => boolean, muted = false) {
+  networkPolicy.reset();
   const crowded = muted;
   muted ||= pushToTalk.value;
   desiredMute = muted;
@@ -227,7 +243,38 @@ async function enter(path: string, token: string, key: string, video: boolean, s
       camOff: !r.localParticipant.isCameraEnabled,
       sharing: r.localParticipant.isScreenShareEnabled,
     });
+  const presence = new CallPresence(playSound);
+  const baseline = () => presence.start(r.remoteParticipants.keys(), r.localParticipant.identity);
   const E = lk.RoomEvent;
+  let quality: NetworkQuality | undefined;
+  let networkReconnecting = false;
+  const readQuality = (q = r.localParticipant.connectionQuality) => {
+    quality = q === 'poor' || q === 'lost' ? 'poor' : q === 'excellent' || q === 'good' ? 'good' : undefined;
+  };
+  const lostQuality = () => { networkReconnecting = true; quality = undefined; networkPolicy.observe(networkMode.value); };
+  r.on(E.Reconnecting, lostQuality);
+  r.on(E.SignalReconnecting, lostQuality);
+  const sampleNetwork = () => {
+    if (room !== r) return;
+    const reduced = networkPolicy.observe(networkMode.value, networkReconnecting ? undefined : quality);
+    const changed = !!groupCall.value?.networkReduced !== reduced;
+    if (changed) {
+      update({ networkReduced: reduced });
+      if (reduced && networkMode.value === 'auto') showToast(t('call.networkAutoReduced'));
+    }
+    if (changed || reduced) applyGroupNetwork(r, reduced);
+  };
+  r.on(E.ConnectionQualityChanged, (q, participant) => {
+    if (participant !== r.localParticipant) return;
+    readQuality(q);
+    sampleNetwork();
+  });
+  r.on(E.Reconnected, () => {
+    if (room !== r) return;
+    networkReconnecting = false;
+    readQuality(); // unchanged quality does not emit ConnectionQualityChanged again
+    sampleNetwork();
+  });
   for (const ev of [
     E.ParticipantConnected,
     E.ParticipantDisconnected,
@@ -242,6 +289,8 @@ async function enter(path: string, token: string, key: string, video: boolean, s
     E.LocalTrackUnpublished,
   ])
     r.on(ev, refresh);
+  const capNewCamera = () => { if (room === r && groupCall.value?.networkReduced) applyGroupNetwork(r, true); };
+  r.on(E.TrackSubscribed, capNewCamera);
   r.on(E.TrackSubscribed, (track: RemoteTrack, _pub, participant) => {
     if (track.kind !== 'audio') return;
     const el = track.attach();
@@ -251,6 +300,13 @@ async function enter(path: string, token: string, key: string, video: boolean, s
     if (sink && 'setSinkId' in el) (el as HTMLAudioElement).setSinkId(sink).catch(() => {});
   });
   r.on(E.TrackUnsubscribed, (track: RemoteTrack) => track.detach().forEach((el) => el.remove()));
+  // A full SDK restart removes participants before emitting Reconnecting.
+  // Wait until that synchronous event batch finishes before making a sound.
+  r.on(E.ParticipantConnected, (p) => queueMicrotask(() => { if (room === r) presence.joined(p.identity); }));
+  r.on(E.ParticipantDisconnected, (p) => queueMicrotask(() => { if (room === r) presence.left(p.identity); }));
+  r.on(E.SignalReconnecting, () => presence.pause());
+  r.on(E.Reconnecting, () => presence.pause());
+  r.on(E.Reconnected, () => { if (room === r) baseline(); });
   const gateMic = () => {
     if (room !== r || !desiredMute) return;
     const track = r.localParticipant.getTrackPublication(lk!.Track.Source.Microphone)?.track?.mediaStreamTrack;
@@ -259,8 +315,9 @@ async function enter(path: string, token: string, key: string, video: boolean, s
   };
   r.on(E.TrackUnmuted, gateMic);
   r.on(E.LocalTrackPublished, gateMic);
-  r.on(E.Reconnecting, () => update({ reconnecting: true }));
-  r.on(E.Reconnected, () => update({ reconnecting: false }));
+  const trace = history;
+  r.on(E.Reconnecting, () => { if (room === r) { trace?.mark('reconnecting'); update({ reconnecting: true }); } });
+  r.on(E.Reconnected, () => { if (room === r) { trace?.mark('reconnected'); update({ reconnecting: false }); } });
   r.on(E.AudioPlaybackStatusChanged, () => update({ needsTap: !r.canPlaybackAudio }));
   r.on(E.EncryptionError, () => showToast(t('gcall.encryption')));
   r.on(E.Disconnected, () => {
@@ -273,9 +330,16 @@ async function enter(path: string, token: string, key: string, video: boolean, s
   await r.setE2EEEnabled(true);
   await r.connect(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}${path}`, token);
   if (stale()) return drop();
+  readQuality();
+  sampleNetwork();
+  networkTimer = setInterval(sampleNetwork, 2000);
   update({ phase: 'active', since: Date.now(), needsTap: !r.canPlaybackAudio, muted: desiredMute });
+  trace?.mark('connected', { participants: r.remoteParticipants.size + 1 });
   let micReady = false;
+  baseline();
+  playSound('join');
   try {
+    trace?.mark('media-request');
     const own = await processedMic(mic || undefined);
     if (stale()) own?.close();
     else if (own) {
@@ -284,8 +348,12 @@ async function enter(path: string, token: string, key: string, video: boolean, s
       await r.localParticipant.setMicrophoneEnabled(true);
     }
     micReady = true;
+    trace?.mark('media-ready');
     if (crowded && desiredMute && !stale()) showToast(t('gcall.joinedMuted', { n: CROWD }));
-    if (video && !stale()) await r.localParticipant.setCameraEnabled(true);
+    if (video && !stale() && !cameraBlocked) {
+      await r.localParticipant.setCameraEnabled(true);
+      if (stale() || cameraBlocked) await r.localParticipant.setCameraEnabled(false);
+    }
   } catch {
     if (!stale()) showToast(t('call.noMedia')); // in the call anyway: listening works without a microphone
   } finally {
@@ -303,6 +371,32 @@ async function enter(path: string, token: string, key: string, video: boolean, s
   }
   if (stale()) return drop(); // the microphone must not stay on after a hang-up
   refresh();
+}
+
+function applyGroupNetwork(r: Room, reduced: boolean) {
+  if (room !== r || !lk) return;
+  const quality = reduced ? lk.VideoQuality.LOW : lk.VideoQuality.HIGH;
+  // Incoming max quality composes with adaptiveStream. Leave publishing
+  // layers to SDK bandwidth control/dynacast, including its fully idle state.
+  for (const p of r.remoteParticipants.values()) for (const pub of p.videoTrackPublications.values()) {
+    if (pub.isSubscribed && pub.source === lk.Track.Source.Camera) pub.setVideoQuality(quality);
+  }
+}
+export function selectGroupNetworkMode(mode: NetworkMode) {
+  rememberNetworkMode(mode);
+  if (!room) return;
+  const reduced = networkPolicy.observe(mode);
+  update({ networkReduced: reduced });
+  applyGroupNetwork(room, reduced);
+}
+export async function stopGroupVideo() {
+  const r = room;
+  cameraBlocked = screenBlocked = true;
+  update({ camOff: true, sharing: false });
+  if (!r) return;
+  await Promise.all([r.localParticipant.setScreenShareEnabled(false), r.localParticipant.setCameraEnabled(false)]);
+  if (room !== r) return;
+  update({ camOff: !r.localParticipant.isCameraEnabled, sharing: r.localParticipant.isScreenShareEnabled, people: people(r) });
 }
 
 function people(r: Room): Person[] {
@@ -441,8 +535,10 @@ export const selectGroupSpeaker = (id: string) => room?.switchActiveDevice('audi
 // restrictOwnAudio: the whole screen's sound without this page's own (the call).
 const SCREEN_SOUND = { echoCancellation: false, noiseSuppression: false, autoGainControl: false, channelCount: 2, restrictOwnAudio: true };
 export async function toggleGroupScreen() {
-  const p = room?.localParticipant;
+  const r = room;
+  const p = r?.localParticipant;
   if (!p || !lk) return;
+  screenBlocked = p.isScreenShareEnabled;
   await p
     .setScreenShareEnabled(
       !p.isScreenShareEnabled,
@@ -452,7 +548,8 @@ export async function toggleGroupScreen() {
     // Closing the picker is NotAllowedError "Permission denied"; macOS without
     // the system's screen recording permission is one too, "by system".
     .catch((e: DOMException) => (e?.name !== 'NotAllowedError' || /system/i.test(e.message)) && showToast(t('call.screenFailed')));
-  update({ sharing: p.isScreenShareEnabled, people: room ? people(room) : [] });
+  if (room !== r || screenBlocked) await p.setScreenShareEnabled(false).catch(() => {});
+  if (room === r) update({ sharing: p.isScreenShareEnabled, people: people(r!) });
 }
 
 // shareGroupMusic publishes the app's player (player.ts musicTrack) as a
@@ -499,6 +596,7 @@ export async function toggleGroupMute() {
 
 let muteQueue = Promise.resolve();
 export function setGroupMuted(muted: boolean) {
+  history?.mark(muted ? 'mic-muted' : 'mic-unmuted');
   const r = room;
   desiredMute = muted;
   if (r) update({muted});
@@ -533,14 +631,17 @@ export async function exportGroupDiagnostics() {
   if (!r) return;
   const tracks = [r.localParticipant, ...r.remoteParticipants.values()].flatMap((p) => [...p.trackPublications.values()].flatMap((pub) => pub.track ? [pub.track] : []));
   const reports = (await Promise.all(tracks.map((track) => track.getRTCStatsReport().catch(() => undefined)))).filter((s): s is RTCStatsReport => !!s);
-  if (room === r) downloadDiagnostics('group', reports, {connection: r.state, participants: r.remoteParticipants.size + 1, encrypted: r.isE2EEEnabled});
+  if (room === r) downloadDiagnostics('group', reports, {connection: r.state, participants: r.remoteParticipants.size + 1, encrypted: r.isE2EEEnabled}, history?.snapshot());
 }
 
 export async function toggleGroupCamera() {
-  const p = room?.localParticipant;
+  const r = room;
+  const p = r?.localParticipant;
   if (!p) return;
+  cameraBlocked = p.isCameraEnabled;
   await p.setCameraEnabled(!p.isCameraEnabled).catch(() => showToast(t('call.noMedia')));
-  update({ camOff: !p.isCameraEnabled, people: room ? people(room) : [] });
+  if (room !== r || cameraBlocked) await p.setCameraEnabled(false).catch(() => {});
+  if (room === r) update({ camOff: !p.isCameraEnabled, people: people(r!) });
 }
 
 // flipGroupCamera: the front or the back camera (phones).
@@ -559,6 +660,11 @@ export async function leave() {
   const g = groupCall.value;
   const r = room;
   const w = worker;
+  if (history) {
+    const tracks = r ? [r.localParticipant, ...r.remoteParticipants.values()].flatMap((p) => [...p.trackPublications.values()].flatMap((pub) => pub.track ? [pub.track] : [])) : [];
+    history.finish(Promise.all(tracks.map((tr) => tr.getRTCStatsReport().catch(() => undefined))).then((reports) => reports.filter((r): r is RTCStatsReport => !!r)), { encrypted: r?.isE2EEEnabled ?? true });
+    history = null;
+  }
   room = null;
   worker = null;
   joined = null;
@@ -572,6 +678,9 @@ export async function leave() {
 }
 
 function end() {
+  clearInterval(networkTimer);
+  networkTimer = undefined;
+  networkPolicy.reset();
   attempt++;
   muteQueue = Promise.resolve();
   desiredMute = true;

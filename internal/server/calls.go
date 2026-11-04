@@ -108,8 +108,8 @@ func (s *Server) handleCallSignal(ctx context.Context, c *client, in callSignal)
 			return
 		}
 		toPeerDevice()
-		stopRinging(c.user)                      // the other devices of the one who picked up
-		s.push.notifyCallEnd(ctx, c.user, false) // and their ring notifications
+		stopRinging(c.user)                             // the other devices of the one who picked up
+		s.push.notifyCallEnd(ctx, c.user, false, in.ID) // and their ring notifications
 	case "ice", "reoffer", "reanswer", "restart":
 		// Mid-call: candidates, an ICE restart after a network change (the
 		// caller re-offers; the callee may ask for it), device to device.
@@ -120,7 +120,7 @@ func (s *Server) handleCallSignal(ctx context.Context, c *client, in callSignal)
 		if s.ring.busy(c.user, c.device, in.To, key, c.done, s.hub.callSockets(c.user)) {
 			toPeerDevice()
 			stopRinging(c.user)
-			s.push.notifyCallEnd(ctx, c.user, false)
+			s.push.notifyCallEnd(ctx, c.user, false, in.ID)
 		}
 	case "hangup", "decline":
 		to, ringingUser, ended := s.ring.end(c.user, c.device, peer, key, in.K, c.done)
@@ -140,7 +140,7 @@ func (s *Server) handleCallSignal(ctx context.Context, c *client, in callSignal)
 		}
 		if ringingUser != 0 {
 			stopRinging(ringingUser)
-			s.push.notifyCallEnd(ctx, ringingUser, false)
+			s.push.notifyCallEnd(ctx, ringingUser, false, in.ID)
 		}
 	}
 }

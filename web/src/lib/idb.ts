@@ -8,7 +8,7 @@
 //   namesSynced  -> true once this device's names went into the vault
 //   vaultSeen    -> { e, v }: the newest vault epoch and version read here (no rollback)
 //   push:<chat>  -> PushNote (store.ts): the chat's name and icon for notifications
-//   gjoin        -> { c, at }: "Join" tapped on a group call's notification (sw.js, group.ts)
+//   gjoin        -> { c, id, at }: "Join" tapped on a group call's notification (sw.js, group.ts)
 
 const DB = 'thread';
 const STORE = 'kv';

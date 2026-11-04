@@ -2,7 +2,7 @@ import { signal } from '@preact/signals';
 import { api } from './api';
 import { rand, toB64u } from './crypto';
 import { refreshDevices, remember, remembered } from './devices';
-import { downloadDiagnostics } from './diagnostics';
+import { beginDiagnostics, downloadDiagnostics } from './diagnostics';
 import { mobile } from './pwa';
 import { hangupTone, playSound } from './sounds';
 import { type BgId, type EffectId, type Effects, type Look, startEffects } from './effects';
@@ -26,6 +26,9 @@ import {
   socketHold,
   wsSend,
 } from './store';
+
+import { NetworkPolicy, type NetworkMode, videoBudget } from './network-policy';
+import { networkMode, rememberNetworkMode } from './network';
 
 // 1:1 calls over WebRTC. Signaling rides the chat WebSocket, sealed with
 // the chat key; media goes device to device (or through our TURN relay),
@@ -58,6 +61,7 @@ export interface CallView {
   camOff: boolean;
   since?: number;
   reconnecting?: boolean;
+  networkReduced?: boolean;
   q?: Quality;
   peerCamOff?: boolean; // told over the call's own data channel
   peerMuted?: boolean;
@@ -79,7 +83,7 @@ export const call = signal<CallView | null>(null);
 
 const RING_MS = 45_000;
 const LOST_MS = 30_000; // no media for this long ends the call
-const VIDEO_BITRATE = 2_500_000; // 720p30, plenty for a face
+const networkPolicy = new NetworkPolicy();
 // Music waits this long in the jitter buffer (Chrome, Firefox): the buffer
 // stops stretching and squeezing it (audible in music, not in speech), and
 // the music is a quarter second behind the voice, which no one notices.
@@ -100,6 +104,7 @@ let stopTone: (() => void) | null = null;
 let wake: WakeLockSentinel | null = null;
 let state: RTCDataChannel | null = null; // camera and microphone state, device to device
 let mic: Mic | null = null; // what the call sends: the microphone, perhaps processed
+let history: ReturnType<typeof beginDiagnostics> | null = null;
 const ended = new Set<string>(); // calls that ended before they rang here
 const device = videoOrder(navigator.userAgent);
 
@@ -117,6 +122,7 @@ function quiet() {
   stopTone = null;
   clearTimeout(ringTimer);
   void clear('call'); // answered, declined, taken elsewhere or over
+  void clear('call-ended');
 }
 quiet(); // a ring left on screen from before the app opened
 
@@ -124,6 +130,7 @@ quiet(); // a ring left on screen from before the app opened
 // The buttons on the call notification (notify.ts, sw.js).
 navigator.serviceWorker?.addEventListener('message', (e) => {
   if (e.data?.t !== 'call' || call.value?.phase !== 'incoming') return;
+  if (e.data.id !== call.value.id || e.data.c !== call.value.chat) return;
   if (e.data.k === 'answer') void accept(call.value.video);
   else if (e.data.k === 'decline') decline();
 });
@@ -143,12 +150,17 @@ const CAMERA = (camId = remembered('callCam')): MediaTrackConstraints => ({
 export const speaker = signal(remembered('callSpeaker'));
 
 async function media(video: boolean): Promise<MediaStream> {
+  const trace = history;
+  trace?.mark('media-request');
   const id = remembered('callMic');
+  const version = videoVersion;
   const s = await navigator.mediaDevices.getUserMedia({
     audio: micConstraints(id ? { ideal: id } : undefined),
     video: video ? CAMERA() : false,
   });
+  if (version !== videoVersion) for (const track of s.getVideoTracks()) { track.stop(); s.removeTrack(track); }
   hint(s);
+  trace?.mark('media-ready');
   void refreshDevices(); // labels and the full list appear after the permission
   return s;
 }
@@ -263,6 +275,7 @@ function codecs(p: RTCPeerConnection, offering: boolean) {
 async function senders(p: RTCPeerConnection) {
   const music = musicSlot(p)?.sender;
   for (const s of p.getSenders()) {
+    if (pc !== p) return;
     if (!s.track) continue;
     const params = s.getParameters();
     const enc = params.encodings?.[0];
@@ -270,11 +283,38 @@ async function senders(p: RTCPeerConnection) {
     if (s.track.kind === 'audio') {
       enc.priority = enc.networkPriority = s === music ? 'medium' : 'high';
     } else {
-      enc.maxBitrate = VIDEO_BITRATE;
-      enc.maxFramerate = 30;
+      Object.assign(enc, videoBudget(!!call.value?.networkReduced, !!call.value?.screen));
     }
     await s.setParameters(params).catch(() => {});
   }
+}
+
+const senderUpdates = new WeakMap<RTCPeerConnection, () => Promise<void>>();
+function configureSenders(p: RTCPeerConnection) {
+  let run = senderUpdates.get(p);
+  if (!run) { run = latest(() => senders(p)); senderUpdates.set(p, run); }
+  return run();
+}
+function updateNetwork(quality?: Level, p = pc) {
+  if (!p || pc !== p || !call.value) return;
+  const reduced = networkPolicy.observe(networkMode.value, quality);
+  if (!!call.value.networkReduced === reduced) return;
+  update({ networkReduced: reduced });
+  if (reduced && networkMode.value === 'auto') showToast(t('call.networkAutoReduced'));
+  void configureSenders(p);
+}
+export function selectNetworkMode(mode: NetworkMode) { rememberNetworkMode(mode); updateNetwork(); }
+export async function stopOwnVideo() {
+  const v = call.value;
+  if (!v) return;
+  videoVersion++;
+  camBefore = false;
+  if (v.screen && !v.playerMusic) void stopSound();
+  dropEffects();
+  v.local?.getVideoTracks().forEach((track) => track.stop());
+  update({ local: new MediaStream(v.local?.getAudioTracks() ?? []), camOff: true, screen: false, effect: undefined, bg: undefined });
+  sendState();
+  await senderOf('video')?.replaceTrack(null).catch(() => {});
 }
 
 async function localDescription(p: RTCPeerConnection, d: RTCSessionDescriptionInit) {
@@ -347,14 +387,16 @@ async function connect(local: MediaStream, id: string): Promise<RTCPeerConnectio
     if (!v || pc !== p) return;
     const st = p.connectionState;
     if (st === 'connected') {
+      history?.mark(v.reconnecting ? 'reconnected' : 'connected');
       clearTimeout(lostTimer);
       clearTimeout(retryTimer);
       lostTimer = retryTimer = undefined;
       if (v.phase !== 'active') {
         quiet();
         outcome = 'ok';
+        playSound('join');
         update({ phase: 'active', since: Date.now() });
-        senders(p);
+        void configureSenders(p);
         statsTimer ??= setInterval(sample, 2000);
       } else if (v.reconnecting) update({ reconnecting: false });
     } else if (st === 'disconnected' || st === 'failed') {
@@ -363,15 +405,19 @@ async function connect(local: MediaStream, id: string): Promise<RTCPeerConnectio
     }
   };
   pc = p;
+  networkPolicy.reset();
+  updateNetwork(undefined, p);
   return p;
 }
 
 // lost: media stopped mid-call. Re-negotiate now and every 5 s (the socket
 // may be reconnecting too) until it connects again; give up after LOST_MS.
 function lost(now: boolean) {
+  history?.mark('disconnected');
   update({ reconnecting: true });
-  lostTimer ??= setTimeout(() => hangup('failed'), LOST_MS);
+  lostTimer ??= setTimeout(() => { history?.mark('timeout'); hangup('failed'); }, LOST_MS);
   if (retryTimer) return;
+  networkPolicy.observe(networkMode.value);
   const again = () => {
     void renegotiate();
     retryTimer = setTimeout(again, 5000);
@@ -385,6 +431,7 @@ async function renegotiate() {
   const v = call.value;
   const p = pc;
   if (!v || !p || v.phase !== 'active') return;
+  history?.mark('ice-restart');
   if (!caller) {
     wsSend({ t: 'call', k: 'restart', c: v.chat, id: v.id, to: peerDevice });
     return;
@@ -405,7 +452,7 @@ async function renegotiate() {
 
 // A new network (Wi-Fi to mobile data) gets a fresh path at once instead
 // of waiting for the old one to time out.
-const onNetwork = () => void renegotiate();
+const onNetwork = () => { history?.mark('network-change'); void renegotiate(); };
 addEventListener('online', onNetwork);
 // navigator.connection (Network Information API) is missing from lib.dom.
 (navigator as Navigator & { connection?: EventTarget }).connection?.addEventListener('change', onNetwork);
@@ -448,8 +495,11 @@ async function sample() {
     q.kbps = Math.round(((bytes - prev.bytes) * 8) / (now - prev.at));
     q.level = rate(rtt, dl + dg > 0 ? (100 * dl) / (dl + dg) : 0);
   }
+  const fresh = !!prev && (got > prev.got || lost > prev.lost);
   prev = { at: now, bytes, lost, got };
+  if (fresh && p.connectionState === 'connected' && !call.value?.reconnecting) history?.mark(`quality-${q.level}`, { rtt });
   if (pc === p) update({ q });
+  updateNetwork(fresh && p.connectionState === 'connected' && !call.value?.reconnecting ? q.level : undefined, p);
 }
 
 async function flushIce() {
@@ -465,13 +515,17 @@ async function flushIce() {
 }
 
 function fail(e: unknown) {
+  history?.mark('error');
   const name = (e as DOMException)?.name;
+  history?.mark(name === 'NotAllowedError' ? 'permission-denied' : name === 'NotFoundError' ? 'device-unavailable' : 'media-error');
   showToast(name === 'NotAllowedError' || name === 'NotFoundError' ? t('call.noMedia') : errText(e));
   hangup('failed');
 }
 
 export async function startCall(chatId: number, peer: number, video: boolean) {
   if (call.value || groupCall.value) return;
+  history = beginDiagnostics('direct');
+  history.mark('starting');
   const id = toB64u(rand(9));
   caller = true;
   outcome = 'missed';
@@ -487,7 +541,7 @@ export async function startCall(chatId: number, peer: number, video: boolean) {
     if (!p || call.value?.id !== id) return;
     // A voice call opens a video slot too (no media flows until a camera is
     // on), so either side can turn its camera on later without renegotiating.
-    if (!video) p.addTransceiver('video', { direction: 'sendrecv' });
+    if (!local.getVideoTracks().length) p.addTransceiver('video', { direction: 'sendrecv' });
     p.addTransceiver('audio', { direction: 'sendrecv' }); // the music slot
     update({ canVideo: true });
     codecs(p, true);
@@ -573,10 +627,15 @@ function finish() {
 }
 
 function cleanup() {
+  if (history) {
+    history.finish(pc ? pc.getStats().then((r) => [r]) : Promise.resolve([]), { connection: pc?.connectionState ?? 'closed' });
+    history = null;
+  }
   // Only a call that rang or ran here ends with a sound: not a declined,
   // missed or elsewhere-answered one.
   const rang = !!call.value && call.value.phase !== 'incoming';
   quiet();
+  videoVersion++;
   clearTimeout(lostTimer);
   clearTimeout(retryTimer);
   clearInterval(statsTimer);
@@ -602,11 +661,13 @@ function cleanup() {
   camBefore = false;
   socketHold.call = false;
   releaseSocket();
+  networkPolicy.reset();
   call.value = null;
   if (rang) hangupTone(); // after the call's audio is gone: speaker, not earpiece
 }
 
 export function setMuted(muted: boolean) {
+  history?.mark(muted ? 'mic-muted' : 'mic-unmuted');
   const v = call.value;
   if (!v) return;
   v.local?.getAudioTracks().forEach((tr) => (tr.enabled = !muted));
@@ -621,20 +682,21 @@ export async function exportCallDiagnostics() {
   if (!p) return;
   const report = await p.getStats();
   if (pc !== p) return;
-  downloadDiagnostics('direct', [report], {connection: p.connectionState, ice: p.iceConnectionState, signaling: p.signalingState, reconnecting: !!call.value?.reconnecting});
+  downloadDiagnostics('direct', [report], {connection: p.connectionState, ice: p.iceConnectionState, signaling: p.signalingState, reconnecting: !!call.value?.reconnecting}, history?.snapshot());
 }
 
 // useCamera puts a fresh camera track (the chosen one) into the call and
 // the self view; the previous one is stopped.
-async function useCamera(): Promise<void> {
+async function useCamera(): Promise<boolean> {
   const v = call.value;
   const sender = senderOf('video');
-  if (!v || !sender) return;
+  if (!v || !sender) return false;
+  const version = ++videoVersion;
   const s = await navigator.mediaDevices.getUserMedia({ video: CAMERA() });
   hint(s);
   const track = s.getVideoTracks()[0];
   // The call ended, or a screen went in, while the camera was opening.
-  if (call.value?.id !== v.id || call.value.screen) return track.stop();
+  if (call.value?.id !== v.id || call.value.screen || version !== videoVersion) { track.stop(); return false; }
   const keep = wanted ?? fx?.look; // the look (also one still loading) moves over to the new camera
   try {
     await sender.replaceTrack(track);
@@ -642,12 +704,13 @@ async function useCamera(): Promise<void> {
     track.stop();
     throw e;
   }
-  if (call.value?.id !== v.id || call.value.screen) return track.stop();
+  if (call.value?.id !== v.id || call.value.screen || version !== videoVersion) { track.stop(); return false; }
   dropEffects(); // the old camera and its effect, now that they are not sent
   const now = call.value?.local;
   now?.getVideoTracks().forEach((tr) => tr.stop());
   update({ local: new MediaStream([...(now?.getAudioTracks() ?? []), track]), effect: undefined, bg: undefined });
   if (keep) void setLook(keep);
+  return true;
 }
 
 // Effects (effects.ts) put a canvas track in place of the camera, in the
@@ -746,9 +809,9 @@ export async function toggleCamera() {
   if (!v || !sender || v.screen) return;
   try {
     if (v.camOff) {
-      await useCamera();
+      if (!(await useCamera())) return;
       if (call.value?.id !== v.id) return;
-      if (pc) void senders(pc); // the new track gets the video caps
+      if (pc) void configureSenders(pc); // the new track gets the video caps
       if (!v.video) {
         update({ video: true }); // a voice call turns into a video call
         audioSession('auto'); // loudspeaker, as in a video call
@@ -811,11 +874,13 @@ let camBefore = false; // the camera was on when sharing began
 // own "Stop sharing" ends both.
 let screenSound: MediaStreamTrack | null = null;
 let choosing = false; // the browser's picker is open
+let videoVersion = 0; // invalidates late camera/screen permission results
 
 export async function shareScreen() {
   const v = call.value;
   const sender = senderOf('video');
   if (!v || !sender || v.screen || choosing) return;
+  const version = ++videoVersion;
   choosing = true;
   let s: MediaStream;
   try {
@@ -838,7 +903,7 @@ export async function shareScreen() {
   const sound = s.getAudioTracks()[0];
   track.contentHint = 'detail'; // text stays sharp: frames drop before resolution
   const now = call.value;
-  if (!now || now.id !== v.id) return s.getTracks().forEach((tr) => tr.stop()); // the call ended while choosing
+  if (!now || now.id !== v.id || version !== videoVersion) return s.getTracks().forEach((tr) => tr.stop());
   // Taken off the hidden-page handler first: sharing a tab hides this page,
   // and the handler would put the camera back over the screen.
   const effects = fx;
@@ -846,9 +911,14 @@ export async function shareScreen() {
   try {
     await sender.replaceTrack(track);
   } catch (e) {
-    fx = effects;
+    if (version === videoVersion && call.value?.id === v.id) fx = effects;
+    else { effects?.stop(); effects?.camera.stop(); }
     s.getTracks().forEach((tr) => tr.stop());
     return showToast(errText(e));
+  }
+  if (call.value?.id !== v.id || version !== videoVersion) {
+    effects?.stop(); effects?.camera.stop();
+    return s.getTracks().forEach((tr) => tr.stop());
   }
   camBefore = !now.camOff;
   effects?.stop();
@@ -861,7 +931,7 @@ export async function shareScreen() {
     void keepAwake();
   }
   if (sound) await shareSound(sound);
-  if (pc) void senders(pc);
+  if (pc) void configureSenders(pc);
   sendState();
 }
 
@@ -891,6 +961,7 @@ async function shareSound(sound: MediaStreamTrack, fromPlayer = false) {
     return;
   }
   if (screenSound !== sound || !(fromPlayer || call.value?.screen)) return; // stopped meanwhile
+  if (pc) void configureSenders(pc);
   update({ music: true, playerMusic: fromPlayer });
   if (fromPlayer) sendState();
   showToast(t(fromPlayer ? 'music.headphones' : 'call.soundHeadphones'));
@@ -921,9 +992,10 @@ export async function stopScreen() {
   sendState(); // the other side stops showing the last frame at once
   if (camBefore) {
     try {
-      await useCamera();
+      if (!(await useCamera())) return;
       if (call.value?.id !== v.id || call.value.screen) return;
       update({ camOff: false });
+      if (pc) void configureSenders(pc);
       return sendState();
     } catch {
       if (call.value?.id === v.id) showToast(t('call.noMedia'));
@@ -1025,6 +1097,8 @@ async function onSignal(ev: Record<string, unknown>) {
         if (groupCall.value?.phase === 'incoming') declineGroup();
         offer = { body: ev.body as string, e: ev.e as number, dev: ev.dev as number };
         caller = false;
+        history = beginDiagnostics('direct');
+        history.mark('incoming');
         socketHold.call = true;
         call.value = { id, chat: ev.c as number, peer: ev.from as number, video: !!ev.v, phase: 'incoming', muted: pushToTalk.value, camOff: !ev.v };
         stopTone = ringtone();
@@ -1100,5 +1174,6 @@ async function onSignal(ev: Record<string, unknown>) {
 // network must not overtake the re-offer it belongs to.
 let queue = Promise.resolve();
 setCallHandler((e) => {
+  if (e.t === 'open' || e.t === 'close') { history?.mark(e.t === 'open' ? 'signaling-open' : 'signaling-close'); return; }
   queue = queue.then(() => onSignal(e));
 });

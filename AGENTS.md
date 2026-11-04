@@ -9,6 +9,7 @@ Read before changing anything:
 - `docs/adr/0002-group-calls.md`: group calls through the LiveKit SFU, frame encryption with a sealed call key, what the server sees.
 - `docs/adr/0003-mic-processing.md`: RNNoise and the voice gate on computers, the call's own microphone chain.
 - `docs/adr/0004-music.md`: the app's player and music into calls.
+- `docs/agent-guide.md`: what to do before a review, invariants from real bugs, how author and reviewer agents work together.
 - `PROJECT_GRAPH.md`: modules, flows, patterns.
 - `SECURITY.md`: what the design promises and what it does not.
 
@@ -29,6 +30,7 @@ Read before changing anything:
 go run ./cmd/thread                  # server on :8080, data in ./data, serves web/dist
 cd web && npm run dev                # Vite on :5173, proxies /api (incl. WebSocket) to :8080
 cd web && npm run build              # tsc + production bundle into web/dist
+scripts/check.sh                     # everything to run before a review
 gofmt -l . && go vet ./... && golangci-lint run && go test -race ./...
 cd web && npm test                   # node:test: crypto, i18n, call tuning (no extra deps)
 cd web && npm run test:proxy         # the dev proxy for /api and /lk (needs :8080 free)

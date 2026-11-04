@@ -1,3 +1,4 @@
+import { NetworkPolicy, videoBudget } from './network-policy.ts';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { stripTypeScriptTypes } from 'node:module';
@@ -19,6 +20,7 @@ const deferred = <T>() => {
 };
 
 function setup() {
+  const serviceMessages: ((e: { data: Record<string, unknown> }) => void)[] = [];
   const requests: ReturnType<typeof deferred<Stream>>[] = [];
   const tracks: Track[] = [],
     peers: Peer[] = [],
@@ -29,6 +31,7 @@ function setup() {
     kind = 'audio';
     enabled = true;
     readyState = 'live';
+    addEventListener() {}
     stop() {
       this.readyState = 'ended';
     }
@@ -38,6 +41,7 @@ function setup() {
     constructor(tracks: Track[] = []) {
       this.tracks = tracks;
     }
+    removeTrack(track: Track) { this.tracks = this.tracks.filter((t) => t !== track); }
     getTracks() {
       return this.tracks;
     }
@@ -54,6 +58,8 @@ function setup() {
       sender: { track: null; replaceTrack: () => Promise<void> };
       direction: string;
     }[] = [];
+    connectionState = 'new';
+    onconnectionstatechange: (() => void) | null = null;
     closed = false;
     signalingState = 'stable';
     localDescription: unknown;
@@ -92,21 +98,25 @@ function setup() {
       this.remoteDescription = d;
       this.signalingState = 'stable';
     }
+    async getStats() { return new Map(); }
     close() {
       this.closed = true;
     }
   }
+  const sounds: string[] = [];
   const no = () => {};
   const sandbox = {
     signal: (value: unknown) => ({ value }),
+    beginDiagnostics: () => ({ mark() {}, snapshot: () => [], finish() {} }),
     rand: () => new Uint8Array([++next]),
     toB64u: (b: Uint8Array) => `call-${b[0]}`,
     remembered: () => '',
     remember: no,
     refreshDevices: no,
     mobile: false,
-    playSound: () => no,
-    hangupTone: no,
+    soundEvents: sounds,
+    playSound: (kind: string) => { sounds.push(kind); return no; },
+    hangupTone: () => sounds.push('leave'),
     pushToTalk: { value: false },
     errText: String,
     t: (x: string) => x,
@@ -135,8 +145,10 @@ function setup() {
     idbSet: async () => {},
     api: { turn: async () => ({ ice_servers: [] }) },
     navigator: {
+      serviceWorker: { addEventListener: (_name: string, fn: (e: { data: Record<string, unknown> }) => void) => serviceMessages.push(fn) },
       userAgent: 'mock',
       mediaDevices: {
+        getDisplayMedia: () => { const d = deferred<Stream>(); requests.push(d); return d.promise; },
         getUserMedia: () => {
           const d = deferred<Stream>();
           requests.push(d);
@@ -144,6 +156,7 @@ function setup() {
         },
       },
     },
+    NetworkPolicy, videoBudget, networkMode: {value:'auto'}, rememberNetworkMode() {},
     document: { visibilityState: 'visible', addEventListener: no },
     addEventListener: no,
     MediaStream: Stream,
@@ -159,26 +172,44 @@ function setup() {
     Uint8Array,
   };
   const context = vm.createContext(sandbox);
-  vm.runInContext(code + '\nglobalThis.subject = {startCall, accept, hangup, call, onSignal};', context);
+  vm.runInContext(code + '\nglobalThis.subject = {startCall, accept, hangup, call, onSignal, stopOwnVideo, toggleCamera, shareScreen, prepareScreen(){camBefore=true;call.value={...call.value,phase:"active",screen:true,camOff:false};}};', context);
   const subject = (
     context as unknown as {
       subject: {
         startCall: (chat: number, peer: number, video: boolean) => Promise<void>;
         accept: (video: boolean) => Promise<void>;
         hangup: () => void;
+        toggleCamera: () => Promise<void>; shareScreen: () => Promise<void>;
+        stopOwnVideo: () => Promise<void>; prepareScreen: () => void;
         call: { value: { id: string; phase: string } | null };
         onSignal: (e: Record<string, unknown>) => Promise<void>;
       };
     }
   ).subject;
-  const allow = (i = requests.length - 1) => {
+  const allow = (i = requests.length - 1, kind = 'audio', withAudio = false) => {
     const tr = new Track();
+    tr.kind = kind;
     tracks.push(tr);
-    requests[i].resolve(new Stream([tr]));
+    const audio = withAudio ? new Track() : null;
+    if (audio) tracks.push(audio);
+    requests[i].resolve(new Stream(audio ? [audio, tr] : [tr]));
     return tr;
   };
-  return { ...subject, sandbox, requests, allow, tracks, peers, sent, tick: () => new Promise<void>((r) => setImmediate(r)) };
+  return { ...subject, sandbox, requests, allow, tracks, peers, sent, serviceMessages, tick: () => new Promise<void>((r) => setImmediate(r)) };
 }
+
+test('a stale notification action cannot accept or decline a different incoming call', async () => {
+  const s = setup();
+  await s.onSignal({ k: 'offer', id: 'current', c: 1, from: 2, dev: 20, e: 1, body: 'sealed' });
+  for (const k of ['answer', 'decline']) s.serviceMessages.forEach((fn) => fn({ data: { t: 'call', k, id: 'old', c: 1 } }));
+  assert.equal(s.call.value?.phase, 'incoming');
+  assert.equal(s.requests.length, 0);
+  s.serviceMessages.forEach((fn) => fn({ data: { t: 'call', k: 'answer', id: 'current', c: 1 } }));
+  assert.equal(s.requests.length, 1);
+  s.hangup();
+  s.allow();
+  await s.tick();
+});
 
 test('cancelled outgoing permissions leave no microphone, peer or offer', async () => {
   const s = setup();
@@ -202,6 +233,20 @@ test('push-to-talk starts muted from live preferences even when storage cannot p
   const track = s.allow();
   await start;
   assert.equal(track.enabled, false);
+});
+
+test('a direct call chimes once on connection, stays quiet on reconnect and chimes once on exit', async () => {
+  const s = setup();
+  const starting = s.startCall(1, 2, false);
+  s.allow(); await starting;
+  const peer = s.peers[0];
+  peer.connectionState = 'connected'; peer.onconnectionstatechange!();
+  peer.onconnectionstatechange!();
+  peer.connectionState = 'disconnected'; peer.onconnectionstatechange!();
+  peer.connectionState = 'connected'; peer.onconnectionstatechange!();
+  assert.equal(s.sandbox.soundEvents.filter((kind) => kind === 'join').length, 1);
+  s.hangup(); s.hangup();
+  assert.equal(s.sandbox.soundEvents.filter((kind) => kind === 'leave').length, 1);
 });
 
 test('a delayed notification lookup cannot ring after the incoming call was cancelled', async () => {
@@ -308,3 +353,47 @@ for (const kind of ['answer', 'ice'])
     assert.equal(s.peers[1].remoteDescription, undefined);
     assert.equal(s.peers[1].closed, false);
   });
+
+
+test('turning off all own video does not reopen a camera when leaving screen share', async () => {
+  const s=setup();
+  const start=s.startCall(1,2,false);
+  s.allow(); await start;
+  s.prepareScreen();
+  const off=s.stopOwnVideo();
+  await s.tick();
+  assert.equal(s.requests.length,1,'must not request camera access to turn video off');
+  await off;
+  s.hangup();
+});
+
+
+for (const action of ['toggleCamera', 'shareScreen'] as const) test(`all-video-off cancels a pending ${action} capture`, async () => {
+  const s = setup();
+  const start = s.startCall(1,2,false); s.allow(); await start;
+  const opening = s[action]();
+  await s.stopOwnVideo();
+  const track = s.allow(1, 'video');
+  await opening;
+  assert.equal(track.readyState, 'ended');
+  assert.equal((s.call.value as unknown as {camOff:boolean}).camOff, true);
+  s.hangup();
+});
+
+test('cancelled initial video capture still negotiates a video slot that can send later', async () => {
+  const s = setup();
+  const opening = s.startCall(1, 2, true);
+  await s.stopOwnVideo();
+  const cancelled = s.allow(0, 'video', true);
+  await opening;
+  assert.equal(cancelled.readyState, 'ended');
+  const video = s.peers[0].getTransceivers().find((tr) => tr.receiver.track.kind === 'video');
+  assert.ok(video, 'the offer must retain a video slot even when permission was cancelled');
+  const enabling = s.toggleCamera();
+  assert.equal(s.requests.length, 2, 'later camera enable must actually request a track');
+  const next = s.allow(1, 'video');
+  await enabling;
+  assert.equal(next.readyState, 'live');
+  assert.equal((s.call.value as unknown as {camOff:boolean}).camOff, false);
+  s.hangup();
+});

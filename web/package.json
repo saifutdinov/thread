@@ -7,7 +7,9 @@
     "build": "tsc --noEmit && vite build && node scripts/brotli.mjs",
     "check": "tsc --noEmit",
     "test": "node --experimental-strip-types --no-warnings --test src/lib/*.test.ts",
-    "test:proxy": "node --experimental-strip-types --no-warnings --test scripts/proxy.test.ts"
+    "test:proxy": "node --experimental-strip-types --no-warnings --test scripts/proxy.test.ts",
+    "test:calls:setup": "node scripts/install-livekit.mjs",
+    "test:calls": "node scripts/call-failures.mjs"
   },
   "dependencies": {
     "@mediapipe/tasks-vision": "1.1.1",
@@ -19,6 +21,7 @@
   },
   "devDependencies": {
     "@preact/preset-vite": "2.10.6",
+    "playwright": "1.62.1",
     "typescript": "7.0.2",
     "vite": "8.3.4"
   },

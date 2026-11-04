@@ -24,6 +24,8 @@ import {
   toggleMute,
   setMuted,
   exportCallDiagnostics,
+  selectNetworkMode,
+  stopOwnVideo,
 } from '../lib/call';
 import { cameras, canPickOutput, canSetVolume, remember, remembered } from '../lib/devices';
 import { BACKGROUNDS, EFFECTS } from '../lib/effects';
@@ -582,6 +584,9 @@ export function CallScreen() {
             onSpeaker={selectSpeaker}
             reopen={reopenMic}
             diagnostics={exportCallDiagnostics}
+            onNetwork={selectNetworkMode}
+            networkReduced={!!c.networkReduced}
+            onVideoOff={stopOwnVideo}
           />
         )}
       </dialog>
