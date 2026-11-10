@@ -207,7 +207,21 @@ jobs:
         working-directory: desktop/app
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: false
+          # Sign pull requests too: ad-hoc needs no secrets, and the check
+          # below sees what a release ships.
+          CSC_FOR_PULL_REQUEST: true
         run: npx electron-builder --publish never -c.extraMetadata.version="$VERSION"
+      - name: The Mac app may use the microphone and the camera
+        if: runner.os == 'macOS'
+        working-directory: desktop/app
+        run: |
+          # Without these entitlements macOS refuses both without asking.
+          for app in dist/mac*/Thread.app dist/mac*/Thread.app/Contents/Frameworks/*Helper*.app; do
+            e="$(codesign -d --entitlements - --xml "$app")"
+            for k in device.audio-input device.camera; do
+              grep -q "com.apple.security.$k" <<<"$e" || { echo "::error::$app lacks com.apple.security.$k"; exit 1; }
+            done
+          done
       - uses: actions/upload-artifact@v4.6.2
         with:
           name: desktop-${{ runner.os }}

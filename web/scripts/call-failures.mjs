@@ -35,10 +35,11 @@ const freePort = (protocol = 'tcp') =>
       s.bind(0, '127.0.0.1');
     } else s.listen(0, '127.0.0.1', ready);
   });
-const port = await freePort(),
-  signalPort = await freePort(),
+const signalPort = await freePort(),
   mediaPort = await freePort('udp');
-const base = `http://localhost:${port}`;
+// The app's port is picked once LiveKit is up: LiveKit binds ephemeral ports
+// of its own and could take one picked earlier.
+let port, base;
 const contexts = [],
   processes = new Set(),
   errors = [];
@@ -283,6 +284,8 @@ try {
     `port: ${signalPort}\nbind_addresses: [127.0.0.1]\nrtc:\n  node_ip: 127.0.0.1\n  use_external_ip: false\n  udp_port: ${mediaPort}\n  tcp_port: 0\nkeys:\n  test: local-test-secret-with-at-least-32-bytes\nlogging:\n  level: error\n`,
   );
   await startSFU();
+  port = await freePort();
+  base = `http://localhost:${port}`;
   await startApp();
   await eventually(async () => !!bootstrap, 'No bootstrap invitation');
   const a = await page(),
