@@ -6,6 +6,7 @@ import { LockScreen } from './components/Security';
 import { initLock, locked } from './lib/lock';
 import './lib/attention';
 import { initPrefs } from './lib/prefs';
+import { startAndroid } from './lib/android';
 import { registerSW } from './lib/pwa';
 import { route } from './lib/route';
 import { screen, start } from './lib/store';
@@ -50,6 +51,7 @@ initPrefs();
 void loadWallPhoto();
 trackViewport();
 registerSW();
+void startAndroid();
 render(
   <>
     <App />

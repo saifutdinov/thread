@@ -272,6 +272,12 @@ func (s *Server) readWS(ctx context.Context, conn *websocket.Conn, c *client) {
 		if json.Unmarshal(b, &in) != nil {
 			continue
 		}
+		if in.T == "ping" {
+			// The page cannot see the protocol's pings: an answer tells it this
+			// socket still carries events (web/src/lib/liveness.ts).
+			s.hub.deliver(c, []byte(`{"t":"pong"}`))
+			continue
+		}
 		if in.T == "vis" {
 			if s.hub.setHidden(c, in.H) {
 				s.presenceChanged(ctx, c.user, !in.H)

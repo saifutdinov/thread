@@ -82,7 +82,7 @@ export function startRecording(stream: MediaStream, kind: 'audio' | 'video', ctx
     mime = types[i];
     const aac = !!mime?.includes('mp4');
     const opts: MediaRecorderOptions = { mimeType: mime };
-    if (kind === 'video') opts.videoBitsPerSecond = 1_000_000;
+    if (kind === 'video') opts.videoBitsPerSecond = 2_000_000; // a round video: small, but not blurry
     if (!aac) opts.audioBitsPerSecond = kind === 'audio' ? 48_000 : 64_000;
     try {
       rec = new MediaRecorder(stream, mime ? opts : undefined);

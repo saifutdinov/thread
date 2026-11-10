@@ -33,6 +33,21 @@ step web
 	npm run build
 )
 
+step desktop
+(
+	cd desktop/app
+	[ -d node_modules ] || npm ci
+	npm test
+)
+
+step android
+# Needs the Android SDK (docs/apps.md); CI always runs it.
+if [ -n "${ANDROID_HOME:-}" ] || [ -f android/local.properties ]; then
+	(cd android && gradle --quiet testDebugUnitTest)
+else
+	echo "skipped: no Android SDK here (set ANDROID_HOME)"
+fi
+
 step restore checker
 python3 -m unittest discover -s scripts -p '*_test.py'
 

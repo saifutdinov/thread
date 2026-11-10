@@ -37,8 +37,24 @@ need_docker() {
 # The checkout's version (a tag, or tag-commits-hash on main) goes into the
 # image: /healthz reports it, and open pages offer a reload when it changes.
 compose() {
+	# The folders the compose file mounts: a missing one Docker would make as root.
+	mkdir -p "$ROOT/secrets" "$ROOT/downloads"
 	THREAD_VERSION="$(git -C "$ROOT" describe --tags --always 2>/dev/null || echo dev)" \
+		THREAD_WEB="$(web_version)" \
 		docker compose -f "$ROOT/deploy/docker-compose.yml" --env-file "$ENV_FILE" "$@"
+}
+
+# web_version: the interface's version, a hash of web/ without the patch
+# notes. The apps built from the same commit carry the same one, so a server
+# update that leaves the interface alone does not ask them to reinstall.
+# Not a git checkout: dev, which the apps never compare.
+web_version() {
+	local tree
+	tree="$(git -C "$ROOT" ls-tree -r HEAD web 2>/dev/null)" && [ -n "$tree" ] || {
+		echo dev
+		return
+	}
+	printf '%s\n' "$tree" | grep -v 'web/src/lib/patch-notes\.ts$' | git hash-object --stdin | cut -c1-12
 }
 
 load_env() {

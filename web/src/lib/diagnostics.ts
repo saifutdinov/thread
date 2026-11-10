@@ -149,10 +149,15 @@ export function beginDiagnostics(kind: 'direct' | 'group') {
 
 function download(data: Diagnostic) {
   const url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }));
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = 'thread-call-diagnostics.json';
-  a.click();
+  // save.ts inlined: this module has no local imports, its tests run under plain Node.
+  const app = (globalThis as { connectApp?: { save?(url: string, name: string): void } }).connectApp;
+  if (app?.save) app.save(url, 'thread-call-diagnostics.json');
+  else {
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'thread-call-diagnostics.json';
+    a.click();
+  }
   setTimeout(() => URL.revokeObjectURL(url), 40_000);
 }
 

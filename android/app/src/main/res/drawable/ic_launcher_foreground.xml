@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The two bubbles of web/public/icon.svg, inside the adaptive icon's safe zone. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp" android:height="108dp"
+    android:viewportWidth="108" android:viewportHeight="108">
+    <group android:scaleX="0.14" android:scaleY="0.14" android:translateX="18" android:translateY="11.9">
+        <path android:fillColor="#FFFFFF" android:pathData="M150,150h150a46,46 0,0 1,46 46v86a46,46 0,0 1,-46 46h-78l-58,46v-46h-14a46,46 0,0 1,-46 -46v-86a46,46 0,0 1,46 -46z" />
+        <path android:fillColor="#FFFFFF" android:fillAlpha="0.6" android:pathData="M370,214h-6v68a64,64 0,0 1,-64 64h-62v12a40,40 0,0 0,40 40h50l48,38v-38h-6a40,40 0,0 0,40 -40v-104a40,40 0,0 0,-40 -40z" />
+    </group>
+</vector>

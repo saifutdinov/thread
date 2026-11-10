@@ -227,12 +227,12 @@ async function enter(path: string, token: string, key: string, video: boolean, s
   if (stale()) return;
   const w = new E2EEWorker();
   worker = w;
-  const mic = remembered('callMic');
+  micChoice = speakerChoice = ''; // a new call: the system's microphone and speaker (call.ts speaker)
   const cam = remembered('callCam');
   const r = new lk.Room({
     adaptiveStream: true, // pictures off screen or small are fetched small, or not at all
     dynacast: true, // nobody watches a layer: it is not sent
-    audioCaptureDefaults: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1, deviceId: mic || undefined }, // only if ours below failed
+    audioCaptureDefaults: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1, deviceId: undefined }, // only if ours below failed
     videoCaptureDefaults: { resolution: lk.VideoPresets.h540.resolution, facingMode: 'user', deviceId: cam || undefined },
     // DTX: most people are silent most of the time. No RED: it doubles the
     // sound for every listener and does not pass the frame encryption.
@@ -343,7 +343,7 @@ async function enter(path: string, token: string, key: string, video: boolean, s
   pendingMicrophones.add(request);
   try {
     trace?.mark('media-request');
-    const own = await processedMic(request, mic || undefined);
+    const own = await processedMic(request, undefined); // the system's microphone
     if (stale()) own?.close();
     else if (own) {
       await publishMic(r, own);
@@ -479,10 +479,10 @@ export const reopenGroupMic = latest(async () => {
   let opened = false;
   try {
     // The one picked in the call's settings, else the one in use.
-    own = await processedMic(request, remembered('callMic') || (previousMic?.raw ?? pub?.track?.mediaStreamTrack)?.getSettings().deviceId);
+    own = await processedMic(request, micChoice || (previousMic?.raw ?? pub?.track?.mediaStreamTrack)?.getSettings().deviceId);
     if (room !== r) return own?.close();
     if (!own && !gmic) {
-      await r.switchActiveDevice('audioinput', remembered('callMic') || 'default');
+      await r.switchActiveDevice('audioinput', micChoice || 'default');
       return; // already using LiveKit's microphone, with the latest input
     }
     if (pub?.track) await p.unpublishTrack(pub.track);
@@ -493,7 +493,7 @@ export const reopenGroupMic = latest(async () => {
       await publishMic(r, own);
       opened = true;
     } else {
-      await r.switchActiveDevice('audioinput', remembered('callMic') || 'default');
+      await r.switchActiveDevice('audioinput', micChoice || 'default');
       if (room !== r) return;
       if (!desiredMute) {
         await p.setMicrophoneEnabled(true);
@@ -524,11 +524,14 @@ export function groupDevices(): { mic?: string; cam?: string } {
   return { mic: mic?.getSettings().deviceId, cam: (cam?.readyState === 'live' && cam.getSettings().deviceId) || remembered('callCam') };
 }
 
-// selectGroupMic and selectGroupCamera switch devices mid-call, remembered as
-// in a 1:1 call. A processed microphone (ours) opens again on the new one;
-// LiveKit's own it switches itself, the camera too, and the speakers.
+// selectGroupMic and selectGroupCamera switch devices mid-call; the
+// microphone for this call only, the camera remembered as in a 1:1 call. A
+// processed microphone (ours) opens again on the new one; LiveKit's own it
+// switches itself, the camera too, and the speakers.
+let micChoice = '';
+let speakerChoice = '';
 export async function selectGroupMic(id: string) {
-  remember('callMic', id);
+  micChoice = id;
   if (gmic || (room && micStarting === room)) return reopenGroupMic();
   await room?.switchActiveDevice('audioinput', id).catch((e) => showToast(errText(e)));
 }
@@ -539,7 +542,10 @@ export async function selectGroupCamera(id: string) {
   update({ people: room ? people(room) : [] });
 }
 
-export const selectGroupSpeaker = (id: string) => room?.switchActiveDevice('audiooutput', id).catch(() => {});
+export const selectGroupSpeaker = (id: string) => {
+  speakerChoice = id;
+  return room?.switchActiveDevice('audiooutput', id).catch(() => {});
+};
 
 // toggleGroupScreen shares the screen as a track of its own, frame-encrypted
 // like the camera (computers only: canShareScreen), with its sound when it
@@ -676,7 +682,7 @@ function playRemote(track: RemoteTrack, _pub: unknown, participant: RemotePartic
   if (track.source === lk!.Track.Source.Unknown) (track as RemoteAudioTrack).setVolume(screenVolumes.value.get(participant.identity) ?? 1);
   const el = track.attach();
   audioBox.append(el);
-  const sink = remembered('callSpeaker');
+  const sink = speakerChoice;
   if (sink && 'setSinkId' in el) (el as HTMLAudioElement).setSinkId(sink).catch(() => {});
 }
 

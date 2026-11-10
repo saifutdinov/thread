@@ -33,6 +33,9 @@ export const DESIGNS = ['fresh', 'classic'] as const;
 export type Design = (typeof DESIGNS)[number];
 export const DEFAULT_DESIGN: Design = 'classic'; // Thread keeps its look; "New" is a choice in Settings
 export const design = signal<Design>(load('design', DESIGNS, DEFAULT_DESIGN));
+// A double tap on a message: a reply, as before, or a quick reaction.
+export const DOUBLE_TAPS = ['reply', '❤️', '👍'] as const;
+export const doubleTap = signal<(typeof DOUBLE_TAPS)[number]>(load('doubleTap', DOUBLE_TAPS, 'reply'));
 export const WALLPAPERS = ['theme', 'aurora', 'sunset', 'ocean', 'mint', 'doodles', 'photo'] as const;
 export type Wallpaper = (typeof WALLPAPERS)[number];
 export const wallpaper = signal<Wallpaper>(load('wallpaper', WALLPAPERS, 'theme'));
@@ -64,6 +67,7 @@ export function initPrefs() {
   });
   effect(() => save('linkPreviews', linkPreviews.value ? 'on' : 'off'));
   effect(() => save('callFit', callFit.value));
+  effect(() => save('doubleTap', doubleTap.value));
   effect(() => {
     document.documentElement.dataset.design = design.value;
     save('design', design.value);

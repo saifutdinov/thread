@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="channel_messages">Messages</string>
+    <string name="channel_calls">Incoming calls</string>
+    <string name="channel_ongoing">Call in progress</string>
+    <string name="channel_other">Other</string>
+    <string name="ongoing">Call in progress</string>
+    <string name="hangup">End call</string>
+    <string name="ongoing_hint">Tap to return to the call</string>
+    <string name="saved">Saved to Downloads: %1$s</string>
+    <string name="save_failed">Could not save the file</string>
+    <string name="fullscreen_title">Full-screen calls</string>
+    <string name="fullscreen_text">To see an incoming call on the lock screen like a phone call, allow Thread to show full-screen notifications.</string>
+    <string name="fullscreen_open">Open settings</string>
+    <string name="later">Later</string>
+    <string name="no_webview">This “Android System WebView” is too old for Thread. Update it in Google Play and open the app again.</string>
+</resources>

@@ -140,8 +140,18 @@ async function callStatus(data) {
   } catch { return null; }
 }
 
+// silentOK: this push service lets a push show nothing (push.go silentOK):
+// Chromium's do, Apple's and Mozilla's revoke or run out.
+async function silentOK() {
+  const sub = await self.registration.pushManager?.getSubscription().catch(() => null);
+  const host = sub ? new URL(sub.endpoint).hostname : '';
+  return !!host && !host.endsWith('push.apple.com') && !host.endsWith('mozilla.com');
+}
+
 async function inactiveCall(data, L) {
   await closeCall(data.id, !!data.g);
+  // A ring that came after its call ended: nothing to say about it.
+  if (await silentOK()) return;
   const existing = (await self.registration.getNotifications()).find((n) =>
     (n.tag === 'call' || n.tag === 'gcall' || n.tag === 'c' + data.c) &&
     !((n.tag === 'call' || n.tag === 'gcall') && n.data?.id === data.id));
@@ -244,7 +254,7 @@ async function onPush(d) {
     const text = (p.t || '').replace(/\*\*|__|~~|`/g, '').replace(/^>\s?/gm, '').trim();
     const a = p.a && p.a[0];
     const missed = p.cl && (p.cl.s === 'missed' || p.cl.s === 'busy');
-    body = p.cl ? (missed ? L.missed : L.callLog) : text || (!a ? L.msg : a.t === 'voice' ? L.voice : a.t === 'video' ? L.video : a.t === 'clip' ? L.clip : a.t === 'file' ? (a.ti ? `🎵 ${[a.ar, a.ti].filter(Boolean).join(' - ')}` : `📎 ${a.n || L.file}`) : L.photo);
+    body = p.cl ? (missed ? L.missed : L.callLog) : text || (!a ? L.msg : a.t === 'voice' ? L.voice : a.t === 'video' ? L.video : a.t === 'clip' ? L.clip : a.t === 'file' ? (a.ti ? `🎵 ${[a.ar, a.ti].filter(Boolean).join(' - ')}` : a.n ? `📎 ${a.n}` : L.file) : L.photo);
   }
   // A dot on the app icon until the app opens and shows the real count.
   if (self.navigator.setAppBadge) self.navigator.setAppBadge().catch(() => {});

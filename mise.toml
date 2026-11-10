@@ -2,3 +2,7 @@
 go = "1.27.0"
 node = "22.15.0"
 golangci-lint = "2.14.0"
+# The Android app (android/): AGP 9.4.1 needs JDK 17+ and Gradle 9.6+. The
+# Android SDK itself is not a mise tool: see docs/install-android.md.
+java = "temurin-17.0.20+8"
+gradle = "9.8.2"

@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name" translatable="false">Thread</string>
+    <string name="channel_messages">Сообщения</string>
+    <string name="channel_calls">Входящие звонки</string>
+    <string name="channel_ongoing">Идущий звонок</string>
+    <string name="channel_other">Прочее</string>
+    <string name="ongoing">Идёт звонок</string>
+    <string name="hangup">Завершить</string>
+    <string name="ongoing_hint">Нажмите, чтобы вернуться к звонку</string>
+    <string name="saved">Сохранено в «Загрузки»: %1$s</string>
+    <string name="save_failed">Не получилось сохранить файл</string>
+    <string name="fullscreen_title">Звонки на весь экран</string>
+    <string name="fullscreen_text">Чтобы входящий звонок появлялся на заблокированном экране, как обычный, разрешите Нитке полноэкранные уведомления.</string>
+    <string name="fullscreen_open">Открыть настройки</string>
+    <string name="later">Позже</string>
+    <string name="no_webview">Эта версия «Android System WebView» слишком старая для Нитки. Обновите её в Google Play и откройте приложение снова.</string>
+</resources>

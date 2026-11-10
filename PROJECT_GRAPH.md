@@ -7,6 +7,11 @@ cmd/thread             env config, pepper, `healthcheck` subcommand, wiring
 cmd/thread-hotkeys     Windows native messaging entry, physical key state, per-user install/uninstall with ownership checks (ADR 0005)
 internal/hotkeys       bounded native frames, one configured chord, rate-limited changes, release/rearm gate and heartbeat
 desktop/extension      Chrome/Edge bridge for the one origin set in its manifest, one tab owner, reconnect and cross-host binding rate limit
+desktop/app            Electron app (ADR 0007): bundled web build on the server's origin, guards, tray, notifications, screen picker, push-to-talk bridge,
+                       self-update from the signed manifest (lib/update.js, docs/updates.md)
+android/               Android app (ADR 0007): Kotlin WebView shell, bundled web build on the server's origin (Route), origin-locked bridge (Bridge),
+                       FCM pushes shown as sw.js does (Push, Words, Notes), Keystore-sealed copy of the keys pushes need (Kept), call ring and call service,
+                       the phone's photos and videos for the attach sheet at /_gallery (Gallery), self-update after a package and signer check (Update)
 desktop/make-dev-extension.mjs explicitly generates an ignored localhost dev build, separate from the distributed extension
 internal/server        the whole backend, one package
   server.go            Server, routes, security headers (CSP, Origin check), static PWA, cleanup loop
@@ -19,7 +24,9 @@ internal/server        the whole backend, one package
   recovery.go          recovery links: the inviter vouches, a new password and device
   media.go             encrypted blob upload/download, orphan cleanup
   hub.go               WebSocket fan-out, presence, typing, call signaling relay
-  push.go              Web Push (VAPID) with ciphertext payloads, silent read/call-end clears, test push, delivery counters
+  push.go              Web Push (VAPID) and app tokens (`fcm:` endpoints) with ciphertext payloads, silent read/call-end clears, test push, delivery counters
+  downloads.go         the apps' installers from DOWNLOADS_DIR, public at /api/downloads, only CI-named files, plus the signed update manifest
+  fcm.go               FCM HTTP v1 sender for the Android app: service-account JWT (RS256) traded for an access token, data-only messages, dead tokens dropped
   calls.go             1:1 call signaling (sealed SDP/ICE), TURN REST credentials
   call_state.go        pending calls, first answering tab/device, late-signal guards and expiry
                        exact-id call-status check for notification freshness (active chat members only)
@@ -45,7 +52,10 @@ web/                   Preact + Vite PWA
   src/lib/route.ts     hash router on real history entries; in memory in iOS home-screen apps (WebKit 215884)
   src/lib/i18n.ts      ru/en strings, plurals, date formats
   src/lib/prefs.ts     theme, text size, language effects
-  src/lib/pwa.ts       install prompt, push subscription, SW registration, new-release check
+  src/lib/pwa.ts       install prompt, push subscription (Web Push or the app's FCM token), SW registration, new-release check, the apps' bridge type
+  src/components/AttachSheet.tsx, Camera.tsx  phones: our camera (tap photo, hold video, flip, flash), the Android app's gallery, else the system picker
+  src/components/Downloads.tsx  installers on sign-in and in Settings, this system first, share links
+  src/lib/android.ts   Android app glue: keeps its copy of the push keys, call state for its foreground service, notification taps as sw.js messages
   src/lib/image.ts     client-side image, video poster, avatar and link-card picture preparation
   src/lib/notify.ts    system notifications from a page that is visible but behind another window
   src/lib/attention.ts unread count in the tab title and on the app icon, a ringing call in the title
@@ -69,6 +79,7 @@ web/                   Preact + Vite PWA
   src/lib/rtc.ts       call tuning without the DOM: Opus SDP params (voice, music slot), codec order per device, quality level
   src/lib/network-policy.ts hysteresis and camera/screen video budgets; music keeps its stereo 128 kbit/s SDP and medium priority
   src/lib/network.ts   per-device automatic/normal/economy preference, shared by personal and group calls
+  src/lib/liveness.ts  when to ask a quiet socket and when to give it up: a ping the page itself sends, the server answers
   src/lib/fullscreen.ts the page in full screen for a stream, a request that lands too late leaves again
   src/lib/patch-notes.ts what each release changed, RU and EN: the settings and the banner read it
   src/lib/tap.ts       the call screen's pure touch helpers: double tap, the small tile's width, where a dragged tile lands
@@ -94,7 +105,7 @@ deploy/                docker compose: app, Caddy (automatic HTTPS), coturn (hos
 scripts/               server setup, install, update, status (see scripts/README.md), check.sh (everything to run before a review)
 ```
 
-Dependencies: Go `modernc.org/sqlite` (pure Go, CGO-free static binary), `coder/websocket`, `golang.org/x/crypto/argon2`, `golang.org/x/time/rate`, `SherClockHolmes/webpush-go`, `filippo.io/age` (backup encryption; restore with the stock age CLI). Web: `preact`, `@preact/signals`, `unicode-emoji-json` (lazy chunk), `livekit-client` (lazy chunk, group calls only). Container: `livekit/livekit-server` (pinned by digest).
+Dependencies: Go `modernc.org/sqlite` (pure Go, CGO-free static binary), `coder/websocket`, `golang.org/x/crypto/argon2`, `golang.org/x/time/rate`, `SherClockHolmes/webpush-go`, `filippo.io/age` (backup encryption; restore with the stock age CLI). Web: `preact`, `@preact/signals`, `unicode-emoji-json` (lazy chunk), `livekit-client` (lazy chunk, group calls only). Container: `livekit/livekit-server` (pinned by digest). Android: `androidx.core`, `androidx.activity`, `androidx.webkit`, Firebase Messaging (BoM 35.1.0); FCM from the server needs no Go dependency (`fcm.go`).
 
 ## Flows
 
@@ -122,6 +133,7 @@ Dependencies: Go `modernc.org/sqlite` (pure Go, CGO-free static binary), `coder/
 
 | Pattern | Where | Why | Rejected alternative |
 |---|---|---|---|
+| IndexedDB write observer | `watchIdb` in `idb.ts`, `android.ts` | The Android app shows pushes with no page, so it needs the values `sw.js` reads; every write is copied as it lands | Reading the WebView's IndexedDB natively (no API); running the page's JS in a hidden WebView per push (slow, unreliable in the background) |
 | Idempotent send by client id | `handleSend`, `sendMessage` | Retries on flaky mobile networks must not duplicate messages | Server-side dedup by content: ambiguous for repeated texts |
 | Global change counter (`seq`) + tombstones | `messages.seq`, `/api/sync` | One cursor catches up edits, deletes and reactions after a dropped socket | Per-chat "since id": misses edits and deletes |
 | Lazy key rotation by the next writer | `chats.rotate`, `ensureEpoch`, `keyHoldersSQL` | Set on join, leave, device revoke and a week-old key; whoever writes next has the keys and is online. Only key holders may rotate | Server-driven rotation: impossible, the server has no keys |

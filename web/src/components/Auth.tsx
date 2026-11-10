@@ -1,4 +1,5 @@
 import type { ComponentChildren } from 'preact';
+import { Downloads } from './Downloads';
 import { useEffect, useState } from 'preact/hooks';
 import { api, ApiError } from '../lib/api';
 import { errText, lang, t } from '../lib/i18n';
@@ -164,6 +165,7 @@ export function LoginScreen() {
       <PasteInvite />
       <p class="muted small">{t('login.hint')}</p>
       <p class="muted small">{t('login.forgot')}</p>
+      <Downloads />
     </Card>
   );
 }

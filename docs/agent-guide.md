@@ -27,6 +27,8 @@ For any coding agent working on this repository. Read `AGENTS.md` first: its rul
 - Use one definition of "bad" and "good" samples. No packets in an interval is no data, not a good sample.
 - The sound slot (`musicSlot`) carries a screen's sound and the player's music. Stopping a screen share must not stop the player's music, and sender limits must not cut music unless the UI says so.
 - The app lock and the invite screen replace all of `Main`. What must outlive them sits at the root of the app, as `CallAudio` does: a running call stays audible behind the lock.
+- A socket can stay open and carry nothing: the browser answers the server's pings by itself. The page asks with its own `ping` (`web/src/lib/liveness.ts`) and replaces a socket that does not answer. Judge by an unanswered question, never by a late timer: hidden tabs tick once a minute.
+- The desktop app carries the interface and serves it on the server's origin (`desktop/app/lib/route.js`). Anything the page may ask of the app goes through `preload.cjs` and is checked in `main.js` for the app's own page and main frame. No Node in the page, no new windows, no other origins.
 - Fullscreen goes on the page, never on the call's `<dialog>`: a dialog cannot be a fullscreen element, and the menus must stay above the stream.
 - Group media stays frame-encrypted. No names or content in LiveKit metadata. The server never gets the call key, so no server-side participant may hold it.
 

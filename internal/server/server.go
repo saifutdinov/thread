@@ -5,6 +5,7 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -36,8 +37,11 @@ type Config struct {
 	TrustProxy   bool
 	CookieSecure bool
 	VAPIDSubject string
-	TurnURLs     []string
-	TurnSecret   string
+	// FCMKey: the Firebase service account key (JSON) for pushes to the
+	// Android app; empty turns them off. Read from FCM_CREDENTIALS.
+	FCMKey     []byte
+	TurnURLs   []string
+	TurnSecret string
 	// LiveKit SFU for group calls (all three, or group calls are off):
 	// its internal address for the signaling proxy, and the API key pair.
 	LiveKitURL    string
@@ -48,6 +52,8 @@ type Config struct {
 	MetricsAddr   string // internal Prometheus listener; empty disables it
 	S3            S3Config
 	Version       string // the release tag, set at build time; empty is "dev"
+	Web           string // the served interface's version (a hash of web/); the apps compare theirs
+	DownloadsDir  string // the apps' installers for /api/downloads (downloads.go); empty: none
 }
 
 type Server struct {
@@ -107,7 +113,15 @@ func New(ctx context.Context, cfg Config, log *slog.Logger) (*Server, error) {
 		sfu:      &http.Client{Timeout: 10 * time.Second},
 		backupTo: backupTo,
 	}
-	if s.push, err = newPusher(ctx, db, cfg.VAPIDSubject, s.hub.deviceInFront, s.hub.deviceOnline, log); err != nil {
+	var app *fcm
+	if len(bytes.TrimSpace(cfg.FCMKey)) > 0 {
+		// A broken key must not take the chat down: the app's devices then
+		// get no pushes, their sockets still work.
+		if app, err = newFCM(cfg.FCMKey, &http.Client{Timeout: 15 * time.Second}); err != nil {
+			log.Error("app pushes off", "err", err)
+		}
+	}
+	if s.push, err = newPusher(ctx, db, cfg.VAPIDSubject, app, s.hub.deviceInFront, s.hub.deviceOnline, log); err != nil {
 		db.Close()
 		return nil, err
 	}
@@ -126,6 +140,8 @@ func (s *Server) Close() {
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.handleHealth)
+	mux.HandleFunc("GET /api/downloads", s.handleInstallers)
+	mux.HandleFunc("GET /api/downloads/{name}", s.handleInstaller)
 
 	mux.HandleFunc("POST /api/auth/challenge", s.handleChallenge)
 	mux.HandleFunc("POST /api/auth/login", s.handleLogin)
@@ -185,6 +201,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/preview", s.active(s.handlePreview))
 	mux.HandleFunc("GET /api/push/key", s.handlePushKey)
 	mux.HandleFunc("POST /api/push", s.active(s.handleSubscribe))
+	mux.HandleFunc("POST /api/push/app", s.active(s.handleSubscribeApp))
 	mux.HandleFunc("DELETE /api/push", s.anyDevice(s.handleUnsubscribe))
 	mux.HandleFunc("POST /api/push/test", s.active(s.handlePushTest))
 	mux.HandleFunc("POST /api/calls/decline", s.active(s.handleCallDecline))
@@ -289,7 +306,7 @@ func (s *Server) secure(next http.Handler) http.Handler {
 		// (WebAssembly); JavaScript eval stays off.
 		h.Set("Content-Security-Policy", "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; "+
 			"img-src 'self' blob: data:; media-src 'self' blob:; connect-src 'self' wss://"+r.Host+" ws://"+r.Host+"; "+
-			"worker-src 'self'; manifest-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'")
+			"worker-src 'self'; manifest-src 'self'; object-src 'none'; frame-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'")
 		h.Set("X-Content-Type-Options", "nosniff")
 		h.Set("Referrer-Policy", "no-referrer")
 		h.Set("Permissions-Policy", "camera=(self), microphone=(self), geolocation=()")
@@ -394,14 +411,20 @@ func readJSON(w http.ResponseWriter, r *http.Request, v any) bool {
 	return true
 }
 
-// handleHealth: alive, and which release. The page compares the version
-// with its own build's and offers a reload after a deploy.
+// handleHealth: alive, which release, and which interface. The page
+// compares the interface with its own and offers a reload (an app: a new
+// install) only when it changed: a release of the server or of another
+// app alone leaves the interface as it was.
 func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 	v := s.cfg.Version
 	if v == "" {
 		v = "dev"
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "version": v})
+	out := map[string]string{"status": "ok", "version": v}
+	if s.cfg.Web != "" {
+		out["web"] = s.cfg.Web
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {

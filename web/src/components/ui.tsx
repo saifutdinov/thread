@@ -3,6 +3,8 @@ import type { ButtonHTMLAttributes, ComponentChildren } from 'preact';
 import { useEffect, useRef, useState } from 'preact/hooks';
 import type { PendingDevice } from '../lib/api';
 import { errText, t } from '../lib/i18n';
+import { nativeApp } from '../lib/pwa';
+import { saveFile } from '../lib/save';
 import { type Attachment, acquireMedia, showToast } from '../lib/store';
 import { useDecrypted } from '../lib/use-media';
 
@@ -287,7 +289,18 @@ export function Lightbox() {
     <Modal label={t('chat.photo')} onClose={() => (lightbox.value = null)} class="lightbox">
       <div class="lightbox-bar">
         {url && (
-          <a class="icon-btn" href={url} download={`photo.${a.m.split('/')[1] ?? 'jpg'}`} aria-label={t('chat.download')} title={t('chat.download')}>
+          <a
+            class="icon-btn"
+            href={url}
+            download={`photo.${a.m.split('/')[1] ?? 'jpg'}`}
+            aria-label={t('chat.download')}
+            title={t('chat.download')}
+            onClick={(e) => {
+              if (!nativeApp?.save) return; // a browser saves it from the link
+              e.preventDefault();
+              saveFile(url, e.currentTarget.download);
+            }}
+          >
             <Icon name="download" />
           </a>
         )}

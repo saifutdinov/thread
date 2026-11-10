@@ -34,7 +34,12 @@ async function run<T>(mode: IDBTransactionMode, fn: (s: IDBObjectStore) => IDBRe
   });
 }
 
+// written: told of every write, after it lands (the Android app copies the
+// keys its pushes need, android.ts). A clear is reported as key "*".
+let written: ((k: string, v: unknown) => void) | null = null;
+export const watchIdb = (fn: typeof written) => (written = fn);
+
 export const idbGet = <T>(k: string) => run<T | undefined>('readonly', (s) => s.get(k));
-export const idbSet = (k: string, v: unknown) => run<void>('readwrite', (s) => s.put(v, k));
-export const idbClear = () => run<void>('readwrite', (s) => s.clear());
+export const idbSet = (k: string, v: unknown) => run<void>('readwrite', (s) => s.put(v, k)).then(() => written?.(k, v));
+export const idbClear = () => run<void>('readwrite', (s) => s.clear()).then(() => written?.('*', null));
 export const idbKeys = () => run<string[]>('readonly', (s) => s.getAllKeys());

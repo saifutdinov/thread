@@ -1,0 +1,26 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data:; style-src 'unsafe-inline'; script-src 'self'" />
+    <title>Screen</title>
+    <style>
+      :root { color-scheme: light dark; font: 15px system-ui, sans-serif; }
+      body { margin: 0; padding: 1rem; }
+      h1 { font-size: 1.1rem; margin: 0 0 0.75rem; }
+      ul { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(12rem, 1fr)); gap: 0.75rem; }
+      button.source { width: 100%; min-height: 2.75rem; padding: 0.4rem; border: 2px solid transparent; border-radius: 0.6rem; background: Canvas; color: CanvasText; text-align: left; cursor: pointer; }
+      button.source:hover, button.source:focus-visible { border-color: Highlight; outline: none; }
+      button.source img { display: block; width: 100%; aspect-ratio: 16 / 9; object-fit: contain; background: #000; border-radius: 0.4rem; }
+      button.source span { display: block; margin-top: 0.3rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .actions { margin-top: 1rem; text-align: right; }
+      .actions button { min-height: 2.75rem; padding: 0 1rem; }
+    </style>
+  </head>
+  <body>
+    <h1 id="title"></h1>
+    <ul id="list"></ul>
+    <div class="actions"><button id="cancel" type="button"></button></div>
+    <script type="module" src="picker.js"></script>
+  </body>
+</html>

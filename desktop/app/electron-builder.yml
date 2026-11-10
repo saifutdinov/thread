@@ -1,0 +1,61 @@
+# Built by CI on a tag (.github/workflows/ci.yml, desktop). The web build and
+# the push-to-talk companion ride along as resources. Nothing is signed yet:
+# docs/install-desktop.md says what a person sees.
+appId: io.github.saifutdinov.thread
+productName: Thread
+directories:
+  output: dist
+files:
+  - main.js
+  - preload.cjs
+  - picker.html
+  - picker.js
+  - picker-preload.cjs
+  - lib/**
+  - package.json
+extraResources:
+  - from: ../../web/dist
+    to: web
+    filter: ["**/*", "!**/*.br"]
+  - from: app-config.json
+    to: app-config.json
+electronFuses:
+  runAsNode: false
+  enableCookieEncryption: true
+  enableNodeOptionsEnvironmentVariable: false
+  enableNodeCliInspectArguments: false
+  enableEmbeddedAsarIntegrityValidation: true
+  onlyLoadAppFromAsar: true
+win:
+  target: nsis
+  icon: ../../web/public/icon-512.png
+  extraResources:
+    - from: ../thread-hotkeys.exe
+      to: thread-hotkeys.exe
+nsis:
+  oneClick: true
+  perMachine: false
+  artifactName: Thread-Setup-${version}.${ext}
+mac:
+  target:
+    - target: dmg
+      arch: [arm64, x64]
+  # Ad-hoc: Apple Silicon runs nothing unsigned, and the fuses change the
+  # binary. Free, but Gatekeeper still asks (docs/install-desktop.md).
+  identity: "-"
+  icon: ../../web/public/icon-512.png
+  category: public.app-category.social-networking
+  extendInfo:
+    NSMicrophoneUsageDescription: Calls use the microphone.
+    NSCameraUsageDescription: Video calls use the camera.
+    NSAudioCaptureUsageDescription: Sharing a screen can include its sound.
+dmg:
+  artifactName: Thread-${version}-${arch}.${ext}
+linux:
+  # deb installs Chromium's sandbox helper the way Ubuntu 24.04 allows; an
+  # AppImage there may need the user-namespace setting (docs/install-desktop.md).
+  target: [deb, AppImage]
+  maintainer: Thread
+  icon: ../../web/public/icon-512.png
+  category: Network
+  artifactName: Thread-${version}-${arch}.${ext}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -16,8 +17,9 @@ import (
 	webpush "github.com/SherClockHolmes/webpush-go"
 )
 
-// pusher sends Web Push (VAPID). Payloads carry ciphertext only; the
-// service worker decrypts them with the chat key stored on the device.
+// pusher sends Web Push (VAPID), and FCM to the Android app (fcm.go).
+// Payloads carry ciphertext only; the service worker, or the app, decrypts
+// them with the chat key stored on the device.
 type pusher struct {
 	db      *sql.DB
 	log     *slog.Logger
@@ -30,7 +32,8 @@ type pusher struct {
 	// its own notifications from socket events, so silent pushes, which
 	// Chromium allows only within a budget, skip it.
 	connected func(device int64) bool
-	post      func(s sub, body []byte, topic string, ttl int) // webPush; tests record instead
+	post      func(s sub, body []byte, topic string, ttl int) // send; tests record instead
+	fcm       *fcm                                            // nil: no FCM_CREDENTIALS, the app gets no pushes
 	client    *http.Client                                    // public HTTPS only, checked again at the resolved address
 
 	// notified: the newest message pushed per (device, chat) since the
@@ -46,10 +49,10 @@ type pusher struct {
 // live reports devices in front, with an open socket and a visible page:
 // they get events there, and iOS punishes pushes that end up showing no
 // notification.
-func newPusher(ctx context.Context, db *sql.DB, subject string, live, connected func(int64) bool, log *slog.Logger) (*pusher, error) {
-	p := &pusher{db: db, log: log, subject: subject, live: live, connected: connected, sem: make(chan struct{}, 8), notified: map[[2]int64]int64{}}
+func newPusher(ctx context.Context, db *sql.DB, subject string, fcm *fcm, live, connected func(int64) bool, log *slog.Logger) (*pusher, error) {
+	p := &pusher{db: db, log: log, subject: subject, fcm: fcm, live: live, connected: connected, sem: make(chan struct{}, 8), notified: map[[2]int64]int64{}}
 	p.client = newPushClient(publicAddr)
-	p.post = p.webPush
+	p.post = p.send1
 	var err error
 	if p.pub, err = metaGet(ctx, db, "vapid_pub"); err != nil {
 		return nil, err
@@ -91,6 +94,29 @@ func (s *Server) handleSubscribe(w http.ResponseWriter, r *http.Request, a *Auth
 	_, err := s.db.ExecContext(r.Context(), `INSERT INTO push_subs (device_id, endpoint, p256dh, auth) VALUES (?, ?, ?, ?)
 		ON CONFLICT (device_id) DO UPDATE SET endpoint = excluded.endpoint, p256dh = excluded.p256dh, auth = excluded.auth`,
 		a.DeviceID, req.Endpoint, req.Keys.P256dh, req.Keys.Auth)
+	if err != nil {
+		s.internal(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{})
+}
+
+// handleSubscribeApp registers the Android app's FCM token for this
+// device, in place of a Web Push subscription: one way to reach a device.
+func (s *Server) handleSubscribeApp(w http.ResponseWriter, r *http.Request, a *Auth) {
+	var req struct {
+		Token string `json:"token"`
+	}
+	if !readJSON(w, r, &req) {
+		return
+	}
+	if !validFCMToken(req.Token) {
+		fail(w, http.StatusBadRequest, "bad_request")
+		return
+	}
+	_, err := s.db.ExecContext(r.Context(), `INSERT INTO push_subs (device_id, endpoint, p256dh, auth) VALUES (?, ?, '', '')
+		ON CONFLICT (device_id) DO UPDATE SET endpoint = excluded.endpoint, p256dh = '', auth = ''`,
+		a.DeviceID, fcmPrefix+req.Token)
 	if err != nil {
 		s.internal(w, err)
 		return
@@ -285,6 +311,37 @@ func (p *pusher) deliver(s sub, body []byte, topic string, ttl int) {
 	p.sem <- struct{}{}
 	defer func() { <-p.sem }()
 	p.post(s, body, topic, ttl)
+}
+
+// send1 delivers one push the way the device takes them.
+func (p *pusher) send1(s sub, body []byte, topic string, ttl int) {
+	if strings.HasPrefix(s.endpoint, fcmPrefix) {
+		p.appPush(s, body, topic, ttl)
+		return
+	}
+	p.webPush(s, body, topic, ttl)
+}
+
+func (p *pusher) appPush(s sub, body []byte, topic string, ttl int) {
+	if p.fcm == nil {
+		p.failed.Add(1)
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	err := p.fcm.send(ctx, strings.TrimPrefix(s.endpoint, fcmPrefix), body, topic, ttl)
+	switch {
+	case errors.Is(err, errFCMGone):
+		p.expired.Add(1)
+		if _, err := p.db.Exec(`DELETE FROM push_subs WHERE device_id = ? AND endpoint = ?`, s.device, s.endpoint); err != nil {
+			p.log.Warn("drop expired app token", "err", err)
+		}
+	case err != nil:
+		p.failed.Add(1)
+		p.log.Warn("app push failed", "device", s.device, "err", err)
+	default:
+		p.sent.Add(1)
+	}
 }
 
 func (p *pusher) webPush(s sub, body []byte, topic string, ttl int) {

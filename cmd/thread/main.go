@@ -19,8 +19,13 @@ import (
 	"github.com/saifutdinov/thread/internal/server"
 )
 
-// version is the release, set by the Dockerfile (-X main.version).
-var version = "dev"
+// version is the release (git describe), web the version of the interface
+// it serves (a hash of web/), both set by the Dockerfile (-X main.version,
+// main.web).
+var (
+	version = "dev"
+	web     = "dev"
+)
 
 func main() {
 	// "thread healthcheck" is the container healthcheck: distroless has no curl.
@@ -41,6 +46,7 @@ func main() {
 func run(log *slog.Logger) error {
 	cfg := server.Config{
 		Version:    version,
+		Web:        web,
 		Addr:       env("ADDR", ":8080"),
 		DataDir:    env("DATA_DIR", "./data"),
 		StaticDir:  env("STATIC_DIR", "./web/dist"),
@@ -59,6 +65,17 @@ func run(log *slog.Logger) error {
 	cfg.LiveKitKey = os.Getenv("LIVEKIT_KEY")
 	cfg.LiveKitSecret = os.Getenv("LIVEKIT_SECRET")
 	cfg.MetricsAddr = os.Getenv("METRICS_ADDR")
+	cfg.DownloadsDir = os.Getenv("DOWNLOADS_DIR")
+	// The Android app's pushes: a file the deploy mounts, absent or empty
+	// when the owner has not added the Firebase key (FCM off).
+	if path := os.Getenv("FCM_CREDENTIALS"); path != "" {
+		// Unreadable (owner or mode wrong): the chat still starts, without them.
+		key, err := os.ReadFile(path)
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			log.Error("app pushes off: read FCM_CREDENTIALS", "err", err)
+		}
+		cfg.FCMKey = key
+	}
 	cfg.BackupTo = os.Getenv("BACKUP_RECIPIENT")
 	keep, err := strconv.Atoi(env("BACKUP_KEEP", "7"))
 	if err != nil || keep < 1 {

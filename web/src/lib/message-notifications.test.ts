@@ -9,6 +9,7 @@ test('page notifications honor message mute and cooldown even before Web Audio i
     const shown: { silent: boolean }[] = [];
     const context = vm.createContext({
       pushSupported: true,
+      nativeApp: undefined,
       Notification: { permission: 'granted' },
       audible: () => false,
       choices: { value: { message: 'chime' } },

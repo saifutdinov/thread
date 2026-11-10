@@ -48,8 +48,9 @@ import { audioDuration, isTrack, trackInfo, trackMime } from './track';
 import { prepareAvatar, prepareImage, prepareVideo, shrink } from './image';
 import { plain } from './markup';
 import { away, clear, notifyHere, notifyMessage } from './notify';
-import { checkUpdate, mobile, pushOn, subscribe, unsubscribe } from './pwa';
+import { checkUpdate, nativeApp, mobile, pushOn, subscribe, unsubscribe } from './pwa';
 import { messageSoundAllowed, playSound } from './sounds';
+import { check, TICK_MS } from './liveness';
 import { go, parse, replace, route } from './route';
 
 // ---------- types ----------
@@ -74,7 +75,7 @@ export interface Attachment {
 
 // Outgoing is something to attach before it is encrypted and uploaded.
 export type Outgoing =
-  | { kind: 'image'; file: File }
+  | { kind: 'image'; file: File; hd?: boolean } // hd: the original pixels (image.ts prepareImage)
   | { kind: 'file'; file: File }
   | { kind: 'clip'; file: File }
   | { kind: 'voice'; blob: Blob; mime: string; d: number; wf: number[] }
@@ -834,7 +835,7 @@ async function upload(chatId: number, item: Outgoing): Promise<Attachment> {
   let meta: Omit<Attachment, 'id' | 'k' | 's'>;
   switch (item.kind) {
     case 'image': {
-      const img = await prepareImage(item.file).catch(() => {
+      const img = await prepareImage(item.file, item.hd).catch(() => {
         throw new ApiError(400, 'image');
       });
       blob = img.blob;
@@ -951,10 +952,10 @@ export async function forwardMessage(m: Msg, to: number) {
   await deliver(to, { t: m.p.t, a: a.length ? a : undefined, fw: { n } }, a.map((x) => x.id), toB64u(rand(12)));
 }
 
-// An answered or declined call needs no notification after the fact: the
-// ring already said it. A missed one does.
+// Only a missed call needs a notification after the fact (busy: missed
+// while on another call). Answered, declined or failed: the ring said it.
 export async function sendCallLog(chatId: number, cl: CallLog) {
-  await deliver(chatId, { cl }, [], toB64u(rand(12)), undefined, cl.s === 'ok' || cl.s === 'declined');
+  await deliver(chatId, { cl }, [], toB64u(rand(12)), undefined, cl.s !== 'missed' && cl.s !== 'busy');
 }
 
 // Call signaling is sealed with the chat key so the server, which relays
@@ -1355,6 +1356,8 @@ export function partner(c: Chat) {
 let ws: WebSocket | null = null;
 let wsTimer: ReturnType<typeof setTimeout> | undefined;
 let backoff = 1000;
+const live = { startedAt: 0, lastIn: 0, pingAt: 0 };
+const given = new WeakSet<WebSocket>(); // given up on: its late close changes nothing
 
 // Phones keep the socket only while the app is visible: a hidden page is
 // frozen, and Web Push takes over. Computers keep it in the background and
@@ -1368,7 +1371,9 @@ function connect() {
   if (ws || !me.value || !holdSocket()) return;
   const sock = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/api/ws`);
   ws = sock;
+  Object.assign(live, { startedAt: Date.now(), lastIn: 0, pingAt: 0 });
   sock.onopen = () => {
+    live.lastIn = Date.now();
     if (ws === sock) callHandler?.({ t: 'open' });
     backoff = 1000;
     connected.value = true;
@@ -1380,25 +1385,51 @@ function connect() {
     groupHandler?.({ t: 'open' });
   };
   sock.onmessage = (e) => {
+    if (ws === sock) live.lastIn = Date.now();
     try {
       handleEvent(JSON.parse(e.data));
     } catch {
       /* ignore malformed events */
     }
   };
-  sock.onclose = () => {
-    if (ws === sock) { callHandler?.({ t: 'close' }); groupHandler?.({ t: 'close' }); }
-    if (ws === sock) ws = null;
-    connected.value = false;
-    clearTimeout(offlineTimer);
-    offlineTimer = setTimeout(() => (offline.value = !connected.value), 2000);
-    clearTimeout(wsTimer);
-    if (!holdSocket()) return; // visibilitychange reconnects
-    // Mid-call every second counts: the call is reconnecting over it.
-    wsTimer = setTimeout(connect, socketHold.call ? 1000 : backoff);
-    backoff = Math.min(backoff * 2, 15000);
-  };
+  sock.onclose = () => !given.has(sock) && lost(sock);
 }
+
+function lost(sock: WebSocket) {
+  if (ws === sock) { callHandler?.({ t: 'close' }); groupHandler?.({ t: 'close' }); }
+  if (ws === sock) ws = null;
+  connected.value = false;
+  clearTimeout(offlineTimer);
+  offlineTimer = setTimeout(() => (offline.value = !connected.value), 2000);
+  clearTimeout(wsTimer);
+  if (!holdSocket()) return; // visibilitychange reconnects
+  // Mid-call every second counts: the call is reconnecting over it.
+  wsTimer = setTimeout(connect, socketHold.call ? 1000 : backoff);
+  backoff = Math.min(backoff * 2, 15000);
+}
+
+// watch asks a quiet socket whether it still carries events, and replaces one
+// that does not answer (liveness.ts): the browser can take many minutes to
+// close a dead connection by itself, and a ring sent there is lost. The new
+// socket gets a ringing call from the server at once. probe: ask now, the
+// network has just changed or the page came back.
+function watch(probe = false) {
+  const sock = ws;
+  if (!sock) return;
+  const now = Date.now();
+  const open = sock.readyState === WebSocket.OPEN;
+  const verdict = probe && open && live.pingAt <= live.lastIn ? 'ping' : check(now, { open, ...live });
+  if (verdict === 'ping') {
+    live.pingAt = now;
+    sock.send(JSON.stringify({ t: 'ping' }));
+  } else if (verdict === 'dead') {
+    given.add(sock);
+    lost(sock);
+    sock.close();
+  }
+}
+setInterval(watch, TICK_MS);
+window.addEventListener('online', () => watch(true));
 
 // Close at once when hidden on a phone: a frozen page runs no timers.
 function dropSocket() {
@@ -1416,6 +1447,7 @@ export function releaseSocket() {
 document.addEventListener('visibilitychange', () => {
   if (isVisible()) {
     connect();
+    watch(true);
     const id = openChatId();
     if (id) markRead(id);
   } else if (mobile) {
@@ -1568,13 +1600,17 @@ export function goChat(id: number) {
 
 // A tapped notification opens its chat in place (see sw.js): navigating
 // would reload the app. Answering tells the worker it need not navigate.
+function openFrom(url: string) {
+  const r = parse('#/' + (String(url).split('#/')[1] ?? ''));
+  if (r.name === 'chat' && r.id) goChat(r.id);
+  else if (route.value.name !== r.name) go(r.name === 'list' ? '' : r.name);
+}
 navigator.serviceWorker?.addEventListener('message', (e) => {
   if (e.data?.t !== 'open') return;
   e.ports[0]?.postMessage(1);
-  const r = parse('#/' + (String(e.data.url).split('#/')[1] ?? ''));
-  if (r.name === 'chat' && r.id) goChat(r.id);
-  else if (route.value.name !== r.name) go(r.name === 'list' ? '' : r.name);
+  openFrom(e.data.url);
 });
+nativeApp?.onOpen(openFrom); // a click on the app's own notification
 
 // ---------- avatars, group photos, link previews ----------
 

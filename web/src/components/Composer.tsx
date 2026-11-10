@@ -33,6 +33,9 @@ import {
 import { EmojiPicker } from './EmojiPicker';
 import { circleShot } from './Media';
 import { Icon, IconButton } from './ui';
+import { remember, remembered } from '../lib/devices';
+import { AttachSheet } from './AttachSheet';
+import { mobile } from '../lib/pwa';
 
 const MAX_LEN = 4096;
 const MAX_FILES = 10;
@@ -73,6 +76,10 @@ export function Composer(props: {
   const { chat, replyTo, editing } = props;
   const [text, setText] = useState(drafts.get(chat.id) ?? '');
   const [files, setFiles] = useState<{ kind: 'image' | 'clip' | 'file'; file: File; url: string }[]>([]);
+  // HD: photos go out in their original quality (more traffic). Remembered
+  // on this device, as in Telegram.
+  const [hd, setHd] = useState(() => remembered('sendHD') === '1');
+  const [sheet, setSheet] = useState(false); // phones: the attach sheet with our camera
   const [emoji, setEmoji] = useState(false);
   const [hasSel, setHasSel] = useState(false);
   const [menu, setMenu] = useState(false);
@@ -354,7 +361,7 @@ export function Composer(props: {
       return;
     }
     if (!body && !files.length) return;
-    const sending: Outgoing[] = files.map((f) => ({ kind: f.kind, file: f.file }));
+    const sending: Outgoing[] = files.map((f) => (f.kind === 'image' ? { kind: f.kind, file: f.file, hd } : { kind: f.kind, file: f.file }));
     const lp = card && body.includes(card.from) ? card.lp : undefined;
     setCard(null);
     files.forEach((f) => URL.revokeObjectURL(f.url));
@@ -420,6 +427,20 @@ export function Composer(props: {
             }}
           />
         </div>
+      )}
+      {files.some((f) => f.kind === 'image') && (
+        <button
+          type="button"
+          class={'chip hd-toggle' + (hd ? ' on' : '')}
+          aria-pressed={hd}
+          title={t('att.hdHint')}
+          onClick={() => {
+            setHd(!hd);
+            remember('sendHD', hd ? '0' : '1');
+          }}
+        >
+          HD {hd ? t('att.hdOn') : t('att.hdOff')}
+        </button>
       )}
       {files.length > 0 && (
         <ul class="composer-files">
@@ -503,6 +524,7 @@ export function Composer(props: {
                 label={t('att.menu')}
                 aria-expanded={menu}
                 onClick={(e: MouseEvent) => {
+                  if (mobile) return setSheet(true);
                   menuAt.current = (e.currentTarget as HTMLElement).getBoundingClientRect();
                   setMenu(!menu);
                 }}
@@ -604,6 +626,14 @@ export function Composer(props: {
             </button>
           </div>
         </div>
+      )}
+      {sheet && (
+        <AttachSheet
+          onFiles={addFiles}
+          onPickSystem={() => photoInput.current?.click()}
+          onPickFile={() => fileInput.current?.click()}
+          onClose={() => setSheet(false)}
+        />
       )}
       {rec && recKind === 'circle' && (
         <div class="circle-live" aria-hidden="true">
