@@ -207,6 +207,9 @@ jobs:
         working-directory: desktop/app
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: false
+          # Sign pull requests too: ad-hoc needs no secrets, and the check
+          # below sees what a release ships.
+          CSC_FOR_PULL_REQUEST: true
         run: npx electron-builder --publish never -c.extraMetadata.version="$VERSION"
       - name: The Mac app may use the microphone and the camera
         if: runner.os == 'macOS'
