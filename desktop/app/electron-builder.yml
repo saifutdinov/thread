@@ -43,6 +43,9 @@ mac:
   # Ad-hoc: Apple Silicon runs nothing unsigned, and the fuses change the
   # binary. Free, but Gatekeeper still asks (docs/install-desktop.md).
   identity: "-"
+  # The microphone and the camera under the hardened runtime.
+  entitlements: entitlements.mac.plist
+  entitlementsInherit: entitlements.mac.plist
   icon: ../../web/public/icon-512.png
   category: public.app-category.social-networking
   extendInfo:
