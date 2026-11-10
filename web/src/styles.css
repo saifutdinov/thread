@@ -3583,3 +3583,51 @@ meter { width: 100%; min-height: 1.5rem; }
 :root[data-design='fresh'] .chat-item {
   border-radius: 1rem;
 }
+
+/* ---------- installers (Downloads.tsx) ---------- */
+.downloads h3 { margin: 0; }
+.download { flex-wrap: wrap; gap: 0.5rem; padding: 0.5rem 0.6rem; border-radius: 0.75rem; }
+.download.current { background: var(--accent-soft); }
+.download-os { display: flex; align-items: center; gap: 0.5rem; min-width: 6rem; }
+.download-file { display: inline-flex; align-items: center; gap: 0.15rem; }
+.download-file a.btn { text-decoration: none; }
+.hd-toggle { align-self: flex-start; margin: 0.25rem 0.5rem 0; font-weight: 600; }
+
+/* ---------- attach sheet and camera (AttachSheet.tsx, Camera.tsx) ---------- */
+.sheet-layer { display: flex; align-items: flex-end; background: rgba(0, 0, 0, 0.35); }
+.attach-sheet { width: 100%; max-height: 75dvh; overflow: auto; background: var(--bg); border-radius: 1.25rem 1.25rem 0 0; padding: 0.75rem 0.75rem max(0.75rem, env(safe-area-inset-bottom)); display: flex; flex-direction: column; gap: 0.6rem; }
+.attach-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 3px; }
+.attach-tile { position: relative; aspect-ratio: 1; border: 0; padding: 0; background: var(--bg-2); color: var(--text); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 0.35rem; font-size: 0.85rem; border-radius: 0.5rem; overflow: hidden; }
+.attach-tile img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.attach-tile.chosen img { transform: scale(0.88); border-radius: 0.5rem; }
+.camera-tile { background: var(--accent-soft); color: var(--accent); }
+.tile-duration { position: absolute; left: 0.3rem; bottom: 0.3rem; background: var(--pill); color: #fff; font-size: 0.75rem; padding: 0.05rem 0.35rem; border-radius: 0.6rem; }
+.tile-mark { position: absolute; right: 0.35rem; top: 0.35rem; min-width: 1.5rem; height: 1.5rem; border-radius: 0.75rem; background: var(--accent); color: var(--on-accent); font-weight: 600; font-size: 0.85rem; display: flex; align-items: center; justify-content: center; box-shadow: 0 0 0 2px #fff; }
+.attach-actions { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+.attach-actions .btn { flex: 1; min-height: 2.75rem; }
+.linkish { border: 0; background: none; padding: 0; color: var(--accent); font: inherit; text-decoration: underline; }
+.camera { position: fixed; inset: 0; z-index: 60; background: #000; color: #fff; }
+.camera video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.camera video.mirror { transform: scaleX(-1); }
+.camera .icon-btn { color: #fff; background: rgba(0, 0, 0, 0.35); }
+.camera .icon-btn.on { background: #fff; color: #000; }
+.camera-top, .camera-bottom { position: absolute; left: 0; right: 0; display: flex; align-items: center; justify-content: space-between; padding: 0.75rem 1rem; }
+.camera-top { top: 0; padding-top: max(0.75rem, env(safe-area-inset-top)); }
+.camera-bottom { bottom: 0; padding-bottom: max(1.5rem, env(safe-area-inset-bottom)); justify-content: center; gap: 2.5rem; }
+.camera-hint { position: absolute; bottom: calc(100% - 0.25rem); left: 0; right: 0; text-align: center; font-size: 0.85rem; text-shadow: 0 1px 3px #000; }
+.camera-time { font-variant-numeric: tabular-nums; background: #e53935; padding: 0.1rem 0.6rem; border-radius: 1rem; }
+.shutter { width: 4.5rem; height: 4.5rem; border-radius: 50%; border: 4px solid #fff; background: rgba(255, 255, 255, 0.25); touch-action: none; }
+.shutter.recording { background: #e53935; transform: scale(1.15); }
+
+/* The sheet and the camera are native <dialog>s (ui.tsx Modal): Escape and focus stay inside. */
+.modal.sheet-modal { margin: auto 0 0; width: 100%; max-width: none; max-height: 80dvh; border-radius: 1.25rem 1.25rem 0 0; }
+.modal.sheet-modal .modal-body { padding: 0; }
+.modal.sheet-modal .attach-sheet { border-radius: 0; }
+.modal.camera-modal { margin: 0; width: 100vw; height: 100dvh; max-width: none; max-height: none; border-radius: 0; background: #000; }
+.modal.camera-modal .modal-body { padding: 0; height: 100%; }
+
+/* The front camera's flash: a bright frame around the screen, about 5% of
+   each side, rounded inside like a ring lamp, glowing in, fading up. */
+.ring-light { position: absolute; inset: 0; overflow: hidden; pointer-events: none; animation: ring-up 0.35s ease-out; }
+.ring-light::before { content: ''; position: absolute; inset: 5vh 5vw; border-radius: 2.5rem; box-shadow: 0 0 0 100vmax #fff, inset 0 0 2.5rem 0.75rem rgba(255, 255, 255, 0.85); }
+@keyframes ring-up { from { opacity: 0; } }

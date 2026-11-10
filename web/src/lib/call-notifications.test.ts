@@ -4,7 +4,7 @@ import { createCipheriv, randomBytes, webcrypto } from 'node:crypto';
 import { test } from 'node:test';
 import vm from 'node:vm';
 
-function worker(options: { cold?: boolean; lingering?: boolean } = {}) {
+function worker(options: { cold?: boolean; lingering?: boolean; endpoint?: string } = {}) {
   const shown: { title: string; options: Record<string, unknown> }[] = [];
   const notes: { tag: string; data: Record<string, unknown>; close: () => void }[] = [];
   const handlers = new Map<string, (e: unknown) => void>();
@@ -27,6 +27,7 @@ function worker(options: { cold?: boolean; lingering?: boolean } = {}) {
     self: {
       addEventListener: (name: string, handler: (e: unknown) => void) => handlers.set(name, handler),
       registration: {
+        pushManager: options.endpoint ? { getSubscription: async () => ({ endpoint: options.endpoint }) } : undefined,
         getNotifications: async (filter?: { tag: string }) => notes.filter((n) => !filter || n.tag === filter.tag),
         showNotification: async (title: string, options: Record<string, unknown>) => {
           shown.push({ title, options });
@@ -113,6 +114,18 @@ test('only a confirmed inactive call suppresses interactive ringing', async () =
     assert.equal(options.requireInteraction, undefined);
     assert.equal(options.actions, undefined);
   }
+});
+
+test('a ring that comes after its call ended shows nothing where the push service allows it', async () => {
+  const chromium = worker({ endpoint: 'https://fcm.googleapis.com/fcm/send/x' });
+  chromium.setStatus(false);
+  await chromium.onPush({ t: 'call', c: 1, id: 'old', n: 'Alice' });
+  assert.deepEqual(chromium.shown, [], 'no "call ended" note after the call');
+  // Apple revokes a subscription whose push shows nothing: there it still says so.
+  const safari = worker({ endpoint: 'https://web.push.apple.com/x' });
+  safari.setStatus(false);
+  await safari.onPush({ t: 'call', c: 1, id: 'old', n: 'Alice' });
+  assert.equal(safari.shown.at(-1)?.options.tag, 'call-ended');
 });
 
 test('unavailable status still rings and preserves answer and join actions', async () => {

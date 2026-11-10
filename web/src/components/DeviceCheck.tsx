@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'preact/hooks';
 import { cameras, microphones, speakers, deviceName, refreshDevices, remember, remembered } from '../lib/devices';
 import { t } from '../lib/i18n';
-import { call, selectSpeaker } from '../lib/call';
+import { call } from '../lib/call';
 import { groupCall } from '../lib/group';
 import { canTune, micConstraints, openMic, resumeMicContext, type Mic } from '../lib/mic';
 import { MicTuning } from './MicTuning';
@@ -38,11 +38,9 @@ export function DeviceCheck(props: { onClose: () => void }) {
   const [level, setLevel] = useState(0);
   const [withCamera, setWithCamera] = useState(true);
   const [listening, setListening] = useState(false);
-  const [choice, setChoice] = useState({
-    callMic: remembered('callMic'),
-    callCam: remembered('callCam'),
-    callSpeaker: remembered('callSpeaker'),
-  });
+  // The microphone and speaker are tried here only: a call starts on the
+  // system's own (call.ts). The camera is remembered for calls.
+  const [choice, setChoice] = useState({ callMic: '', callCam: remembered('callCam'), callSpeaker: '' });
   const generation = useRef(0);
   const media = useRef<MediaStream | null>(null);
   const context = useRef<AudioContext | null>(null);
@@ -199,8 +197,7 @@ export function DeviceCheck(props: { onClose: () => void }) {
                 value={choice[key]}
                 onChange={(e) => {
                   const id = e.currentTarget.value;
-                  if (key === 'callSpeaker') selectSpeaker(id);
-                  else remember(key, id);
+                  if (key === 'callCam') remember(key, id);
                   setChoice({ ...choice, [key]: id });
                   stop();
                   setStream(null);

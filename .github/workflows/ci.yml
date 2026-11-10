@@ -4,6 +4,7 @@ on:
   pull_request:
   push:
     branches: [main]
+    tags: ['v*'] # a fork that builds its own apps releases them (apps-release)
 
 permissions:
   contents: read
@@ -144,3 +145,242 @@ jobs:
         run: DOMAIN=chat.example.org PUBLIC_IP=203.0.113.10 PASSWORD_PEPPER=x TURN_SECRET=y LIVEKIT_SECRET=z docker compose -f deploy/docker-compose.yml config -q
       - name: Image builds
         run: docker build -t thread:ci .
+
+  desktop:
+    # The desktop app (desktop/app, docs/adr/0007-installable-apps.md),
+    # tested and packaged on every run. A fork that set THREAD_ORIGIN (and
+    # THREAD_UPDATE_KEY) builds it for its own server (docs/apps.md).
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-2025, macos-15, ubuntu-24.04]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-go@v7.0.0
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: 22.15.0
+          cache: npm
+          cache-dependency-path: |
+            web/package-lock.json
+            desktop/app/package-lock.json
+      - name: Version
+        run: |
+          echo "VERSION=$([ "$GITHUB_REF_TYPE" = tag ] && echo "${GITHUB_REF_NAME#v}" || echo 0.0.0)" >> "$GITHUB_ENV"
+          echo "WEB_VERSION=$(git ls-tree -r HEAD web | grep -v 'web/src/lib/patch-notes\.ts$' | git hash-object --stdin | cut -c1-12)" >> "$GITHUB_ENV"
+      - name: This server's address and update key
+        if: vars.THREAD_ORIGIN != ''
+        env:
+          ORIGIN: ${{ vars.THREAD_ORIGIN }}
+          UPDATE_KEY: ${{ vars.THREAD_UPDATE_KEY }}
+        working-directory: desktop/app
+        run: node -e "const fs=require('fs');const c=JSON.parse(fs.readFileSync('app-config.json'));c.origin=process.env.ORIGIN;c.updateKey=process.env.UPDATE_KEY||'';fs.writeFileSync('app-config.json',JSON.stringify(c,null,2)+'\n')"
+      - name: Web build
+        working-directory: web
+        run: |
+          npm ci
+          VITE_VERSION="v$VERSION" VITE_WEB="$WEB_VERSION" npm run build
+      - name: Push-to-talk companion
+        if: runner.os == 'Windows'
+        env:
+          CGO_ENABLED: 0
+        run: go build -ldflags '-H=windowsgui' -o desktop/thread-hotkeys.exe ./cmd/thread-hotkeys
+      - name: Tests
+        working-directory: desktop/app
+        run: |
+          npm ci
+          npm test
+          if [ "$RUNNER_OS" = Linux ]; then
+            # Ubuntu 24.04 restricts the user namespaces Chromium's sandbox uses.
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+            xvfb-run -a npm run test:e2e
+          else
+            npm run test:e2e
+          fi
+      - name: Package
+        working-directory: desktop/app
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: false
+        run: npx electron-builder --publish never -c.extraMetadata.version="$VERSION"
+      - uses: actions/upload-artifact@v4.6.2
+        with:
+          name: desktop-${{ runner.os }}
+          path: |
+            desktop/app/dist/*.exe
+            desktop/app/dist/*.dmg
+            desktop/app/dist/*.AppImage
+            desktop/app/dist/*.deb
+          if-no-files-found: error
+          retention-days: 14
+
+  android:
+    # The Android app (android/, docs/adr/0007-installable-apps.md): unit
+    # tests and a debug APK on every run. A fork that set THREAD_ORIGIN and
+    # THREAD_APP_ID builds it for its own server and, on a tag, a release APK
+    # signed with its own key (docs/apps.md).
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: 22.15.0
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - uses: actions/setup-java@v6.1.0
+        with:
+          distribution: temurin
+          java-version: 17.0.20+8
+      - uses: gradle/actions/setup-gradle@v6.4.0
+        with:
+          gradle-version: 9.8.2
+      - name: Version
+        env:
+          ORIGIN: ${{ vars.THREAD_ORIGIN }}
+          APP_ID: ${{ vars.THREAD_APP_ID }}
+        run: |
+          # They go into Gradle arguments and the app's code: plain values only.
+          if [ -n "$ORIGIN" ] && ! [[ "$ORIGIN" =~ ^https://[A-Za-z0-9.-]+(:[0-9]+)?$ ]]; then
+            echo "::error::THREAD_ORIGIN must look like https://chat.example.org, no path or trailing slash"
+            exit 1
+          fi
+          if [ -n "$APP_ID" ] && ! [[ "$APP_ID" =~ ^[a-zA-Z][a-zA-Z0-9_]*(\.[a-zA-Z][a-zA-Z0-9_]*)+$ ]]; then
+            echo "::error::THREAD_APP_ID must look like org.example.chat"
+            exit 1
+          fi
+          if [ "$GITHUB_REF_TYPE" = tag ]; then v="${GITHUB_REF_NAME#v}"; else v=0.0.0; fi
+          IFS=. read -r major minor patch <<< "${v%%-*}"
+          # Android installs only a larger versionCode over an older one.
+          echo "VERSION=$v" >> "$GITHUB_ENV"
+          echo "VERSION_CODE=$((major * 1000000 + minor * 1000 + patch + 1))" >> "$GITHUB_ENV"
+          echo "WEB_VERSION=$(git ls-tree -r HEAD web | grep -v 'web/src/lib/patch-notes\.ts$' | git hash-object --stdin | cut -c1-12)" >> "$GITHUB_ENV"
+          args="-PversionName=$v -PversionCode=$((major * 1000000 + minor * 1000 + patch + 1))"
+          [ -n "$ORIGIN" ] && args="$args -PthreadOrigin=$ORIGIN"
+          [ -n "$APP_ID" ] && args="$args -PthreadAppId=$APP_ID"
+          echo "GRADLE_ARGS=$args" >> "$GITHUB_ENV"
+      - name: Web build
+        working-directory: web
+        run: |
+          npm ci
+          VITE_VERSION="v$VERSION" VITE_WEB="$WEB_VERSION" npm run build
+      - name: Firebase config
+        env:
+          GOOGLE_SERVICES_JSON: ${{ secrets.GOOGLE_SERVICES_JSON }}
+        run: |
+          # Without it the app works but gets no pushes.
+          if [ -n "$GOOGLE_SERVICES_JSON" ]; then printf '%s' "$GOOGLE_SERVICES_JSON" > android/app/google-services.json; fi
+      - name: Tests and debug APK
+        working-directory: android
+        run: gradle --no-daemon testDebugUnitTest assembleDebug lintVitalRelease $GRADLE_ARGS
+      - uses: actions/upload-artifact@v4.6.2
+        if: "!startsWith(github.ref, 'refs/tags/v')"
+        with:
+          name: android-debug
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 7
+      - name: Release APK
+        if: startsWith(github.ref, 'refs/tags/v') && vars.THREAD_ORIGIN != ''
+        working-directory: android
+        env:
+          ANDROID_KEYSTORE: ${{ secrets.ANDROID_KEYSTORE }}
+          THREAD_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          THREAD_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          THREAD_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          if [ -z "$ANDROID_KEYSTORE" ]; then
+            echo "::error::secret ANDROID_KEYSTORE is missing (docs/apps.md)"
+            exit 1
+          fi
+          export THREAD_KEYSTORE="$RUNNER_TEMP/release.jks"
+          printf '%s' "$ANDROID_KEYSTORE" | base64 -d > "$THREAD_KEYSTORE"
+          gradle --no-daemon assembleRelease $GRADLE_ARGS
+          mkdir -p "$RUNNER_TEMP/android"
+          cp app/build/outputs/apk/release/app-release.apk "$RUNNER_TEMP/android/Thread-$VERSION.apk"
+      - uses: actions/upload-artifact@v4.6.2
+        if: startsWith(github.ref, 'refs/tags/v') && vars.THREAD_ORIGIN != ''
+        with:
+          name: android
+          path: ${{ runner.temp }}/android/Thread-*.apk
+          if-no-files-found: error
+          retention-days: 14
+
+  apps-release:
+    # A fork's own release (docs/apps.md): the apps built for its server, their
+    # checksums and the update manifest signed with its update key. The
+    # server takes them with scripts/apps.sh.
+    if: startsWith(github.ref, 'refs/tags/v') && vars.THREAD_ORIGIN != ''
+    needs: [check, desktop, android]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4.3.0
+        with:
+          pattern: desktop-*
+          path: ${{ runner.temp }}/apps
+          merge-multiple: true
+      - uses: actions/download-artifact@v4.3.0
+        with:
+          name: android
+          path: ${{ runner.temp }}/apps
+      - name: Installers, checksums and the signed manifest
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ORIGIN: ${{ vars.THREAD_ORIGIN }}
+          UPDATE_SIGNING_KEY: ${{ secrets.UPDATE_SIGNING_KEY }}
+          UPDATE_KEY: ${{ vars.THREAD_UPDATE_KEY }}
+        run: |
+          set -o pipefail
+          cd "$RUNNER_TEMP/apps"
+          sha256sum * > SHA256SUMS.txt
+          python3 - <<'PY'
+          import hashlib, json, os, re
+          kinds = [
+              ('windows', r'^Thread-Setup-(\d+\.\d+\.\d+)\.exe$'),
+              ('mac-arm', r'^Thread-(\d+\.\d+\.\d+)-arm64\.dmg$'),
+              ('mac-intel', r'^Thread-(\d+\.\d+\.\d+)-x64\.dmg$'),
+              ('linux-deb', r'^Thread-(\d+\.\d+\.\d+)-amd64\.deb$'),
+              ('linux-appimage', r'^Thread-(\d+\.\d+\.\d+)-x86_64\.AppImage$'),
+              ('android', r'^Thread-(\d+\.\d+\.\d+)\.apk$'),
+          ]
+          files = []
+          for name in sorted(os.listdir('.')):
+              if name == 'SHA256SUMS.txt':
+                  continue
+              for platform, rx in kinds:
+                  m = re.match(rx, name)
+                  if m:
+                      with open(name, 'rb') as f:
+                          digest = hashlib.sha256(f.read()).hexdigest()
+                      files.append({'name': name, 'platform': platform, 'version': m.group(1), 'size': os.path.getsize(name), 'sha256': digest})
+                      break
+              else:
+                  # A pre-release tag (v1.2.3-rc1) or a renamed file: the apps would never see it.
+                  raise SystemExit(f'::error::{name} is not named as an app installer; release tags are vX.Y.Z')
+          with open('manifest.json', 'w') as f:
+              json.dump({'release': os.environ['GITHUB_REF_NAME'], 'files': files}, f, indent=1)
+          PY
+          if [ -n "$UPDATE_SIGNING_KEY" ]; then
+            (umask 077; printf '%s\n' "$UPDATE_SIGNING_KEY" > "$RUNNER_TEMP/update-key.pem")
+            # A key pair that does not match makes every app ignore the release.
+            if [ -n "$UPDATE_KEY" ] && [ "$(openssl pkey -in "$RUNNER_TEMP/update-key.pem" -pubout -outform DER | tail -c 32 | base64 -w0)" != "$UPDATE_KEY" ]; then
+              rm -f "$RUNNER_TEMP/update-key.pem"
+              echo "::error::secret UPDATE_SIGNING_KEY does not match variable THREAD_UPDATE_KEY (docs/apps.md)"
+              exit 1
+            fi
+            openssl pkeyutl -sign -inkey "$RUNNER_TEMP/update-key.pem" -rawin -in manifest.json | base64 -w0 > manifest.sig
+            rm -f "$RUNNER_TEMP/update-key.pem"
+            [ -s manifest.sig ] || { echo "::error::the update manifest was not signed"; exit 1; }
+          elif [ -n "$UPDATE_KEY" ]; then
+            echo "::error::THREAD_UPDATE_KEY is set but secret UPDATE_SIGNING_KEY is missing (docs/apps.md)"
+            exit 1
+          fi
+          gh release view "$GITHUB_REF_NAME" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1 ||
+            gh release create "$GITHUB_REF_NAME" -R "$GITHUB_REPOSITORY" --verify-tag --title "$GITHUB_REF_NAME" --notes "Apps for $ORIGIN"
+          gh release upload "$GITHUB_REF_NAME" -R "$GITHUB_REPOSITORY" --clobber ./*

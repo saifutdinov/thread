@@ -1,0 +1,25 @@
+{
+  "name": "thread-desktop",
+  "productName": "Thread",
+  "version": "0.0.0",
+  "description": "Thread for Windows, macOS and Linux",
+  "homepage": "https://chat.example.org",
+  "author": "Thread",
+  "private": true,
+  "type": "module",
+  "main": "main.js",
+  "engines": {
+    "node": "22.15.0"
+  },
+  "scripts": {
+    "start": "electron .",
+    "test": "node --test test/*.test.js",
+    "dist": "electron-builder --publish never",
+    "test:e2e": "node test/e2e.mjs"
+  },
+  "devDependencies": {
+    "electron": "44.9.3",
+    "electron-builder": "26.18.0",
+    "playwright": "1.62.1"
+  }
+}

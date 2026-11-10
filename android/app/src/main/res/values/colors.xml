@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- bg in the brand book's light theme; values-night has the dark one. -->
+    <color name="window">#FFFFFF</color>
+    <color name="brand">#3390EC</color>
+    <color name="logo_top">#4AA3FF</color>
+    <color name="logo_bottom">#2176D9</color>
+</resources>

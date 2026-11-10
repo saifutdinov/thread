@@ -268,6 +268,7 @@ export const api = {
   leaveGroupCall: (chat: number) => call('DELETE', `/chats/${chat}/call`),
   pushKey: () => call<{ key: string }>('GET', '/push/key'),
   subscribe: (sub: PushSubscriptionJSON) => call('POST', '/push', sub),
+  subscribeApp: (token: string) => call('POST', '/push/app', { token }),
   unsubscribe: () => call('DELETE', '/push'),
   pushTest: () => call<{ sent: number }>('POST', '/push/test', {}),
 

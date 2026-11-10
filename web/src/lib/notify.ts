@@ -6,10 +6,10 @@
 // cannot be shown is not worth an error.
 import { idbGet } from './idb';
 import type { PushNote } from './store';
-import { pushOn, pushSupported } from './pwa';
+import { nativeApp, pushOn, pushSupported } from './pwa';
 import { audible, choices } from './sounds';
 
-const allowed = () => pushSupported && Notification.permission === 'granted';
+const allowed = () => !!nativeApp || (pushSupported && Notification.permission === 'granted');
 
 // away: the person is not looking at this page right now.
 export const away = () => document.visibilityState !== 'visible' || !document.hasFocus();
@@ -34,6 +34,10 @@ type Options = NotificationOptions & { renotify?: boolean; timestamp?: number; a
 // display runs inside the queue only. The badge is the small monochrome
 // icon Android puts in the status bar.
 async function display(title: string, options: Options) {
+  if (nativeApp) {
+    const url = (options.data as { url?: string } | undefined)?.url;
+    return nativeApp.notify({ title, body: options.body, tag: options.tag, silent: options.silent === true, sticky: options.requireInteraction === true, url });
+  }
   if (allowed()) await (await registration())?.showNotification(title, { icon: '/icon-192.png', badge: '/badge-96.png', ...options });
 }
 
@@ -87,6 +91,7 @@ export function notifyCall(chat: number, id: string, from: string, body: string,
 // answered or over.
 export function clear(tag: string) {
   return inOrder(async () => {
+    if (nativeApp) return nativeApp.clear(tag);
     if (!allowed()) return;
     for (const n of (await (await registration())?.getNotifications({ tag })) ?? []) n.close();
   });

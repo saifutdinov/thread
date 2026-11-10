@@ -3,6 +3,7 @@ import { errText, t } from '../lib/i18n';
 import { fmtDuration, fmtSize } from '../lib/recorder';
 import { claim, player, playTrack } from '../lib/player';
 import { type Attachment, acquireMedia, showToast } from '../lib/store';
+import { saveFile as save } from '../lib/save';
 import { trackInfo } from '../lib/track';
 import { useDecrypted } from '../lib/use-media';
 import { Icon, IconButton } from './ui';
@@ -180,10 +181,7 @@ export function VideoClip(props: { a: Attachment }) {
 async function saveFile(a: Attachment) {
   const lease = acquireMedia(a);
   try {
-    const link = document.createElement('a');
-    link.href = await lease.url;
-    link.download = (a.n ?? 'file').replace(/[\\/:*?"<>|]/g, '_');
-    link.click();
+    save(await lease.url, (a.n ?? 'file').replace(/[\\/:*?"<>|]/g, '_'));
   } finally {
     setTimeout(() => lease.release(), 40_000);
   }

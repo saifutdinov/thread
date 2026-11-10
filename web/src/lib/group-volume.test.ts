@@ -42,7 +42,7 @@ function fixture() {
   const participants = new Map([[first.participant.identity, first.participant], [second.participant.identity, second.participant]]);
   const context = vm.createContext({
     signal: (value: unknown) => ({ value }), room: { remoteParticipants: participants },
-    lk: { Track }, audioBox: { append() {} }, remembered: () => '',
+    lk: { Track }, audioBox: { append() {} }, remembered: () => '', speakerChoice: '',
   });
   vm.runInContext(stripTypeScriptTypes(source.slice(start, end)).replace(/\bexport\s+/g, '') + '\nglobalThis.subject={setParticipantVolume,setScreenVolume,participantVolumes,screenVolumes,playRemote};', context);
   return { calls, sdkCalls, first, second, make, participants, subject: context.subject as {

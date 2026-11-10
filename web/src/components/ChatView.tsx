@@ -45,6 +45,7 @@ import { Composer, type ComposerHandle } from './Composer';
 import { FileChip, TrackRow, VideoClip, VideoNote, VoicePlayer } from './Media';
 import { EmojiPicker } from './EmojiPicker';
 import { approving, colorOf, EncImage, Icon, IconButton, lightbox, Modal } from './ui';
+import { doubleTap } from '../lib/prefs';
 
 const QUICK = ['❤️', '👍', '😂', '😮', '😢', '🔥', '🙏', '👎'];
 
@@ -592,7 +593,11 @@ function Bubble(props: {
       }}
       onPointerUp={() => release(true)}
       onPointerCancel={() => release(false)}
-      onDblClick={() => !m.local && props.onReply(m)}
+      onDblClick={() => {
+        if (m.local) return;
+        if (doubleTap.value === 'reply') props.onReply(m);
+        else toggleReaction(m, doubleTap.value).catch((err) => showToast(errText(err)));
+      }}
       onKeyDown={(e) => {
         if (e.target !== e.currentTarget) return; // Enter on a button inside (the name, a reaction) is that button's
         if (e.key === 'Enter' || e.key === 'ContextMenu' || (e.shiftKey && e.key === 'F10')) {

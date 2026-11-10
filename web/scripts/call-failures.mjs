@@ -371,6 +371,19 @@ try {
       await endDirect(a, b);
     }
   });
+  await scenario('a socket that died without closing is replaced while the call still rings', async () => {
+    // Deaf and mute, yet open: what a slept laptop or a changed network
+    // leaves behind. The server still answers its own pings, so no push.
+    await b.evaluate(() => {
+      const s = callTest.sockets.at(-1);
+      s.onmessage = null;
+      s.send = () => {};
+    });
+    await a.getByRole('button', { name: 'Аудиозвонок', exact: true }).click();
+    await b.getByRole('button', { name: 'Ответить', exact: true }).click({ timeout: 40_000 });
+    await Promise.all([flowing(a), flowing(b)]);
+    await endDirect(a, b);
+  });
   await scenario('the app lock keeps a direct call audible', async () => {
     const lock = b.getByRole('switch', { name: 'Блокировка приложения' });
     await b.goto(`${base}/#/settings`);

@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'preact/hooks';
+import { Downloads } from './Downloads';
 import { api, type Device } from '../lib/api';
 import { errText, fmtListTime, lang, t } from '../lib/i18n';
-import { design, linkPreviews, textSize, theme, WALLPAPERS, wallpaper } from '../lib/prefs';
+import { design, doubleTap, linkPreviews, textSize, theme, WALLPAPERS, wallpaper } from '../lib/prefs';
 import { DeviceCheckButton } from './DeviceCheck';
 import { lastDiagnostics, downloadLastDiagnostics } from '../lib/diagnostics';
 import { appVersion, enablePush, install, installPrompt, isIOS, notifPermission, standalone } from '../lib/pwa';
@@ -423,6 +424,21 @@ export function Settings() {
         />
       </section>
 
+      <section class="card stack">
+        <h3>{t('settings.messages')}</h3>
+        <span class="label">{t('settings.doubleTap')}</span>
+        <Segmented
+          label={t('settings.doubleTap')}
+          value={doubleTap.value}
+          options={[
+            ['reply', t('settings.doubleTapReply')],
+            ['❤️', '❤️'],
+            ['👍', '👍'],
+          ]}
+          onChange={(v) => (doubleTap.value = v)}
+        />
+      </section>
+
       <section class="card">
         <h3>{t('settings.privacy')}</h3>
         <Switch label={t('settings.hideOnline')} hint={t('settings.hideOnlineHint')} checked={hide} onChange={toggleHide} />
@@ -485,6 +501,10 @@ export function Settings() {
           <Icon name="refresh" /> {t('settings.reload')}
         </button>
         <p class="muted small">{t('settings.version', { v: appVersion })}</p>
+      </section>
+
+      <section class="card">
+        <Downloads />
       </section>
 
       <PatchNotes />

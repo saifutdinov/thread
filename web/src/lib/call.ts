@@ -154,15 +154,18 @@ const CAMERA = (camId = remembered('callCam')): MediaTrackConstraints => ({
 });
 
 // The speaker chosen in the call's sound menu; '' is the system default.
-export const speaker = signal(remembered('callSpeaker'));
+// Every call starts on the system's microphone and speaker: a device kept
+// from an earlier call was often the wrong one on a Mac, after headphones or
+// a display came and went. A choice in the call lasts until it ends.
+export const speaker = signal('');
 
 async function media(video: boolean): Promise<MediaStream> {
   const trace = history;
   trace?.mark('media-request');
-  const id = remembered('callMic');
+  speaker.value = ''; // a new call: the system's own microphone and speaker
   const version = videoVersion;
   const s = await navigator.mediaDevices.getUserMedia({
-    audio: micConstraints(id ? { ideal: id } : undefined),
+    audio: micConstraints(undefined),
     video: video ? CAMERA() : false,
   });
   if (version !== videoVersion) for (const track of s.getVideoTracks()) { track.stop(); s.removeTrack(track); }
@@ -1056,7 +1059,6 @@ export async function selectMic(deviceId?: string) {
       mic.raw.enabled = mic.track.enabled = !call.value.muted;
       next = null;
       update({ local: new MediaStream([mic.raw, ...(now?.getVideoTracks() ?? [])]) });
-      if (deviceId) remember('callMic', deviceId);
     });
     microphoneCommit = commit.catch(() => {});
     await commit;
@@ -1076,7 +1078,6 @@ export const reopenMic = latest(() => selectMic(call.value?.local?.getAudioTrack
 
 export function selectSpeaker(deviceId: string) {
   speaker.value = deviceId;
-  remember('callSpeaker', deviceId);
 }
 
 // Mid-call renegotiation. Errors here never end the call: the retry loop

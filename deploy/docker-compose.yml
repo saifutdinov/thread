@@ -17,6 +17,7 @@ services:
       context: ..
       args:
         VERSION: ${THREAD_VERSION:-dev} # set by scripts/common.sh from git
+        WEB: ${THREAD_WEB:-dev} # the interface's version, also from git
     image: thread:local
     restart: unless-stopped
     environment:
@@ -40,8 +41,14 @@ services:
       BACKUP_S3_BUCKET: ${BACKUP_S3_BUCKET:-}
       BACKUP_S3_ACCESS_KEY: ${BACKUP_S3_ACCESS_KEY:-}
       BACKUP_S3_SECRET_KEY: ${BACKUP_S3_SECRET_KEY:-}
+      # Optional, see docs/apps.md: the Android app's pushes (the Firebase
+      # key in ../secrets/fcm.json) and the apps' installers (../downloads).
+      FCM_CREDENTIALS: /run/secrets/fcm.json
+      DOWNLOADS_DIR: /downloads
     volumes:
       - data:/data
+      - ../secrets:/run/secrets:ro
+      - ../downloads:/downloads:ro
     healthcheck:
       test: ["CMD", "/app/thread", "healthcheck"]
       interval: 30s

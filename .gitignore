@@ -8,3 +8,17 @@
 .env
 .DS_Store
 /scripts/__pycache__/
+/desktop/app/node_modules/
+/desktop/app/dist/
+/android/app/google-services.json
+/android/.gradle/
+/android/.kotlin/
+/android/build/
+/android/app/build/
+/android/local.properties
+# Signing keys never go into the repository (docs/install-android.md).
+*.jks
+*.keystore
+# Server-side, next to the checkout (docs/apps.md): the Firebase key and the apps' installers.
+/secrets/
+/downloads/

@@ -8,7 +8,7 @@ import { remember, remembered } from '../lib/devices';
 import { deviceCode } from '../lib/crypto';
 import { errText, t } from '../lib/i18n';
 import { warmMic } from '../lib/mic';
-import { enablePush, isIOS, notifPermission, pushSupported, standalone, updateReady } from '../lib/pwa';
+import { appUpdate, enablePush, isIOS, nativeApp, notifPermission, pushSupported, standalone, updateReady } from '../lib/pwa';
 import { go, route } from '../lib/route';
 import { approveDevice, denyDevice, pending, showToast, toast } from '../lib/store';
 import { DeviceCode } from './Auth';
@@ -142,18 +142,40 @@ function NotifBanner() {
 // the chat list, hidden on a phone inside a chat: a toast says it there.
 function UpdateBanner() {
   const [later, setLater] = useState(false);
+  const [busy, setBusy] = useState(false);
+  // The apps carry their interface: they install a new build of themselves.
+  const app = !!nativeApp?.installUpdate;
+  const text = app ? t('update.appVersion', { v: appUpdate.value ?? '' }) : t(nativeApp ? 'update.app' : 'update.ready');
   useEffect(() => {
-    if (updateReady.value && !call.value && !groupCall.value) showToast(t('update.ready'));
+    if (updateReady.value && !call.value && !groupCall.value) showToast(text);
   }, [updateReady.value]);
   if (!updateReady.value || later || call.value || groupCall.value) return null;
+  const install = async () => {
+    setBusy(true);
+    try {
+      const r = await nativeApp!.installUpdate!();
+      showToast(t(['installing', 'opened', 'browser', 'permission', 'none'].includes(r) ? `update.${r}` : 'update.failed'));
+    } catch {
+      showToast(t('update.failed'));
+    } finally {
+      setBusy(false);
+    }
+  };
   return (
-    <section class="notif-banner" role="region" aria-label={t('update.title')}>
+    <section class="notif-banner" role="region" aria-label={t('update.title')} aria-busy={busy}>
       <Icon name="refresh" />
-      <p>{t('update.ready')}</p>
+      <p>{busy ? t('update.downloading') : text}</p>
       <div class="row-buttons">
-        <button class="btn" onClick={() => location.reload()}>
-          {t('update.reload')}
-        </button>
+        {!nativeApp && (
+          <button class="btn" onClick={() => location.reload()}>
+            {t('update.reload')}
+          </button>
+        )}
+        {app && (
+          <button class="btn" disabled={busy} onClick={() => void install()}>
+            {t('update.install')}
+          </button>
+        )}
         <button class="btn secondary" onClick={() => setLater(true)}>
           {t('notify.later')}
         </button>
