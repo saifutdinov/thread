@@ -50,10 +50,10 @@ compose() {
 # Not a git checkout: dev, which the apps never compare.
 web_version() {
 	local tree
-	tree="$(git -C "$ROOT" ls-tree -r HEAD web 2>/dev/null)" && [ -n "$tree" ] || {
+	if ! tree="$(git -C "$ROOT" ls-tree -r HEAD web 2>/dev/null)" || [ -z "$tree" ]; then
 		echo dev
 		return
-	}
+	fi
 	printf '%s\n' "$tree" | grep -v 'web/src/lib/patch-notes\.ts$' | git hash-object --stdin | cut -c1-12
 }
 
